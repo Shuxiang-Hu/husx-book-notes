@@ -1,0 +1,1024 @@
+If fewer than the required w or r nodes are available, writes or reads return an error.
+A node could be unavailable for many reasons: because the node is down (crashed,
+powered down), due to an error executing the operation (can’t write because the disk
+is full), due to a network interruption between the client and the node, or for any
+number of other reasons. We only care whether the node returned a successful
+response and don’t need to distinguish between different kinds of fault.
+Limitations of Quorum Consistency
+If you have n replicas, and you choose w and r such that w + r > n, you can generally
+expect every read to return the most recent value written for a key. This is the case
+because the set of nodes to which you’ve written and the set of nodes from which
+you’ve read must overlap. That is, among the nodes you read there must be at least
+one node with the latest value (illustrated in Figure 5-11).
+Often, r and w are chosen to be a majority (more than n/2) of nodes, because that
+ensures w + r > n while still tolerating up to n/2 node failures. But quorums are not
+necessarily majorities—it only matters that the sets of nodes used by the read and
+write operations overlap in at least one node. Other quorum assignments are possi‐
+ble, which allows some flexibility in the design of distributed algorithms [45].
+You may also set w and r to smaller numbers, so that w + r ≤ n (i.e., the quorum con‐
+dition is not satisfied). In this case, reads and writes will still be sent to n nodes, but a
+smaller number of successful responses is required for the operation to succeed.
+With a smaller w and r you are more likely to read stale values, because it’s more
+likely that your read didn’t include the node with the latest value. On the upside, this
+configuration allows lower latency and higher availability: if there is a network inter‐
+ruption and many replicas become unreachable, there’s a higher chance that you can
+continue processing reads and writes. Only after the number of reachable replicas
+falls below w or r does the database become unavailable for writing or reading,
+respectively.
+However, even with w + r > n, there are likely to be edge cases where stale values are
+returned. These depend on the implementation, but possible scenarios include:
+• If a sloppy quorum is used (see “Sloppy Quorums and Hinted Handoff”  on page
+183), the w writes may end up on different nodes than the r reads, so there is no
+longer a guaranteed overlap between the r nodes and the w nodes [46].
+• If two writes occur concurrently, it is not clear which one happened first. In this
+case, the only safe solution is to merge the concurrent writes (see “Handling
+Write Conflicts” on page 171). If a winner is picked based on a timestamp (last
+write wins), writes can be lost due to clock skew [ 35]. We will return to this topic
+in “Detecting Concurrent Writes” on page 184 .
+Leaderless Replication | 181
+
+• If a write happens concurrently with a read, the write may be reflected on only
+some of the replicas. In this case, it’s undetermined whether the read returns the
+old or the new value.
+• If a write succeeded on some replicas but failed on others (for example because
+the disks on some nodes are full), and overall succeeded on fewer than w replicas,
+it is not rolled back on the replicas where it succeeded. This means that if a write
+was reported as failed, subsequent reads may or may not return the value from
+that write [47].
+• If a node carrying a new value fails, and its data is restored from a replica carry‐
+ing an old value, the number of replicas storing the new value may fall below w,
+breaking the quorum condition.
+• Even if everything is working correctly, there are edge cases in which you can get
+unlucky with the timing, as we shall see in “Linearizability and quorums” on
+page 334.
+Thus, although quorums appear to guarantee that a read returns the latest written
+value, in practice it is not so simple. Dynamo-style databases are generally optimized
+for use cases that can tolerate eventual consistency. The parameters w and r allow you
+to adjust the probability of stale values being read, but it’s wise to not take them as
+absolute guarantees.
+In particular, you usually do not get the guarantees discussed in “Problems with Rep‐
+lication Lag” on page 161 (reading your writes, monotonic reads, or consistent prefix
+reads), so the previously mentioned anomalies can occur in applications. Stronger
+guarantees generally require transactions or consensus. We will return to these topics
+in Chapter 7 and Chapter 9. 
+Monitoring staleness
+From an operational perspective, it’s important to monitor whether your databases
+are returning up-to-date results. Even if your application can tolerate stale reads, you
+need to be aware of the health of your replication. If it falls behind significantly, it
+should alert you so that you can investigate the cause (for example, a problem in the
+network or an overloaded node).
+For leader-based replication, the database typically exposes metrics for the replication
+lag, which you can feed into a monitoring system. This is possible because writes are
+applied to the leader and to followers in the same order, and each node has a position
+in the replication log (the number of writes it has applied locally). By subtracting a
+follower’s current position from the leader’s current position, you can measure the
+amount of replication lag.
+However, in systems with leaderless replication, there is no fixed order in which
+writes are applied, which makes monitoring more difficult. Moreover, if the database
+182 | Chapter 5: Replication
+
+only uses read repair (no anti-entropy), there is no limit to how old a value might be
+—if a value is only infrequently read, the value returned by a stale replica may be
+ancient.
+There has been some research on measuring replica staleness in databases with lead‐
+erless replication and predicting the expected percentage of stale reads depending on
+the parameters n, w, and r [48]. This is unfortunately not yet common practice, but it
+would be good to include staleness measurements in the standard set of metrics for
+databases. Eventual consistency is a deliberately vague guarantee, but for operability
+it’s important to be able to quantify “eventual.” 
+Sloppy Quorums and Hinted Handoff
+Databases with appropriately configured quorums can tolerate the failure of individ‐
+ual nodes without the need for failover. They can also tolerate individual nodes going
+slow, because requests don’t have to wait for all n nodes to respond—they can return
+when w or r nodes have responded. These characteristics make databases with leader‐
+less replication appealing for use cases that require high availability and low latency,
+and that can tolerate occasional stale reads.
+However, quorums (as described so far) are not as fault-tolerant as they could be. A
+network interruption can easily cut off a client from a large number of database
+nodes. Although those nodes are alive, and other clients may be able to connect to
+them, to a client that is cut off from the database nodes, they might as well be dead. In
+this situation, it’s likely that fewer than w or r reachable nodes remain, so the client
+can no longer reach a quorum.
+In a large cluster (with significantly more than n nodes) it’s likely that the client can
+connect to some database nodes during the network interruption, just not to the
+nodes that it needs to assemble a quorum for a particular value. In that case, database
+designers face a trade-off:
+• Is it better to return errors to all requests for which we cannot reach a quorum of
+w or r nodes?
+• Or should we accept writes anyway, and write them to some nodes that are
+reachable but aren’t among the n nodes on which the value usually lives?
+The latter is known as a sloppy quorum  [37]: writes and reads still require w and r
+successful responses, but those may include nodes that are not among the designated
+n “home” nodes for a value. By analogy, if you lock yourself out of your house, you
+may knock on the neighbor’s door and ask whether you may stay on their couch tem‐
+porarily.
+Once the network interruption is fixed, any writes that one node temporarily
+accepted on behalf of another node are sent to the appropriate “home” nodes. This is
+Leaderless Replication | 183
+
+called hinted handoff . (Once you find the keys to your house again, your neighbor
+politely asks you to get off their couch and go home.)
+Sloppy quorums are particularly useful for increasing write availability: as long as any
+w nodes are available, the database can accept writes. However, this means that even
+when w + r > n, you cannot be sure to read the latest value for a key, because the
+latest value may have been temporarily written to some nodes outside of n [47].
+Thus, a sloppy quorum actually isn’t a quorum at all in the traditional sense. It’s only
+an assurance of durability, namely that the data is stored on w nodes somewhere.
+There is no guarantee that a read of r nodes will see it until the hinted handoff has
+completed.
+Sloppy quorums are optional in all common Dynamo implementations. In Riak they
+are enabled by default, and in Cassandra and Voldemort they are disabled by default
+[46, 49, 50].
+Multi-datacenter operation
+We previously discussed cross-datacenter replication as a use case for multi-leader
+replication (see “Multi-Leader Replication” on page 168). Leaderless replication is
+also suitable for multi-datacenter operation, since it is designed to tolerate conflicting
+concurrent writes, network interruptions, and latency spikes.
+Cassandra and Voldemort implement their multi-datacenter support within the nor‐
+mal leaderless model: the number of replicas n includes nodes in all datacenters, and
+in the configuration you can specify how many of the n replicas you want to have in
+each datacenter. Each write from a client is sent to all replicas, regardless of datacen‐
+ter, but the client usually only waits for acknowledgment from a quorum of nodes
+within its local datacenter so that it is unaffected by delays and interruptions on the
+cross-datacenter link. The higher-latency writes to other datacenters are often config‐
+ured to happen asynchronously, although there is some flexibility in the configura‐
+tion [50, 51].
+Riak keeps all communication between clients and database nodes local to one data‐
+center, so n describes the number of replicas within one datacenter. Cross-datacenter
+replication between database clusters happens asynchronously in the background, in
+a style that is similar to multi-leader replication [52].
+Detecting Concurrent Writes
+Dynamo-style databases allow several clients to concurrently write to the same key,
+which means that conflicts will occur even if strict quorums are used. The situation is
+similar to multi-leader replication (see “Handling Write Conflicts” on page 171),
+although in Dynamo-style databases conflicts can also arise during read repair or
+hinted handoff.
+184 | Chapter 5: Replication
+
+The problem is that events may arrive in a different order at different nodes, due to
+variable network delays and partial failures. For example, Figure 5-12 shows two cli‐
+ents, A and B, simultaneously writing to a key X in a three-node datastore:
+• Node 1 receives the write from A, but never receives the write from B due to a
+transient outage.
+• Node 2 first receives the write from A, then the write from B.
+• Node 3 first receives the write from B, then the write from A.
+Figure 5-12. Concurrent writes in a Dynamo-style datastore: there is no well-defined
+ordering.
+If each node simply overwrote the value for a key whenever it received a write request
+from a client, the nodes would become permanently inconsistent, as shown by the
+final get request in Figure 5-12: node 2 thinks that the final value of X is B, whereas
+the other nodes think that the value is A.
+In order to become eventually consistent, the replicas should converge toward the
+same value. How do they do that? One might hope that replicated databases would
+handle this automatically, but unfortunately most implementations are quite poor: if
+you want to avoid losing data, you—the application developer—need to know a lot
+about the internals of your database’s conflict handling.
+We briefly touched on some techniques for conflict resolution in “Handling Write
+Conflicts” on page 171. Before we wrap up this chapter, let’s explore the issue in a bit
+more detail.
+Leaderless Replication | 185
+
+Last write wins (discarding concurrent writes)
+One approach for achieving eventual convergence is to declare that each replica need
+only store the most “recent” value and allow “older” values to be overwritten and dis‐
+carded. Then, as long as we have some way of unambiguously determining which
+write is more “recent,” and every write is eventually copied to every replica, the repli‐
+cas will eventually converge to the same value.
+As indicated by the quotes around “recent,” this idea is actually quite misleading. In
+the example of Figure 5-12, neither client knew about the other one when it sent its
+write requests to the database nodes, so it’s not clear which one happened first. In
+fact, it doesn’t really make sense to say that either happened “first”: we say the writes
+are concurrent, so their order is undefined.
+Even though the writes don’t have a natural ordering, we can force an arbitrary order
+on them. For example, we can attach a timestamp to each write, pick the biggest
+timestamp as the most “recent,” and discard any writes with an earlier timestamp.
+This conflict resolution algorithm, called last write wins  (LWW), is the only sup‐
+ported conflict resolution method in Cassandra [ 53], and an optional feature in Riak
+[35].
+LWW achieves the goal of eventual convergence, but at the cost of durability: if there
+are several concurrent writes to the same key, even if they were all reported as suc‐
+cessful to the client (because they were written to w replicas), only one of the writes
+will survive and the others will be silently discarded. Moreover, LWW may even drop
+writes that are not concurrent, as we shall discuss in “Timestamps for ordering
+events” on page 291 .
+There are some situations, such as caching, in which lost writes are perhaps accepta‐
+ble. If losing data is not acceptable, LWW is a poor choice for conflict resolution.
+The only safe way of using a database with LWW is to ensure that a key is only writ‐
+ten once and thereafter treated as immutable, thus avoiding any concurrent updates
+to the same key. For example, a recommended way of using Cassandra is to use a
+UUID as the key, thus giving each write operation a unique key [53].
+The “happens-before” relationship and concurrency
+How do we decide whether two operations are concurrent or not? To develop an
+intuition, let’s look at some examples:
+• In Figure 5-9 , the two writes are not concurrent: A’s insert happens before  B’s
+increment, because the value incremented by B is the value inserted by A. In
+other words, B’s operation builds upon A’s operation, so B’s operation must have
+happened later. We also say that B is causally dependent on A.
+186 | Chapter 5: Replication
+
+• On the other hand, the two writes in Figure 5-12 are concurrent: when each cli‐
+ent starts the operation, it does not know that another client is also performing
+an operation on the same key. Thus, there is no causal dependency between the
+operations.
+An operation A happens before another operation B if B knows about A, or depends
+on A, or builds upon A in some way. Whether one operation happens before another
+operation is the key to defining what concurrency means. In fact, we can simply say
+that two operations are concurrent if neither happens before the other (i.e., neither
+knows about the other) [54].
+Thus, whenever you have two operations A and B, there are three possibilities: either
+A happened before B, or B happened before A, or A and B are concurrent. What we
+need is an algorithm to tell us whether two operations are concurrent or not. If one
+operation happened before another, the later operation should overwrite the earlier
+operation, but if the operations are concurrent, we have a conflict that needs to be
+resolved.
+Concurrency, Time, and Relativity
+It may seem that two operations should be called concurrent if they occur “at the
+same time”—but in fact, it is not important whether they literally overlap in time.
+Because of problems with clocks in distributed systems, it is actually quite difficult to
+tell whether two things happened at exactly the same time—an issue we will discuss
+in more detail in Chapter 8.
+For defining concurrency, exact time doesn’t matter: we simply call two operations
+concurrent if they are both unaware of each other, regardless of the physical time at
+which they occurred. People sometimes make a connection between this principle
+and the special theory of relativity in physics [ 54], which introduced the idea that
+information cannot travel faster than the speed of light. Consequently, two events
+that occur some distance apart cannot possibly affect each other if the time between
+the events is shorter than the time it takes light to travel the distance between them.
+In computer systems, two operations might be concurrent even though the speed of
+light would in principle have allowed one operation to affect the other. For example,
+if the network was slow or interrupted at the time, two operations can occur some
+time apart and still be concurrent, because the network problems prevented one
+operation from being able to know about the other.
+Capturing the happens-before relationship
+Let’s look at an algorithm that determines whether two operations are concurrent, or
+whether one happened before another. To keep things simple, let’s start with a data‐
+Leaderless Replication | 187
+
+base that has only one replica. Once we have worked out how to do this on a single
+replica, we can generalize the approach to a leaderless database with multiple replicas.
+Figure 5-13 shows two clients concurrently adding items to the same shopping cart.
+(If that example strikes you as too inane, imagine instead two air traffic controllers
+concurrently adding aircraft to the sector they are tracking.) Initially, the cart is
+empty. Between them, the clients make five writes to the database:
+1. Client 1 adds milk to the cart. This is the first write to that key, so the server suc‐
+cessfully stores it and assigns it version 1. The server also echoes the value back
+to the client, along with the version number.
+2. Client 2 adds eggs to the cart, not knowing that client 1 concurrently added milk
+(client 2 thought that its eggs were the only item in the cart). The server assigns
+version 2 to this write, and stores eggs and milk as two separate values. It then
+returns both values to the client, along with the version number of 2.
+3. Client 1, oblivious to client 2’s write, wants to add flour to the cart, so it thinks
+the current cart contents should be [milk, flour] . It sends this value to the
+server, along with the version number 1 that the server gave client 1 previously.
+The server can tell from the version number that the write of [milk, flour]
+supersedes the prior value of [milk] but that it is concurrent with [eggs]. Thus,
+the server assigns version 3 to [milk, flour] , overwrites the version 1 value
+[milk], but keeps the version 2 value [eggs] and returns both remaining values
+to the client.
+4. Meanwhile, client 2 wants to add ham to the cart, unaware that client 1 just added
+flour. Client 2 received the two values [milk] and [eggs] from the server in the
+last response, so the client now merges those values and adds ham to form a new
+value, [eggs, milk, ham]. It sends that value to the server, along with the previ‐
+ous version number 2. The server detects that version 2 overwrites [eggs] but is
+concurrent with [milk, flour], so the two remaining values are [milk, flour]
+with version 3, and [eggs, milk, ham] with version 4.
+5. Finally, client 1 wants to add bacon. It previously received [milk, flour] and
+[eggs] from the server at version 3, so it merges those, adds bacon, and sends the
+final value [milk, flour, eggs, bacon]  to the server, along with the version
+number 3. This overwrites [milk, flour] (note that [eggs] was already over‐
+written in the last step) but is concurrent with [eggs, milk, ham], so the server
+keeps those two concurrent values.
+188 | Chapter 5: Replication
+
+Figure 5-13. Capturing causal dependencies between two clients concurrently editing a
+shopping cart.
+The dataflow between the operations in Figure 5-13  is illustrated graphically in
+Figure 5-14. The arrows indicate which operation happened before which other oper‐
+ation, in the sense that the later operation knew about or depended on the earlier one.
+In this example, the clients are never fully up to date with the data on the server, since
+there is always another operation going on concurrently. But old versions of the value
+do get overwritten eventually, and no writes are lost.
+Figure 5-14. Graph of causal dependencies in Figure 5-13.
+Note that the server can determine whether two operations are concurrent by looking
+at the version numbers—it does not need to interpret the value itself (so the value
+could be any data structure). The algorithm works as follows:
+Leaderless Replication | 189
+
+• The server maintains a version number for every key, increments the version
+number every time that key is written, and stores the new version number along
+with the value written.
+• When a client reads a key, the server returns all values that have not been over‐
+written, as well as the latest version number. A client must read a key before
+writing.
+• When a client writes a key, it must include the version number from the prior
+read, and it must merge together all values that it received in the prior read. (The
+response from a write request can be like a read, returning all current values,
+which allows us to chain several writes like in the shopping cart example.)
+• When the server receives a write with a particular version number, it can over‐
+write all values with that version number or below (since it knows that they have
+been merged into the new value), but it must keep all values with a higher ver‐
+sion number (because those values are concurrent with the incoming write).
+When a write includes the version number from a prior read, that tells us which pre‐
+vious state the write is based on. If you make a write without including a version
+number, it is concurrent with all other writes, so it will not overwrite anything—it
+will just be returned as one of the values on subsequent reads.
+Merging concurrently written values
+This algorithm ensures that no data is silently dropped, but it unfortunately requires
+that the clients do some extra work: if several operations happen concurrently, clients
+have to clean up afterward by merging the concurrently written values. Riak calls
+these concurrent values siblings.
+Merging sibling values is essentially the same problem as conflict resolution in multi-
+leader replication, which we discussed previously (see “Handling Write Conflicts”  on
+page 171). A simple approach is to just pick one of the values based on a version
+number or timestamp (last write wins), but that implies losing data. So, you may
+need to do something more intelligent in application code.
+With the example of a shopping cart, a reasonable approach to merging siblings is to
+just take the union. In Figure 5-14, the two final siblings are [milk, flour, eggs,
+bacon] and [eggs, milk, ham] ; note that milk and eggs appear in both, even
+though they were each only written once. The merged value might be something like
+[milk, flour, eggs, bacon, ham], without duplicates.
+However, if you want to allow people to also remove things from their carts, and not
+just add things, then taking the union of siblings may not yield the right result: if you
+merge two sibling carts and an item has been removed in only one of them, then the
+removed item will reappear in the union of the siblings [ 37]. To prevent this prob‐
+190 | Chapter 5: Replication
+
+lem, an item cannot simply be deleted from the database when it is removed; instead,
+the system must leave a marker with an appropriate version number to indicate that
+the item has been removed when merging siblings. Such a deletion marker is known
+as a tombstone. (We previously saw tombstones in the context of log compaction in
+“Hash Indexes” on page 72 .)
+As merging siblings in application code is complex and error-prone, there are some
+efforts to design data structures that can perform this merging automatically, as dis‐
+cussed in “Automatic Conflict Resolution”  on page 174. For example, Riak’s datatype
+support uses a family of data structures called CRDTs [ 38, 39, 55] that can automati‐
+cally merge siblings in sensible ways, including preserving deletions.
+Version vectors
+The example in Figure 5-13  used only a single replica. How does the algorithm
+change when there are multiple replicas, but no leader?
+Figure 5-13  uses a single version number to capture dependencies between opera‐
+tions, but that is not sufficient when there are multiple replicas accepting writes con‐
+currently. Instead, we need to use a version number per replica  as well as per key.
+Each replica increments its own version number when processing a write, and also
+keeps track of the version numbers it has seen from each of the other replicas. This
+information indicates which values to overwrite and which values to keep as siblings.
+The collection of version numbers from all the replicas is called a version vector [56].
+A few variants of this idea are in use, but the most interesting is probably the dotted
+version vector [57], which is used in Riak 2.0 [ 58, 59]. We won’t go into the details,
+but the way it works is quite similar to what we saw in our cart example.
+Like the version numbers in Figure 5-13, version vectors are sent from the database
+replicas to clients when values are read, and need to be sent back to the database
+when a value is subsequently written. (Riak encodes the version vector as a string that
+it calls causal context.) The version vector allows the database to distinguish between
+overwrites and concurrent writes.
+Also, like in the single-replica example, the application may need to merge siblings.
+The version vector structure ensures that it is safe to read from one replica and subse‐
+quently write back to another replica. Doing so may result in siblings being created,
+but no data is lost as long as siblings are merged correctly.
+Version vectors and vector clocks
+A version vector is sometimes also called a vector clock, even though
+they are not quite the same. The difference is subtle—please see the
+references for details [ 57, 60, 61]. In brief, when comparing the
+state of replicas, version vectors are the right data structure to use. 
+Leaderless Replication | 191
+
+Summary
+In this chapter we looked at the issue of replication. Replication can serve several
+purposes:
+High availability
+Keeping the system running, even when one machine (or several machines, or an
+entire datacenter) goes down
+Disconnected operation
+Allowing an application to continue working when there is a network interrup‐
+tion
+Latency
+Placing data geographically close to users, so that users can interact with it faster
+Scalability
+Being able to handle a higher volume of reads than a single machine could han‐
+dle, by performing reads on replicas
+Despite being a simple goal—keeping a copy of the same data on several machines—
+replication turns out to be a remarkably tricky problem. It requires carefully thinking
+about concurrency and about all the things that can go wrong, and dealing with the
+consequences of those faults. At a minimum, we need to deal with unavailable nodes
+and network interruptions (and that’s not even considering the more insidious kinds
+of fault, such as silent data corruption due to software bugs).
+We discussed three main approaches to replication:
+Single-leader replication
+Clients send all writes to a single node (the leader), which sends a stream of data
+change events to the other replicas (followers). Reads can be performed on any
+replica, but reads from followers might be stale.
+Multi-leader replication
+Clients send each write to one of several leader nodes, any of which can accept
+writes. The leaders send streams of data change events to each other and to any
+follower nodes.
+Leaderless replication
+Clients send each write to several nodes, and read from several nodes in parallel
+in order to detect and correct nodes with stale data.
+Each approach has advantages and disadvantages. Single-leader replication is popular
+because it is fairly easy to understand and there is no conflict resolution to worry
+about. Multi-leader and leaderless replication can be more robust in the presence of
+192 | Chapter 5: Replication
+
+faulty nodes, network interruptions, and latency spikes—at the cost of being harder
+to reason about and providing only very weak consistency guarantees.
+Replication can be synchronous or asynchronous, which has a profound effect on the
+system behavior when there is a fault. Although asynchronous replication can be fast
+when the system is running smoothly, it’s important to figure out what happens
+when replication lag increases and servers fail. If a leader fails and you promote an
+asynchronously updated follower to be the new leader, recently committed data may
+be lost.
+We looked at some strange effects that can be caused by replication lag, and we dis‐
+cussed a few consistency models which are helpful for deciding how an application
+should behave under replication lag:
+Read-after-write consistency
+Users should always see data that they submitted themselves.
+Monotonic reads
+After users have seen the data at one point in time, they shouldn’t later see the
+data from some earlier point in time.
+Consistent prefix reads
+Users should see the data in a state that makes causal sense: for example, seeing a
+question and its reply in the correct order.
+Finally, we discussed the concurrency issues that are inherent in multi-leader and
+leaderless replication approaches: because they allow multiple writes to happen con‐
+currently, conflicts may occur. We examined an algorithm that a database might use
+to determine whether one operation happened before another, or whether they hap‐
+pened concurrently. We also touched on methods for resolving conflicts by merging
+together concurrent updates.
+In the next chapter we will continue looking at data that is distributed across multiple
+machines, through the counterpart of replication: splitting a large dataset into parti‐
+tions. 
+References
+[1] Bruce G. Lindsay, Patricia Griffiths Selinger, C. Galtieri, et al.: “ Notes on Dis‐
+tributed Databases,” IBM Research, Research Report RJ2571(33471), July 1979.
+[2] “ Oracle Active Data Guard Real-Time Data Protection and Availability ,” Oracle
+White Paper, June 2013.
+[3] “ AlwaysOn Availability Groups,” in SQL Server Books Online, Microsoft, 2012.
+Summary | 193
+
+[4] Lin Qiao, Kapil Surlaker, Shirshanka Das, et al.: “ On Brewing Fresh Espresso:
+LinkedIn’s Distributed Data Serving Platform ,” at ACM International Conference on
+Management of Data (SIGMOD), June 2013.
+[5] Jun Rao: “ Intra-Cluster Replication for Apache Kafka ,” at ApacheCon North
+America, February 2013.
+[6] “ Highly Available Queues,” in RabbitMQ Server Documentation, Pivotal Software,
+Inc., 2014.
+[7] Yoshinori Matsunobu: “ Semi-Synchronous Replication at Facebook ,” yoshinori‐
+matsunobu.blogspot.co.uk, April 1, 2014.
+[8] Robbert van Renesse and Fred B. Schneider: “ Chain Replication for Supporting
+High Throughput and Availability ,” at 6th USENIX Symposium on Operating System
+Design and Implementation (OSDI), December 2004.
+[9] Jeff Terrace and Michael J. Freedman: “ Object Storage on CRAQ: High-
+Throughput Chain Replication for Read-Mostly Workloads ,” at USENIX Annual
+Technical Conference (ATC), June 2009.
+[10] Brad Calder, Ju Wang, Aaron Ogus, et al.: “ Windows Azure Storage: A Highly
+Available Cloud Storage Service with Strong Consistency ,” at 23rd ACM Symposium
+on Operating Systems Principles (SOSP), October 2011.
+[11] Andrew Wang: “ Windows Azure Storage,” umbrant.com, February 4, 2016.
+[12] “ Percona Xtrabackup - Documentation,” Percona LLC, 2014.
+[13] Jesse Newland: “ GitHub Availability This Week ,” github.com, September 14,
+2012.
+[14] Mark Imbriaco: “ Downtime Last Saturday,” github.com, December 26, 2012.
+[15] John Hugg: “ ‘All in’ with Determinism for Performance and Testing in Dis‐
+tributed Systems,” at Strange Loop, September 2015.
+[16] Amit Kapila: “ WAL Internals of PostgreSQL ,” at PostgreSQL Conference
+(PGCon), May 2012.
+[17] MySQL Internals Manual. Oracle, 2014.
+[18] Yogeshwer Sharma, Philippe Ajoux, Petchean Ang, et al.: “ Wormhole: Reliable
+Pub-Sub to Support Geo-Replicated Internet Services ,” at 12th USENIX Symposium
+on Networked Systems Design and Implementation (NSDI), May 2015.
+[19] “ Oracle GoldenGate 12c: Real-Time Access to Real-Time Information ,” Oracle
+White Paper, October 2013.
+[20] Shirshanka Das, Chavdar Botev, Kapil Surlaker, et al.: “ All Aboard the Data‐
+bus!,” at ACM Symposium on Cloud Computing (SoCC), October 2012.
+194 | Chapter 5: Replication
+
+[21] Greg Sabino Mullane: “ Version 5 of Bucardo Database Replication System ,”
+blog.endpoint.com, June 23, 2014.
+[22] Werner Vogels: “ Eventually Consistent ,” ACM Queue , volume 6, number 6,
+pages 14–19, October 2008. doi:10.1145/1466443.1466448
+[23] Douglas B. Terry: “ Replicated Data Consistency Explained Through Baseball ,”
+Microsoft Research, Technical Report MSR-TR-2011-137, October 2011.
+[24] Douglas B. Terry, Alan J. Demers, Karin Petersen, et al.: “ Session Guarantees for
+Weakly Consistent Replicated Data ,” at 3rd International Conference on Parallel and
+Distributed Information Systems  (PDIS), September 1994. doi:10.1109/PDIS.
+1994.331722
+[25] Terry Pratchett: Reaper Man: A Discworld Novel . Victor Gollancz, 1991. ISBN:
+978-0-575-04979-6
+[26] “ Tungsten Replicator,” Continuent, Inc., 2014.
+[27] “ BDR 0.10.0 Documentation ,” The PostgreSQL Global Development Group,
+bdr-project.org, 2015.
+[28] Robert Hodges: “ If You *Must* Deploy Multi-Master Replication, Read This
+First,” scale-out-blog.blogspot.co.uk, March 30, 2012.
+[29] J. Chris Anderson, Jan Lehnardt, and Noah Slater: CouchDB: The Definitive
+Guide. O’Reilly Media, 2010. ISBN: 978-0-596-15589-6
+[30] AppJet, Inc.: “ Etherpad and EasySync Technical Manual,” github.com, March 26,
+2011.
+[31] John Day-Richter: “ What’s Different About the New Google Docs: Making Col‐
+laboration Fast,” googledrive.blogspot.com, 23 September 2010.
+[32] Martin Kleppmann and Alastair R. Beresford: “ A Conflict-Free Replicated JSON
+Datatype,” arXiv:1608.03960, August 13, 2016.
+[33] Frazer Clement: “ Eventual Consistency – Detecting Conflicts ,” messagepass‐
+ing.blogspot.co.uk, October 20, 2011.
+[34] Robert Hodges: “ State of the Art for MySQL Multi-Master Replication ,” at Per‐
+cona Live: MySQL Conference & Expo, April 2013.
+[35] John Daily: “ Clocks Are Bad, or, Welcome to the Wonderful World of Dis‐
+tributed Systems,” basho.com, November 12, 2013.
+[36] Riley Berton: “ Is Bi-Directional Replication (BDR) in Postgres Transactional? ,”
+sdf.org, January 4, 2016.
+Summary | 195
+
+[37] Giuseppe DeCandia, Deniz Hastorun, Madan Jampani, et al.: “ Dynamo: Ama‐
+zon’s Highly Available Key-Value Store ,” at 21st ACM Symposium on Operating Sys‐
+tems Principles (SOSP), October 2007.
+[38] Marc Shapiro, Nuno Preguiça, Carlos Baquero, and Marek Zawirski: “ A Com‐
+prehensive Study of Convergent and Commutative Replicated Data Types ,” INRIA
+Research Report no. 7506, January 2011.
+[39] Sam Elliott: “ CRDTs: An UPDATE (or Maybe Just a PUT) ,” at RICON West ,
+October 2013.
+[40] Russell Brown: “ A Bluffers Guide to CRDTs in Riak ,” gist.github.com, October
+28, 2013.
+[41] Benjamin Farinier, Thomas Gazagnaire, and Anil Madhavapeddy: “ Mergeable
+Persistent Data Structures ,” at 26es Journées Francophones des Langages Applicatifs
+(JFLA), January 2015.
+[42] Chengzheng Sun and Clarence Ellis: “ Operational Transformation in Real-Time
+Group Editors: Issues, Algorithms, and Achievements ,” at ACM Conference on Com‐
+puter Supported Cooperative Work (CSCW), November 1998.
+[43] Lars Hofhansl: “ HBASE-7709: Infinite Loop Possible in Master/Master Replica‐
+tion,” issues.apache.org, January 29, 2013.
+[44] David K. Gifford: “ Weighted Voting for Replicated Data ,” at 7th ACM Sympo‐
+sium on Operating Systems Principles  (SOSP), December 1979. doi:
+10.1145/800215.806583
+[45] Heidi Howard, Dahlia Malkhi, and Alexander Spiegelman: “ Flexible Paxos: Quo‐
+rum Intersection Revisited,” arXiv:1608.06696, August 24, 2016.
+[46] Joseph Blomstedt: “ Re: Absolute Consistency ,” email to riak-users mailing list,
+lists.basho.com, January 11, 2012.
+[47] Joseph Blomstedt: “ Bringing Consistency to Riak ,” at RICON West , October
+2012.
+[48] Peter Bailis, Shivaram Venkataraman, Michael J. Franklin, et al.: “ Quantifying
+Eventual Consistency with PBS,” Communications of the ACM, volume 57, number 8,
+pages 93–102, August 2014. doi:10.1145/2632792
+[49] Jonathan Ellis: “ Modern Hinted Handoff,” datastax.com, December 11, 2012.
+[50] “ Project Voldemort Wiki,” github.com, 2013.
+[51] “ Apache Cassandra 2.0 Documentation,” DataStax, Inc., 2014.
+[52] “ Riak Enterprise: Multi-Datacenter Replication .” Technical whitepaper, Basho
+Technologies, Inc., September 2014.
+196 | Chapter 5: Replication
+
+[53] Jonathan Ellis: “ Why Cassandra Doesn’t Need Vector Clocks ,” datastax.com,
+September 2, 2013.
+[54] Leslie Lamport: “ Time, Clocks, and the Ordering of Events in a Distributed Sys‐
+tem,” Communications of the ACM , volume 21, number 7, pages 558–565, July 1978.
+doi:10.1145/359545.359563
+[55] Joel Jacobson: “ Riak 2.0: Data Types,” blog.joeljacobson.com, March 23, 2014.
+[56] D. Stott Parker Jr., Gerald J. Popek, Gerard Rudisin, et al.: “ Detection of Mutual
+Inconsistency in Distributed Systems ,” IEEE Transactions on Software Engineering ,
+volume 9, number 3, pages 240–247, May 1983. doi:10.1109/TSE.1983.236733
+[57] Nuno Preguiça, Carlos Baquero, Paulo Sérgio Almeida, et al.: “ Dotted Version
+Vectors: Logical Clocks for Optimistic Replication ,” arXiv:1011.5808, November 26,
+2010.
+[58] Sean Cribbs: “ A Brief History of Time in Riak,” at RICON, October 2014.
+[59] Russell Brown: “ Vector Clocks Revisited Part 2: Dotted Version Vectors ,”
+basho.com, November 10, 2015.
+[60] Carlos Baquero: “ Version Vectors Are Not Vector Clocks ,” haslab.word‐
+press.com, July 8, 2011.
+[61] Reinhard Schwarz and Friedemann Mattern: “ Detecting Causal Relationships in
+Distributed Computations: In Search of the Holy Grail ,” Distributed Computing, vol‐
+ume 7, number 3, pages 149–174, March 1994. doi:10.1007/BF02277859
+Summary | 197
+
+i. Partitioning, as discussed in this chapter, is a way of intentionally breaking a large database down into
+smaller ones. It has nothing to do with network partitions (netsplits), a type of fault in the network between
+nodes. We will discuss such faults in Chapter 8.
+CHAPTER 6
+Partitioning
+Clearly, we must break away from the sequential and not limit the computers. We must
+state definitions and provide for priorities and descriptions of data. We must state relation‐
+ships, not procedures.
+—Grace Murray Hopper, Management and the Computer of the Future (1962)
+In Chapter 5  we discussed replication—that is, having multiple copies of the same
+data on different nodes. For very large datasets, or very high query throughput, that is
+not sufficient: we need to break the data up into partitions, also known as sharding.i
+Terminological confusion
+What we call a partition here is called a shard in MongoDB, Elas‐
+ticsearch, and SolrCloud; it’s known as a region in HBase, a tablet
+in Bigtable, a vnode in Cassandra and Riak, and a vBucket in
+Couchbase. However, partitioning is the most established term, so
+we’ll stick with that.
+Normally, partitions are defined in such a way that each piece of data (each record,
+row, or document) belongs to exactly one partition. There are various ways of achiev‐
+ing this, which we discuss in depth in this chapter. In effect, each partition is a small
+database of its own, although the database may support operations that touch multi‐
+ple partitions at the same time.
+The main reason for wanting to partition data is scalability. Different partitions can
+be placed on different nodes in a shared-nothing cluster (see the introduction to
+199
+
+Part II  for a definition of shared nothing ). Thus, a large dataset can be distributed
+across many disks, and the query load can be distributed across many processors.
+For queries that operate on a single partition, each node can independently execute
+the queries for its own partition, so query throughput can be scaled by adding more
+nodes. Large, complex queries can potentially be parallelized across many nodes,
+although this gets significantly harder.
+Partitioned databases were pioneered in the 1980s by products such as Teradata and
+Tandem NonStop SQL [1], and more recently rediscovered by NoSQL databases and
+Hadoop-based data warehouses. Some systems are designed for transactional work‐
+loads, and others for analytics (see “Transaction Processing or Analytics?” on page
+90): this difference affects how the system is tuned, but the fundamentals of partition‐
+ing apply to both kinds of workloads.
+In this chapter we will first look at different approaches for partitioning large datasets
+and observe how the indexing of data interacts with partitioning. We’ll then talk
+about rebalancing, which is necessary if you want to add or remove nodes in your
+cluster. Finally, we’ll get an overview of how databases route requests to the right par‐
+titions and execute queries.
+Partitioning and Replication
+Partitioning is usually combined with replication so that copies of each partition are
+stored on multiple nodes. This means that, even though each record belongs to
+exactly one partition, it may still be stored on several different nodes for fault toler‐
+ance.
+A node may store more than one partition. If a leader–follower replication model is
+used, the combination of partitioning and replication can look like Figure 6-1. Each
+partition’s leader is assigned to one node, and its followers are assigned to other
+nodes. Each node may be the leader for some partitions and a follower for other par‐
+titions.
+Everything we discussed in Chapter 5 about replication of databases applies equally
+to replication of partitions. The choice of partitioning scheme is mostly independent
+of the choice of replication scheme, so we will keep things simple and ignore replica‐
+tion in this chapter.
+200 | Chapter 6: Partitioning
+
+Figure 6-1. Combining replication and partitioning: each node acts as leader for some
+partitions and follower for other partitions.
+Partitioning of Key-Value Data
+Say you have a large amount of data, and you want to partition it. How do you decide
+which records to store on which nodes?
+Our goal with partitioning is to spread the data and the query load evenly across
+nodes. If every node takes a fair share, then—in theory—10 nodes should be able to
+handle 10 times as much data and 10 times the read and write throughput of a single
+node (ignoring replication for now).
+If the partitioning is unfair, so that some partitions have more data or queries than
+others, we call it skewed. The presence of skew makes partitioning much less effective.
+In an extreme case, all the load could end up on one partition, so 9 out of 10 nodes
+are idle and your bottleneck is the single busy node. A partition with disproportion‐
+ately high load is called a hot spot.
+The simplest approach for avoiding hot spots would be to assign records to nodes
+randomly. That would distribute the data quite evenly across the nodes, but it has a
+big disadvantage: when you’re trying to read a particular item, you have no way of
+knowing which node it is on, so you have to query all nodes in parallel.
+We can do better. Let’s assume for now that you have a simple key-value data model,
+in which you always access a record by its primary key. For example, in an old-
+fashioned paper encyclopedia, you look up an entry by its title; since all the entries
+are alphabetically sorted by title, you can quickly find the one you’re looking for.
+Partitioning of Key-Value Data | 201
+
+Partitioning by Key Range
+One way of partitioning is to assign a continuous range of keys (from some mini‐
+mum to some maximum) to each partition, like the volumes of a paper encyclopedia
+(Figure 6-2). If you know the boundaries between the ranges, you can easily deter‐
+mine which partition contains a given key. If you also know which partition is
+assigned to which node, then you can make your request directly to the appropriate
+node (or, in the case of the encyclopedia, pick the correct book off the shelf).
+Figure 6-2. A print encyclopedia is partitioned by key range.
+The ranges of keys are not necessarily evenly spaced, because your data may not be
+evenly distributed. For example, in Figure 6-2, volume 1 contains words starting with
+A and B, but volume 12 contains words starting with T, U, V, X, Y, and Z. Simply
+having one volume per two letters of the alphabet would lead to some volumes being
+much bigger than others. In order to distribute the data evenly, the partition bound‐
+aries need to adapt to the data.
+The partition boundaries might be chosen manually by an administrator, or the data‐
+base can choose them automatically (we will discuss choices of partition boundaries
+in more detail in “Rebalancing Partitions” on page 209). This partitioning strategy is
+used by Bigtable, its open source equivalent HBase [ 2, 3], RethinkDB, and MongoDB
+before version 2.4 [4].
+Within each partition, we can keep keys in sorted order (see “SSTables and LSM-
+Trees”  on page 76). This has the advantage that range scans are easy, and you can
+treat the key as a concatenated index in order to fetch several related records in one
+query (see “Multi-column indexes” on page 87 ). For example, consider an application
+that stores data from a network of sensors, where the key is the timestamp of the
+measurement (year-month-day-hour-minute-second). Range scans are very useful in
+this case, because they let you easily fetch, say, all the readings from a particular
+month.
+202 | Chapter 6: Partitioning
+
+However, the downside of key range partitioning is that certain access patterns can
+lead to hot spots. If the key is a timestamp, then the partitions correspond to ranges
+of time—e.g., one partition per day. Unfortunately, because we write data from the
+sensors to the database as the measurements happen, all the writes end up going to
+the same partition (the one for today), so that partition can be overloaded with writes
+while others sit idle [5].
+To avoid this problem in the sensor database, you need to use something other than
+the timestamp as the first element of the key. For example, you could prefix each
+timestamp with the sensor name so that the partitioning is first by sensor name and
+then by time. Assuming you have many sensors active at the same time, the write
+load will end up more evenly spread across the partitions. Now, when you want to
+fetch the values of multiple sensors within a time range, you need to perform a sepa‐
+rate range query for each sensor name.
+Partitioning by Hash of Key
+Because of this risk of skew and hot spots, many distributed datastores use a hash
+function to determine the partition for a given key.
+A good hash function takes skewed data and makes it uniformly distributed. Say you
+have a 32-bit hash function that takes a string. Whenever you give it a new string, it
+returns a seemingly random number between 0 and 2 32 −  1. Even if the input strings
+are very similar, their hashes are evenly distributed across that range of numbers.
+For partitioning purposes, the hash function need not be cryptographically strong:
+for example, Cassandra and MongoDB use MD5, and Voldemort uses the Fowler–
+Noll–Vo function. Many programming languages have simple hash functions built in
+(as they are used for hash tables), but they may not be suitable for partitioning: for
+example, in Java’s Object.hashCode() and Ruby’s Object#hash, the same key may
+have a different hash value in different processes [6].
+Once you have a suitable hash function for keys, you can assign each partition a
+range of hashes (rather than a range of keys), and every key whose hash falls within a
+partition’s range will be stored in that partition. This is illustrated in Figure 6-3.
+Partitioning of Key-Value Data | 203
+
+Figure 6-3. Partitioning by hash of key.
+This technique is good at distributing keys fairly among the partitions. The partition
+boundaries can be evenly spaced, or they can be chosen pseudorandomly (in which
+case the technique is sometimes known as consistent hashing).
+Consistent Hashing
+Consistent hashing, as defined by Karger et al. [7], is a way of evenly distributing load
+across an internet-wide system of caches such as a content delivery network (CDN).
+It uses randomly chosen partition boundaries to avoid the need for central control or
+distributed consensus. Note that consistent here has nothing to do with replica consis‐
+tency (see Chapter 5 ) or ACID consistency (see Chapter 7 ), but rather describes a
+particular approach to rebalancing.
+As we shall see in “Rebalancing Partitions” on page 209, this particular approach
+actually doesn’t work very well for databases [ 8], so it is rarely used in practice (the
+documentation of some databases still refers to consistent hashing, but it is often
+inaccurate). Because this is so confusing, it’s best to avoid the term consistent hashing
+and just call it hash partitioning instead.
+Unfortunately however, by using the hash of the key for partitioning we lose a nice
+property of key-range partitioning: the ability to do efficient range queries. Keys that
+were once adjacent are now scattered across all the partitions, so their sort order is
+lost. In MongoDB, if you have enabled hash-based sharding mode, any range query
+has to be sent to all partitions [ 4]. Range queries on the primary key are not sup‐
+ported by Riak [9], Couchbase [10], or Voldemort. 
+Cassandra achieves a compromise between the two partitioning strategies [ 11, 12,
+13]. A table in Cassandra can be declared with a compound primary key consisting of
+several columns. Only the first part of that key is hashed to determine the partition,
+but the other columns are used as a concatenated index for sorting the data in Cas‐
+sandra’s SSTables. A query therefore cannot search for a range of values within the
+204 | Chapter 6: Partitioning
+
+first column of a compound key, but if it specifies a fixed value for the first column, it
+can perform an efficient range scan over the other columns of the key. 
+The concatenated index approach enables an elegant data model for one-to-many
+relationships. For example, on a social media site, one user may post many updates. If
+the primary key for updates is chosen to be (user_id, update_timestamp), then you
+can efficiently retrieve all updates made by a particular user within some time inter‐
+val, sorted by timestamp. Different users may be stored on different partitions, but
+within each user, the updates are stored ordered by timestamp on a single partition. 
+Skewed Workloads and Relieving Hot Spots
+As discussed, hashing a key to determine its partition can help reduce hot spots.
+However, it can’t avoid them entirely: in the extreme case where all reads and writes
+are for the same key, you still end up with all requests being routed to the same parti‐
+tion.
+This kind of workload is perhaps unusual, but not unheard of: for example, on a
+social media site, a celebrity user with millions of followers may cause a storm of
+activity when they do something [ 14]. This event can result in a large volume of
+writes to the same key (where the key is perhaps the user ID of the celebrity, or the ID
+of the action that people are commenting on). Hashing the key doesn’t help, as the
+hash of two identical IDs is still the same.
+Today, most data systems are not able to automatically compensate for such a highly
+skewed workload, so it’s the responsibility of the application to reduce the skew. For
+example, if one key is known to be very hot, a simple technique is to add a random
+number to the beginning or end of the key. Just a two-digit decimal random number
+would split the writes to the key evenly across 100 different keys, allowing those keys
+to be distributed to different partitions.
+However, having split the writes across different keys, any reads now have to do addi‐
+tional work, as they have to read the data from all 100 keys and combine it. This tech‐
+nique also requires additional bookkeeping: it only makes sense to append the
+random number for the small number of hot keys; for the vast majority of keys with
+low write throughput this would be unnecessary overhead. Thus, you also need some
+way of keeping track of which keys are being split.
+Perhaps in the future, data systems will be able to automatically detect and compen‐
+sate for skewed workloads; but for now, you need to think through the trade-offs for
+your own application. 
+Partitioning of Key-Value Data | 205
+
+ii. If your database only supports a key-value model, you might be tempted to implement a secondary index
+yourself by creating a mapping from values to document IDs in application code. If you go down this route,
+you need to take great care to ensure your indexes remain consistent with the underlying data. Race condi‐
+tions and intermittent write failures (where some changes were saved but others weren’t) can very easily cause
+the data to go out of sync—see “The need for multi-object transactions” on page 231 .
+Partitioning and Secondary Indexes
+The partitioning schemes we have discussed so far rely on a key-value data model. If
+records are only ever accessed via their primary key, we can determine the partition
+from that key and use it to route read and write requests to the partition responsible
+for that key.
+The situation becomes more complicated if secondary indexes are involved (see also
+“Other Indexing Structures” on page 85). A secondary index usually doesn’t identify
+a record uniquely but rather is a way of searching for occurrences of a particular
+value: find all actions by user 123, find all articles containing the word hogwash, find
+all cars whose color is red, and so on.
+Secondary indexes are the bread and butter of relational databases, and they are com‐
+mon in document databases too. Many key-value stores (such as HBase and Volde‐
+mort) have avoided secondary indexes because of their added implementation
+complexity, but some (such as Riak) have started adding them because they are so
+useful for data modeling. And finally, secondary indexes are the raison d’être  of
+search servers such as Solr and Elasticsearch.
+The problem with secondary indexes is that they don’t map neatly to partitions.
+There are two main approaches to partitioning a database with secondary indexes:
+document-based partitioning and term-based partitioning.
+Partitioning Secondary Indexes by Document
+For example, imagine you are operating a website for selling used cars (illustrated in
+Figure 6-4). Each listing has a unique ID—call it the document ID—and you partition
+the database by the document ID (for example, IDs 0 to 499 in partition 0, IDs 500 to
+999 in partition 1, etc.).
+You want to let users search for cars, allowing them to filter by color and by make, so
+you need a secondary index on color and make (in a document database these would
+be fields; in a relational database they would be columns). If you have declared the
+index, the database can perform the indexing automatically. ii For example, whenever
+a red car is added to the database, the database partition automatically adds it to the
+list of document IDs for the index entry color:red.
+206 | Chapter 6: Partitioning
+
+Figure 6-4. Partitioning secondary indexes by document.
+In this indexing approach, each partition is completely separate: each partition main‐
+tains its own secondary indexes, covering only the documents in that partition. It
+doesn’t care what data is stored in other partitions. Whenever you need to write to
+the database—to add, remove, or update a document—you only need to deal with the
+partition that contains the document ID that you are writing. For that reason, a
+document-partitioned index is also known as a local index  (as opposed to a global
+index, described in the next section).
+However, reading from a document-partitioned index requires care: unless you have
+done something special with the document IDs, there is no reason why all the cars
+with a particular color or a particular make would be in the same partition. In
+Figure 6-4, red cars appear in both partition 0 and partition 1. Thus, if you want to
+search for red cars, you need to send the query to all partitions, and combine all the
+results you get back.
+This approach to querying a partitioned database is sometimes known as scatter/
+gather, and it can make read queries on secondary indexes quite expensive. Even if
+you query the partitions in parallel, scatter/gather is prone to tail latency amplifica‐
+tion (see “Percentiles in Practice” on page 16). Nevertheless, it is widely used: Mon‐
+goDB, Riak [15], Cassandra [16], Elasticsearch [17], SolrCloud [18], and VoltDB [19]
+all use document-partitioned secondary indexes. Most database vendors recommend
+that you structure your partitioning scheme so that secondary index queries can be
+served from a single partition, but that is not always possible, especially when you’re
+using multiple secondary indexes in a single query (such as filtering cars by color and
+by make at the same time).
+Partitioning and Secondary Indexes | 207
+
+Figure 6-5. Partitioning secondary indexes by term.
+Partitioning Secondary Indexes by Term
+Rather than each partition having its own secondary index (a local index ), we can
+construct a global index that covers data in all partitions. However, we can’t just store
+that index on one node, since it would likely become a bottleneck and defeat the pur‐
+pose of partitioning. A global index must also be partitioned, but it can be partitioned
+differently from the primary key index.
+Figure 6-5  illustrates what this could look like: red cars from all partitions appear
+under color:red in the index, but the index is partitioned so that colors starting with
+the letters a to r appear in partition 0 and colors starting with s to z appear in parti‐
+tion 1. The index on the make of car is partitioned similarly (with the partition
+boundary being between f and h).
+We call this kind of index term-partitioned, because the term we’re looking for deter‐
+mines the partition of the index. Here, a term would be color:red, for example. The
+name term comes from full-text indexes (a particular kind of secondary index), where
+the terms are all the words that occur in a document.
+As before, we can partition the index by the term itself, or using a hash of the term.
+Partitioning by the term itself can be useful for range scans (e.g., on a numeric prop‐
+erty, such as the asking price of the car), whereas partitioning on a hash of the term
+gives a more even distribution of load.
+The advantage of a global (term-partitioned) index over a document-partitioned
+index is that it can make reads more efficient: rather than doing scatter/gather over
+all partitions, a client only needs to make a request to the partition containing the
+term that it wants. However, the downside of a global index is that writes are slower
+and more complicated, because a write to a single document may now affect multiple
+208 | Chapter 6: Partitioning
+
+partitions of the index (every term in the document might be on a different partition,
+on a different node).
+In an ideal world, the index would always be up to date, and every document written
+to the database would immediately be reflected in the index. However, in a term-
+partitioned index, that would require a distributed transaction across all partitions
+affected by a write, which is not supported in all databases (see Chapter 7 and Chap‐
+ter 9).
+In practice, updates to global secondary indexes are often asynchronous (that is, if
+you read the index shortly after a write, the change you just made may not yet be
+reflected in the index). For example, Amazon DynamoDB states that its global secon‐
+dary indexes are updated within a fraction of a second in normal circumstances, but
+may experience longer propagation delays in cases of faults in the infrastructure [20].
+Other uses of global term-partitioned indexes include Riak’s search feature [ 21] and
+the Oracle data warehouse, which lets you choose between local and global indexing
+[22]. We will return to the topic of implementing term-partitioned secondary indexes
+in Chapter 12. 
+Rebalancing Partitions
+Over time, things change in a database:
+• The query throughput increases, so you want to add more CPUs to handle the
+load.
+• The dataset size increases, so you want to add more disks and RAM to store it.
+• A machine fails, and other machines need to take over the failed machine’s
+responsibilities.
+All of these changes call for data and requests to be moved from one node to another.
+The process of moving load from one node in the cluster to another is called reba‐
+lancing.
+No matter which partitioning scheme is used, rebalancing is usually expected to meet
+some minimum requirements:
+• After rebalancing, the load (data storage, read and write requests) should be
+shared fairly between the nodes in the cluster.
+• While rebalancing is happening, the database should continue accepting reads
+and writes.
+• No more data than necessary should be moved between nodes, to make rebalanc‐
+ing fast and to minimize the network and disk I/O load.
+Rebalancing Partitions | 209
+
+Strategies for Rebalancing
+There are a few different ways of assigning partitions to nodes [ 23]. Let’s briefly dis‐
+cuss each in turn.
+How not to do it: hash mod N
+When partitioning by the hash of a key, we said earlier ( Figure 6-3) that it’s best to
+divide the possible hashes into ranges and assign each range to a partition (e.g., assign
+key to partition 0 if 0 ≤ hash(key) < b0, to partition 1 if b0 ≤ hash(key) < b1, etc.).
+Perhaps you wondered why we don’t just use mod (the % operator in many program‐
+ming languages). For example, hash(key) mod 10 would return a number between 0
+and 9 (if we write the hash as a decimal number, the hash mod 10 would be the last
+digit). If we have 10 nodes, numbered 0 to 9, that seems like an easy way of assigning
+each key to a node.
+The problem with the mod N  approach is that if the number of nodes N changes,
+most of the keys will need to be moved from one node to another. For example, say
+hash(key) = 123456. If you initially have 10 nodes, that key starts out on node 6
+(because 123456 mod 10 = 6). When you grow to 11 nodes, the key needs to move to
+node 3 (123456 mod 11 = 3), and when you grow to 12 nodes, it needs to move to
+node 0 (123456 mod 12 = 0). Such frequent moves make rebalancing excessively
+expensive.
+We need an approach that doesn’t move data around more than necessary.
+Fixed number of partitions
+Fortunately, there is a fairly simple solution: create many more partitions than there
+are nodes, and assign several partitions to each node. For example, a database run‐
+ning on a cluster of 10 nodes may be split into 1,000 partitions from the outset so that
+approximately 100 partitions are assigned to each node.
+Now, if a node is added to the cluster, the new node can steal a few partitions from
+every existing node until partitions are fairly distributed once again. This process is
+illustrated in Figure 6-6. If a node is removed from the cluster, the same happens in
+reverse.
+Only entire partitions are moved between nodes. The number of partitions does not
+change, nor does the assignment of keys to partitions. The only thing that changes is
+the assignment of partitions to nodes. This change of assignment is not immediate—
+it takes some time to transfer a large amount of data over the network—so the old
+assignment of partitions is used for any reads and writes that happen while the trans‐
+fer is in progress.
+210 | Chapter 6: Partitioning
+
+Figure 6-6. Adding a new node to a database cluster with multiple partitions per node.
+In principle, you can even account for mismatched hardware in your cluster: by
+assigning more partitions to nodes that are more powerful, you can force those nodes
+to take a greater share of the load.
+This approach to rebalancing is used in Riak [15], Elasticsearch [24], Couchbase [10],
+and Voldemort [25].
+In this configuration, the number of partitions is usually fixed when the database is
+first set up and not changed afterward. Although in principle it’s possible to split and
+merge partitions (see the next section), a fixed number of partitions is operationally
+simpler, and so many fixed-partition databases choose not to implement partition
+splitting. Thus, the number of partitions configured at the outset is the maximum
+number of nodes you can have, so you need to choose it high enough to accommo‐
+date future growth. However, each partition also has management overhead, so it’s
+counterproductive to choose too high a number.
+Choosing the right number of partitions is difficult if the total size of the dataset is
+highly variable (for example, if it starts small but may grow much larger over time).
+Since each partition contains a fixed fraction of the total data, the size of each parti‐
+tion grows proportionally to the total amount of data in the cluster. If partitions are
+very large, rebalancing and recovery from node failures become expensive. But if par‐
+titions are too small, they incur too much overhead. The best performance is
+achieved when the size of partitions is “just right,” neither too big nor too small,
+which can be hard to achieve if the number of partitions is fixed but the dataset size
+varies.
+Rebalancing Partitions | 211
+
+Dynamic partitioning
+For databases that use key range partitioning (see “Partitioning by Key Range” on
+page 202), a fixed number of partitions with fixed boundaries would be very incon‐
+venient: if you got the boundaries wrong, you could end up with all of the data in one
+partition and all of the other partitions empty. Reconfiguring the partition bound‐
+aries manually would be very tedious.
+For that reason, key range–partitioned databases such as HBase and RethinkDB cre‐
+ate partitions dynamically. When a partition grows to exceed a configured size (on
+HBase, the default is 10 GB), it is split into two partitions so that approximately half
+of the data ends up on each side of the split [ 26]. Conversely, if lots of data is deleted
+and a partition shrinks below some threshold, it can be merged with an adjacent par‐
+tition. This process is similar to what happens at the top level of a B-tree (see “B-
+Trees” on page 79 ).
+Each partition is assigned to one node, and each node can handle multiple partitions,
+like in the case of a fixed number of partitions. After a large partition has been split,
+one of its two halves can be transferred to another node in order to balance the load.
+In the case of HBase, the transfer of partition files happens through HDFS, the
+underlying distributed filesystem [3].
+An advantage of dynamic partitioning is that the number of partitions adapts to the
+total data volume. If there is only a small amount of data, a small number of parti‐
+tions is sufficient, so overheads are small; if there is a huge amount of data, the size of
+each individual partition is limited to a configurable maximum [23].
+However, a caveat is that an empty database starts off with a single partition, since
+there is no a priori information about where to draw the partition boundaries. While
+the dataset is small—until it hits the point at which the first partition is split—all
+writes have to be processed by a single node while the other nodes sit idle. To miti‐
+gate this issue, HBase and MongoDB allow an initial set of partitions to be configured
+on an empty database (this is called pre-splitting). In the case of key-range partition‐
+ing, pre-splitting requires that you already know what the key distribution is going to
+look like [4, 26].
+Dynamic partitioning is not only suitable for key range–partitioned data, but can
+equally well be used with hash-partitioned data. MongoDB since version 2.4 supports
+both key-range and hash partitioning, and it splits partitions dynamically in either
+case.
+Partitioning proportionally to nodes
+With dynamic partitioning, the number of partitions is proportional to the size of the
+dataset, since the splitting and merging processes keep the size of each partition
+between some fixed minimum and maximum. On the other hand, with a fixed num‐
+212 | Chapter 6: Partitioning

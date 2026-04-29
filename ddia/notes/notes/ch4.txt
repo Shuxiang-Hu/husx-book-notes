@@ -1,0 +1,997 @@
+Figure 3-10. Storing relational data by column, rather than by row.
+The column-oriented storage layout relies on each column file containing the rows in
+the same order. Thus, if you need to reassemble an entire row, you can take the 23rd
+entry from each of the individual column files and put them together to form the
+23rd row of the table.
+Column Compression
+Besides only loading those columns from disk that are required for a query, we can
+further reduce the demands on disk throughput by compressing data. Fortunately,
+column-oriented storage often lends itself very well to compression.
+Take a look at the sequences of values for each column in Figure 3-10: they often look
+quite repetitive, which is a good sign for compression. Depending on the data in the
+column, different compression techniques can be used. One technique that is particu‐
+larly effective in data warehouses is bitmap encoding, illustrated in Figure 3-11.
+Column-Oriented Storage | 97
+
+Figure 3-11. Compressed, bitmap-indexed storage of a single column.
+Often, the number of distinct values in a column is small compared to the number of
+rows (for example, a retailer may have billions of sales transactions, but only 100,000
+distinct products). We can now take a column with n distinct values and turn it into
+n separate bitmaps: one bitmap for each distinct value, with one bit for each row. The
+bit is 1 if the row has that value, and 0 if not.
+If n is very small (for example, a country column may have approximately 200 dis‐
+tinct values), those bitmaps can be stored with one bit per row. But if n is bigger,
+there will be a lot of zeros in most of the bitmaps (we say that they are sparse). In that
+case, the bitmaps can additionally be run-length encoded, as shown at the bottom of
+Figure 3-11. This can make the encoding of a column remarkably compact.
+Bitmap indexes such as these are very well suited for the kinds of queries that are
+common in a data warehouse. For example:
+WHERE product_sk IN (30, 68, 69):
+Load the three bitmaps for product_sk = 30, product_sk = 68, and product_sk
+= 69, and calculate the bitwise OR of the three bitmaps, which can be done very
+efficiently.
+98 | Chapter 3: Storage and Retrieval
+
+WHERE product_sk = 31 AND store_sk = 3:
+Load the bitmaps for product_sk = 31 and store_sk = 3, and calculate the bit‐
+wise AND. This works because the columns contain the rows in the same order,
+so the kth bit in one column’s bitmap corresponds to the same row as the kth bit
+in another column’s bitmap.
+There are also various other compression schemes for different kinds of data, but we
+won’t go into them in detail—see [ 58] for an overview.
+Column-oriented storage and column families
+Cassandra and HBase have a concept of column families , which
+they inherited from Bigtable [ 9]. However, it is very misleading to
+call them column-oriented: within each column family, they store
+all columns from a row together, along with a row key, and they do
+not use column compression. Thus, the Bigtable model is still
+mostly row-oriented.
+Memory bandwidth and vectorized processing
+For data warehouse queries that need to scan over millions of rows, a big bottleneck
+is the bandwidth for getting data from disk into memory. However, that is not the
+only bottleneck. Developers of analytical databases also worry about efficiently using
+the bandwidth from main memory into the CPU cache, avoiding branch mispredic‐
+tions and bubbles in the CPU instruction processing pipeline, and making use of
+single-instruction-multi-data (SIMD) instructions in modern CPUs [59, 60].
+Besides reducing the volume of data that needs to be loaded from disk, column-
+oriented storage layouts are also good for making efficient use of CPU cycles. For
+example, the query engine can take a chunk of compressed column data that fits
+comfortably in the CPU’s L1 cache and iterate through it in a tight loop (that is, with
+no function calls). A CPU can execute such a loop much faster than code that
+requires a lot of function calls and conditions for each record that is processed. Col‐
+umn compression allows more rows from a column to fit in the same amount of L1
+cache. Operators, such as the bitwise AND and OR described previously, can be
+designed to operate on such chunks of compressed column data directly. This techni‐
+que is known as vectorized processing [58, 49]. 
+Sort Order in Column Storage
+In a column store, it doesn’t necessarily matter in which order the rows are stored.
+It’s easiest to store them in the order in which they were inserted, since then inserting
+a new row just means appending to each of the column files. However, we can choose
+to impose an order, like we did with SSTables previously, and use that as an indexing
+mechanism.
+Column-Oriented Storage | 99
+
+Note that it wouldn’t make sense to sort each column independently, because then
+we would no longer know which items in the columns belong to the same row. We
+can only reconstruct a row because we know that the kth item in one column belongs
+to the same row as the kth item in another column.
+Rather, the data needs to be sorted an entire row at a time, even though it is stored by
+column. The administrator of the database can choose the columns by which the
+table should be sorted, using their knowledge of common queries. For example, if
+queries often target date ranges, such as the last month, it might make sense to make
+date_key the first sort key. Then the query optimizer can scan only the rows from the
+last month, which will be much faster than scanning all rows.
+A second column can determine the sort order of any rows that have the same value
+in the first column. For example, if date_key is the first sort key in Figure 3-10 , it
+might make sense for product_sk to be the second sort key so that all sales for the
+same product on the same day are grouped together in storage. That will help queries
+that need to group or filter sales by product within a certain date range.
+Another advantage of sorted order is that it can help with compression of columns. If
+the primary sort column does not have many distinct values, then after sorting, it will
+have long sequences where the same value is repeated many times in a row. A simple
+run-length encoding, like we used for the bitmaps in Figure 3-11 , could compress
+that column down to a few kilobytes—even if the table has billions of rows.
+That compression effect is strongest on the first sort key. The second and third sort
+keys will be more jumbled up, and thus not have such long runs of repeated values.
+Columns further down the sorting priority appear in essentially random order, so
+they probably won’t compress as well. But having the first few columns sorted is still
+a win overall.
+Several different sort orders
+A clever extension of this idea was introduced in C-Store and adopted in the com‐
+mercial data warehouse Vertica [ 61, 62]. Different queries benefit from different sort
+orders, so why not store the same data sorted in several different ways? Data needs to
+be replicated to multiple machines anyway, so that you don’t lose data if one machine
+fails. You might as well store that redundant data sorted in different ways so that
+when you’re processing a query, you can use the version that best fits the query
+pattern.
+Having multiple sort orders in a column-oriented store is a bit similar to having mul‐
+tiple secondary indexes in a row-oriented store. But the big difference is that the row-
+oriented store keeps every row in one place (in the heap file or a clustered index), and
+secondary indexes just contain pointers to the matching rows. In a column store,
+there normally aren’t any pointers to data elsewhere, only columns containing values. 
+100 | Chapter 3: Storage and Retrieval
+
+Writing to Column-Oriented Storage
+These optimizations make sense in data warehouses, because most of the load con‐
+sists of large read-only queries run by analysts. Column-oriented storage, compres‐
+sion, and sorting all help to make those read queries faster. However, they have the
+downside of making writes more difficult.
+An update-in-place approach, like B-trees use, is not possible with compressed col‐
+umns. If you wanted to insert a row in the middle of a sorted table, you would most
+likely have to rewrite all the column files. As rows are identified by their position
+within a column, the insertion has to update all columns consistently.
+Fortunately, we have already seen a good solution earlier in this chapter: LSM-trees.
+All writes first go to an in-memory store, where they are added to a sorted structure
+and prepared for writing to disk. It doesn’t matter whether the in-memory store is
+row-oriented or column-oriented. When enough writes have accumulated, they are
+merged with the column files on disk and written to new files in bulk. This is essen‐
+tially what Vertica does [62].
+Queries need to examine both the column data on disk and the recent writes in mem‐
+ory, and combine the two. However, the query optimizer hides this distinction from
+the user. From an analyst’s point of view, data that has been modified with inserts,
+updates, or deletes is immediately reflected in subsequent queries. 
+Aggregation: Data Cubes and Materialized Views
+Not every data warehouse is necessarily a column store: traditional row-oriented
+databases and a few other architectures are also used. However, columnar storage can
+be significantly faster for ad hoc analytical queries, so it is rapidly gaining popularity
+[51, 63].
+Another aspect of data warehouses that is worth mentioning briefly is materialized
+aggregates. As discussed earlier, data warehouse queries often involve an aggregate
+function, such as COUNT, SUM, AVG, MIN, or MAX in SQL. If the same aggregates are used
+by many different queries, it can be wasteful to crunch through the raw data every
+time. Why not cache some of the counts or sums that queries use most often?
+One way of creating such a cache is a materialized view. In a relational data model, it
+is often defined like a standard (virtual) view: a table-like object whose contents are
+the results of some query. The difference is that a materialized view is an actual copy
+of the query results, written to disk, whereas a virtual view is just a shortcut for writ‐
+ing queries. When you read from a virtual view, the SQL engine expands it into the
+view’s underlying query on the fly and then processes the expanded query.
+When the underlying data changes, a materialized view needs to be updated, because
+it is a denormalized copy of the data. The database can do that automatically, but
+Column-Oriented Storage | 101
+
+such updates make writes more expensive, which is why materialized views are not
+often used in OLTP databases. In read-heavy data warehouses they can make more
+sense (whether or not they actually improve read performance depends on the indi‐
+vidual case).
+A common special case of a materialized view is known as a data cube or OLAP cube
+[64]. It is a grid of aggregates grouped by different dimensions. Figure 3-12 shows an
+example.
+Figure 3-12. Two dimensions of a data cube, aggregating data by summing.
+Imagine for now that each fact has foreign keys to only two dimension tables—in
+Figure 3-12, these are date and product. You can now draw a two-dimensional table,
+with dates along one axis and products along the other. Each cell contains the aggre‐
+gate (e.g., SUM) of an attribute (e.g., net_price) of all facts with that date-product
+combination. Then you can apply the same aggregate along each row or column and
+get a summary that has been reduced by one dimension (the sales by product regard‐
+less of date, or the sales by date regardless of product).
+In general, facts often have more than two dimensions. In Figure 3-9 there are five
+dimensions: date, product, store, promotion, and customer. It’s a lot harder to imag‐
+ine what a five-dimensional hypercube would look like, but the principle remains the
+same: each cell contains the sales for a particular date-product-store-promotion-
+customer combination. These values can then repeatedly be summarized along each
+of the dimensions.
+The advantage of a materialized data cube is that certain queries become very fast
+because they have effectively been precomputed. For example, if you want to know
+102 | Chapter 3: Storage and Retrieval
+
+the total sales per store yesterday, you just need to look at the totals along the appro‐
+priate dimension—no need to scan millions of rows.
+The disadvantage is that a data cube doesn’t have the same flexibility as querying the
+raw data. For example, there is no way of calculating which proportion of sales comes
+from items that cost more than $100, because the price isn’t one of the dimensions.
+Most data warehouses therefore try to keep as much raw data as possible, and use
+aggregates such as data cubes only as a performance boost for certain queries.
+Summary
+In this chapter we tried to get to the bottom of how databases handle storage and
+retrieval. What happens when you store data in a database, and what does the data‐
+base do when you query for the data again later?
+On a high level, we saw that storage engines fall into two broad categories: those opti‐
+mized for transaction processing (OLTP), and those optimized for analytics (OLAP).
+There are big differences between the access patterns in those use cases:
+• OLTP systems are typically user-facing, which means that they may see a huge
+volume of requests. In order to handle the load, applications usually only touch a
+small number of records in each query. The application requests records using
+some kind of key, and the storage engine uses an index to find the data for the
+requested key. Disk seek time is often the bottleneck here.
+• Data warehouses and similar analytic systems are less well known, because they
+are primarily used by business analysts, not by end users. They handle a much
+lower volume of queries than OLTP systems, but each query is typically very
+demanding, requiring many millions of records to be scanned in a short time.
+Disk bandwidth (not seek time) is often the bottleneck here, and column-
+oriented storage is an increasingly popular solution for this kind of workload.
+On the OLTP side, we saw storage engines from two main schools of thought:
+• The log-structured school, which only permits appending to files and deleting
+obsolete files, but never updates a file that has been written. Bitcask, SSTables,
+LSM-trees, LevelDB, Cassandra, HBase, Lucene, and others belong to this group.
+• The update-in-place school, which treats the disk as a set of fixed-size pages that
+can be overwritten. B-trees are the biggest example of this philosophy, being used
+in all major relational databases and also many nonrelational ones.
+Log-structured storage engines are a comparatively recent development. Their key
+idea is that they systematically turn random-access writes into sequential writes on
+disk, which enables higher write throughput due to the performance characteristics
+of hard drives and SSDs.
+Summary | 103
+
+Finishing off the OLTP side, we did a brief tour through some more complicated
+indexing structures, and databases that are optimized for keeping all data in memory.
+We then took a detour from the internals of storage engines to look at the high-level
+architecture of a typical data warehouse. This background illustrated why analytic
+workloads are so different from OLTP: when your queries require sequentially scan‐
+ning across a large number of rows, indexes are much less relevant. Instead it
+becomes important to encode data very compactly, to minimize the amount of data
+that the query needs to read from disk. We discussed how column-oriented storage
+helps achieve this goal.
+As an application developer, if you’re armed with this knowledge about the internals
+of storage engines, you are in a much better position to know which tool is best suited
+for your particular application. If you need to adjust a database’s tuning parameters,
+this understanding allows you to imagine what effect a higher or a lower value may
+have.
+Although this chapter couldn’t make you an expert in tuning any one particular stor‐
+age engine, it has hopefully equipped you with enough vocabulary and ideas that you
+can make sense of the documentation for the database of your choice. 
+References
+[1] Alfred V. Aho, John E. Hopcroft, and Jeffrey D. Ullman: Data Structures and
+Algorithms. Addison-Wesley, 1983. ISBN: 978-0-201-00023-8
+[2] Thomas H. Cormen, Charles E. Leiserson, Ronald L. Rivest, and Clifford Stein:
+Introduction to Algorithms, 3rd edition. MIT Press, 2009. ISBN: 978-0-262-53305-8
+[3] Justin Sheehy and David Smith: “ Bitcask: A Log-Structured Hash Table for Fast
+Key/Value Data,” Basho Technologies, April 2010.
+[4] Yinan Li, Bingsheng He, Robin Jun Yang, et al.: “ Tree Indexing on Solid State
+Drives,” Proceedings of the VLDB Endowment, volume 3, number 1, pages 1195–1206,
+September 2010.
+[5] Goetz Graefe: “ Modern B-Tree Techniques ,” Foundations and Trends in Data‐
+bases, volume 3, number 4, pages 203–402, August 2011. doi:10.1561/1900000028
+[6] Jeffrey Dean and Sanjay Ghemawat: “ LevelDB Implementation Notes ,” lev‐
+eldb.googlecode.com.
+[7] Dhruba Borthakur: “ The History of RocksDB ,” rocksdb.blogspot.com, November
+24, 2013.
+[8] Matteo Bertozzi: “ Apache HBase I/O – HFile ,” blog.cloudera.com, June, 29 2012.
+104 | Chapter 3: Storage and Retrieval
+
+[9] Fay Chang, Jeffrey Dean, Sanjay Ghemawat, et al.: “ Bigtable: A Distributed Stor‐
+age System for Structured Data ,” at 7th USENIX Symposium on Operating System
+Design and Implementation (OSDI), November 2006.
+[10] Patrick O’Neil, Edward Cheng, Dieter Gawlick, and Elizabeth O’Neil: “ The Log-
+Structured Merge-Tree (LSM-Tree) ,” Acta Informatica, volume 33, number 4, pages
+351–385, June 1996. doi:10.1007/s002360050048
+[11] Mendel Rosenblum and John K. Ousterhout: “ The Design and Implementation
+of a Log-Structured File System ,” ACM Transactions on Computer Systems , volume
+10, number 1, pages 26–52, February 1992. doi:10.1145/146941.146943
+[12] Adrien Grand: “ What Is in a Lucene Index?,” at Lucene/Solr Revolution, Novem‐
+ber 14, 2013.
+[13] Deepak Kandepet: “ Hacking Lucene—The Index Format ,” hackerlabs.org, Octo‐
+ber 1, 2011.
+[14] Michael McCandless: “ Visualizing Lucene’s Segment Merges ,” blog.mikemccand‐
+less.com, February 11, 2011.
+[15] Burton H. Bloom: “ Space/Time Trade-offs in Hash Coding with Allowable
+Errors,” Communications of the ACM , volume 13, number 7, pages 422–426, July
+1970. doi:10.1145/362686.362692
+[16] “ Operating Cassandra: Compaction ,” Apache Cassandra Documentation v4.0,
+2016.
+[17] Rudolf Bayer and Edward M. McCreight: “ Organization and Maintenance of
+Large Ordered Indices ,” Boeing Scientific Research Laboratories, Mathematical and
+Information Sciences Laboratory, report no. 20, July 1970.
+[18] Douglas Comer: “ The Ubiquitous B-Tree,” ACM Computing Surveys, volume 11,
+number 2, pages 121–137, June 1979. doi:10.1145/356770.356776
+[19] Emmanuel Goossaert: “ Coding for SSDs,” codecapsule.com, February 12, 2014.
+[20] C. Mohan and Frank Levine: “ ARIES/IM: An Efficient and High Concurrency
+Index Management Method Using Write-Ahead Logging ,” at ACM International
+Conference on Management of Data  (SIGMOD), June 1992. doi:
+10.1145/130283.130338
+[21] Howard Chu: “ LDAP at Lightning Speed,” at Build Stuff ’14 , November 2014.
+[22] Bradley C. Kuszmaul: “ A Comparison of Fractal Trees to Log-Structured Merge
+(LSM) Trees,” tokutek.com, April 22, 2014.
+[23] Manos Athanassoulis, Michael S. Kester, Lukas M. Maas, et al.: “ Designing
+Access Methods: The RUM Conjecture ,” at 19th International Conference on Extend‐
+ing Database Technology (EDBT), March 2016. doi:10.5441/002/edbt.2016.42
+Summary | 105
+
+[24] Peter Zaitsev: “ Innodb Double Write,” percona.com, August 4, 2006.
+[25] Tomas Vondra: “ On the Impact of Full-Page Writes ,” blog.2ndquadrant.com,
+November 23, 2016.
+[26] Mark Callaghan: “ The Advantages of an LSM vs a B-Tree ,” smalldatum.blog‐
+spot.co.uk, January 19, 2016.
+[27] Mark Callaghan: “ Choosing Between Efficiency and Performance with
+RocksDB,” at Code Mesh, November 4, 2016.
+[28] Michi Mutsuzaki: “ MySQL vs. LevelDB,” github.com, August 2011.
+[29] Benjamin Coverston, Jonathan Ellis, et al.: “ CASSANDRA-1608: Redesigned
+Compaction, issues.apache.org, July 2011.
+[30] Igor Canadi, Siying Dong, and Mark Callaghan: “ RocksDB Tuning Guide ,” git‐
+hub.com, 2016.
+[31] MySQL 5.7 Reference Manual. Oracle, 2014.
+[32] Books Online for SQL Server 2012. Microsoft, 2012.
+[33] Joe Webb: “ Using Covering Indexes to Improve Query Performance ,” simple-
+talk.com, 29 September 2008.
+[34] Frank Ramsak, Volker Markl, Robert Fenk, et al.: “ Integrating the UB-Tree into
+a Database System Kernel ,” at 26th International Conference on Very Large Data
+Bases (VLDB), September 2000.
+[35] The PostGIS Development Group: “ PostGIS 2.1.2dev Manual,” postgis.net, 2014.
+[36] Robert Escriva, Bernard Wong, and Emin Gün Sirer: “ HyperDex: A Distributed,
+Searchable Key-Value Store ,” at ACM SIGCOMM Conference , August 2012. doi:
+10.1145/2377677.2377681
+[37] Michael McCandless: “ Lucene’s FuzzyQuery Is 100 Times Faster in 4.0 ,”
+blog.mikemccandless.com, March 24, 2011.
+[38] Steffen Heinz, Justin Zobel, and Hugh E. Williams: “ Burst Tries: A Fast, Efficient
+Data Structure for String Keys ,” ACM Transactions on Information Systems , volume
+20, number 2, pages 192–223, April 2002. doi:10.1145/506309.506312
+[39] Klaus U. Schulz and Stoyan Mihov: “ Fast String Correction with Levenshtein
+Automata,” International Journal on Document Analysis and Recognition , volume 5,
+number 1, pages 67–85, November 2002. doi:10.1007/s10032-002-0082-8
+[40] Christopher D. Manning, Prabhakar Raghavan, and Hinrich Schütze: Introduc‐
+tion to Information Retrieval . Cambridge University Press, 2008. ISBN:
+978-0-521-86571-5, available online at nlp.stanford.edu/IR-book
+106 | Chapter 3: Storage and Retrieval
+
+[41] Michael Stonebraker, Samuel Madden, Daniel J. Abadi, et al.: “ The End of an
+Architectural Era (It’s Time for a Complete Rewrite) ,” at 33rd International Confer‐
+ence on Very Large Data Bases (VLDB), September 2007.
+[42] “ VoltDB Technical Overview White Paper,” VoltDB, 2014.
+[43] Stephen M. Rumble, Ankita Kejriwal, and John K. Ousterhout: “ Log-Structured
+Memory for DRAM-Based Storage ,” at 12th USENIX Conference on File and Storage
+Technologies (FAST), February 2014.
+[44] Stavros Harizopoulos, Daniel J. Abadi, Samuel Madden, and Michael Stone‐
+braker: “ OLTP Through the Looking Glass, and What We Found There ,” at ACM
+International Conference on Management of Data  (SIGMOD), June 2008. doi:
+10.1145/1376616.1376713
+[45] Justin DeBrabant, Andrew Pavlo, Stephen Tu, et al.: “ Anti-Caching: A New
+Approach to Database Management System Architecture ,” Proceedings of the VLDB
+Endowment, volume 6, number 14, pages 1942–1953, September 2013.
+[46] Joy Arulraj, Andrew Pavlo, and Subramanya R. Dulloor: “ Let’s Talk About Stor‐
+age & Recovery Methods for Non-Volatile Memory Database Systems ,” at ACM
+International Conference on Management of Data  (SIGMOD), June 2015. doi:
+10.1145/2723372.2749441
+[47] Edgar F. Codd, S. B. Codd, and C. T. Salley: “ Providing OLAP to User-Analysts:
+An IT Mandate,” E. F. Codd Associates, 1993.
+[48] Surajit Chaudhuri and Umeshwar Dayal: “ An Overview of Data Warehousing
+and OLAP Technology,” ACM SIGMOD Record, volume 26, number 1, pages 65–74,
+March 1997. doi:10.1145/248603.248616
+[49] Per-Åke Larson, Cipri Clinciu, Campbell Fraser, et al.: “ Enhancements to SQL
+Server Column Stores ,” at ACM International Conference on Management of Data
+(SIGMOD), June 2013.
+[50] Franz Färber, Norman May, Wolfgang Lehner, et al.: “ The SAP HANA Database
+– An Architecture Overview ,” IEEE Data Engineering Bulletin, volume 35, number 1,
+pages 28–33, March 2012.
+[51] Michael Stonebraker: “ The Traditional RDBMS Wisdom Is (Almost Certainly)
+All Wrong,” presentation at EPFL, May 2013.
+[52] Daniel J. Abadi: “ Classifying the SQL-on-Hadoop Solutions,” hadapt.com, Octo‐
+ber 2, 2013.
+[53] Marcel Kornacker, Alexander Behm, Victor Bittorf, et al.: “ Impala: A Modern,
+Open-Source SQL Engine for Hadoop ,” at 7th Biennial Conference on Innovative
+Data Systems Research (CIDR), January 2015.
+Summary | 107
+
+[54] Sergey Melnik, Andrey Gubarev, Jing Jing Long, et al.: “ Dremel: Interactive
+Analysis of Web-Scale Datasets,” at 36th International Conference on Very Large Data
+Bases (VLDB), pages 330–339, September 2010.
+[55] Ralph Kimball and Margy Ross: The Data Warehouse Toolkit: The Definitive
+Guide to Dimensional Modeling , 3rd edition. John Wiley & Sons, July 2013. ISBN:
+978-1-118-53080-1
+[56] Derrick Harris: “ Why Apple, eBay, and Walmart Have Some of the Biggest Data
+Warehouses You’ve Ever Seen ,” gigaom.com, March 27, 2013.
+[57] Julien Le Dem: “ Dremel Made Simple with Parquet ,” blog.twitter.com, Septem‐
+ber 11, 2013.
+[58] Daniel J. Abadi, Peter Boncz, Stavros Harizopoulos, et al.: “ The Design and
+Implementation of Modern Column-Oriented Database Systems ,” Foundations and
+Trends in Databases , volume 5, number 3, pages 197–280, December 2013. doi:
+10.1561/1900000024
+[59] Peter Boncz, Marcin Zukowski, and Niels Nes: “ MonetDB/X100: Hyper-
+Pipelining Query Execution,” at 2nd Biennial Conference on Innovative Data Systems
+Research (CIDR), January 2005.
+[60] Jingren Zhou and Kenneth A. Ross: “ Implementing Database Operations Using
+SIMD Instructions,” at ACM International Conference on Management of Data  (SIG‐
+MOD), pages 145–156, June 2002. doi:10.1145/564691.564709
+[61] Michael Stonebraker, Daniel J. Abadi, Adam Batkin, et al.: “ C-Store: A Column-
+oriented DBMS,” at 31st International Conference on Very Large Data Bases  (VLDB),
+pages 553–564, September 2005.
+[62] Andrew Lamb, Matt Fuller, Ramakrishna Varadarajan, et al.: “ The Vertica Ana‐
+lytic Database: C-Store 7 Years Later ,” Proceedings of the VLDB Endowment , volume
+5, number 12, pages 1790–1801, August 2012.
+[63] Julien Le Dem and Nong Li: “ Efficient Data Storage for Analytics with Apache
+Parquet 2.0,” at Hadoop Summit, San Jose, June 2014.
+[64] Jim Gray, Surajit Chaudhuri, Adam Bosworth, et al.: “ Data Cube: A Relational
+Aggregation Operator Generalizing Group-By, Cross-Tab, and Sub-Totals ,” Data
+Mining and Knowledge Discovery , volume 1, number 1, pages 29–53, March 2007.
+doi:10.1023/A:1009726021843
+108 | Chapter 3: Storage and Retrieval
+
+CHAPTER 4
+Encoding and Evolution
+Everything changes and nothing stands still.
+—Heraclitus of Ephesus, as quoted by Plato in Cratylus (360 BCE)
+Applications inevitably change over time. Features are added or modified as new
+products are launched, user requirements become better understood, or business cir‐
+cumstances change. In Chapter 1 we introduced the idea of evolvability: we should
+aim to build systems that make it easy to adapt to change (see “Evolvability: Making
+Change Easy” on page 21 ).
+In most cases, a change to an application’s features also requires a change to data that
+it stores: perhaps a new field or record type needs to be captured, or perhaps existing
+data needs to be presented in a new way.
+The data models we discussed in Chapter 2 have different ways of coping with such
+change. Relational databases generally assume that all data in the database conforms
+to one schema: although that schema can be changed (through schema migrations;
+i.e., ALTER statements), there is exactly one schema in force at any one point in time.
+By contrast, schema-on-read (“schemaless”) databases don’t enforce a schema, so the
+database can contain a mixture of older and newer data formats written at different
+times (see “Schema flexibility in the document model” on page 39 ).
+When a data format or schema changes, a corresponding change to application code
+often needs to happen (for example, you add a new field to a record, and the applica‐
+tion code starts reading and writing that field). However, in a large application, code
+changes often cannot happen instantaneously:
+111
+
+• With server-side applications you may want to perform a rolling upgrade  (also
+known as a staged rollout), deploying the new version to a few nodes at a time,
+checking whether the new version is running smoothly, and gradually working
+your way through all the nodes. This allows new versions to be deployed without
+service downtime, and thus encourages more frequent releases and better evolva‐
+bility.
+• With client-side applications you’re at the mercy of the user, who may not install
+the update for some time.
+This means that old and new versions of the code, and old and new data formats,
+may potentially all coexist in the system at the same time. In order for the system to
+continue running smoothly, we need to maintain compatibility in both directions:
+Backward compatibility
+Newer code can read data that was written by older code.
+Forward compatibility
+Older code can read data that was written by newer code.
+Backward compatibility is normally not hard to achieve: as author of the newer code,
+you know the format of data written by older code, and so you can explicitly handle it
+(if necessary by simply keeping the old code to read the old data). Forward compati‐
+bility can be trickier, because it requires older code to ignore additions made by a
+newer version of the code.
+In this chapter we will look at several formats for encoding data, including JSON,
+XML, Protocol Buffers, Thrift, and Avro. In particular, we will look at how they han‐
+dle schema changes and how they support systems where old and new data and code
+need to coexist. We will then discuss how those formats are used for data storage and
+for communication: in web services, Representational State Transfer (REST), and
+remote procedure calls (RPC), as well as message-passing systems such as actors and
+message queues.
+Formats for Encoding Data
+Programs usually work with data in (at least) two different representations:
+1. In memory, data is kept in objects, structs, lists, arrays, hash tables, trees, and so
+on. These data structures are optimized for efficient access and manipulation by
+the CPU (typically using pointers).
+2. When you want to write data to a file or send it over the network, you have to
+encode it as some kind of self-contained sequence of bytes (for example, a JSON
+document). Since a pointer wouldn’t make sense to any other process, this
+112 | Chapter 4: Encoding and Evolution
+
+i. With the exception of some special cases, such as certain memory-mapped files or when operating directly
+on compressed data (as described in “Column Compression” on page 97 ).
+ii. Note that encoding has nothing to do with encryption. We don’t discuss encryption in this book.
+sequence-of-bytes representation looks quite different from the data structures
+that are normally used in memory.i
+Thus, we need some kind of translation between the two representations. The trans‐
+lation from the in-memory representation to a byte sequence is called encoding (also
+known as serialization or marshalling), and the reverse is called decoding (parsing,
+deserialization, unmarshalling).ii
+Terminology clash
+Serialization is unfortunately also used in the context of transac‐
+tions (see Chapter 7 ), with a completely different meaning. To
+avoid overloading the word we’ll stick with encoding in this book,
+even though serialization is perhaps a more common term.
+As this is such a common problem, there are a myriad different libraries and encod‐
+ing formats to choose from. Let’s do a brief overview.
+Language-Specific Formats
+Many programming languages come with built-in support for encoding in-memory
+objects into byte sequences. For example, Java has java.io.Serializable [1], Ruby
+has Marshal [2], Python has pickle [3], and so on. Many third-party libraries also
+exist, such as Kryo for Java [4].
+These encoding libraries are very convenient, because they allow in-memory objects
+to be saved and restored with minimal additional code. However, they also have a
+number of deep problems:
+• The encoding is often tied to a particular programming language, and reading
+the data in another language is very difficult. If you store or transmit data in such
+an encoding, you are committing yourself to your current programming lan‐
+guage for potentially a very long time, and precluding integrating your systems
+with those of other organizations (which may use different languages).
+• In order to restore data in the same object types, the decoding process needs to
+be able to instantiate arbitrary classes. This is frequently a source of security
+problems [5]: if an attacker can get your application to decode an arbitrary byte
+sequence, they can instantiate arbitrary classes, which in turn often allows them
+to do terrible things such as remotely executing arbitrary code [6, 7].
+Formats for Encoding Data | 113
+
+• Versioning data is often an afterthought in these libraries: as they are intended
+for quick and easy encoding of data, they often neglect the inconvenient prob‐
+lems of forward and backward compatibility.
+• Efficiency (CPU time taken to encode or decode, and the size of the encoded
+structure) is also often an afterthought. For example, Java’s built-in serialization
+is notorious for its bad performance and bloated encoding [8].
+For these reasons it’s generally a bad idea to use your language’s built-in encoding for
+anything other than very transient purposes.
+JSON, XML, and Binary Variants
+Moving to standardized encodings that can be written and read by many program‐
+ming languages, JSON and XML are the obvious contenders. They are widely known,
+widely supported, and almost as widely disliked. XML is often criticized for being too
+verbose and unnecessarily complicated [ 9]. JSON’s popularity is mainly due to its
+built-in support in web browsers (by virtue of being a subset of JavaScript) and sim‐
+plicity relative to XML. CSV is another popular language-independent format, albeit
+less powerful.
+JSON, XML, and CSV are textual formats, and thus somewhat human-readable
+(although the syntax is a popular topic of debate). Besides the superficial syntactic
+issues, they also have some subtle problems:
+• There is a lot of ambiguity around the encoding of numbers. In XML and CSV,
+you cannot distinguish between a number and a string that happens to consist of
+digits (except by referring to an external schema). JSON distinguishes strings and
+numbers, but it doesn’t distinguish integers and floating-point numbers, and it
+doesn’t specify a precision.
+This is a problem when dealing with large numbers; for example, integers greater
+than 253 cannot be exactly represented in an IEEE 754 double-precision floating-
+point number, so such numbers become inaccurate when parsed in a language
+that uses floating-point numbers (such as JavaScript). An example of numbers
+larger than 2 53 occurs on Twitter, which uses a 64-bit number to identify each
+tweet. The JSON returned by Twitter’s API includes tweet IDs twice, once as a
+JSON number and once as a decimal string, to work around the fact that the
+numbers are not correctly parsed by JavaScript applications [10].
+• JSON and XML have good support for Unicode character strings (i.e., human-
+readable text), but they don’t support binary strings (sequences of bytes without
+a character encoding). Binary strings are a useful feature, so people get around
+this limitation by encoding the binary data as text using Base64. The schema is
+then used to indicate that the value should be interpreted as Base64-encoded.
+This works, but it’s somewhat hacky and increases the data size by 33%.
+114 | Chapter 4: Encoding and Evolution
+
+• There is optional schema support for both XML [ 11] and JSON [ 12]. These
+schema languages are quite powerful, and thus quite complicated to learn and
+implement. Use of XML schemas is fairly widespread, but many JSON-based
+tools don’t bother using schemas. Since the correct interpretation of data (such
+as numbers and binary strings) depends on information in the schema, applica‐
+tions that don’t use XML/JSON schemas need to potentially hardcode the appro‐
+priate encoding/decoding logic instead.
+• CSV does not have any schema, so it is up to the application to define the mean‐
+ing of each row and column. If an application change adds a new row or column,
+you have to handle that change manually. CSV is also a quite vague format (what
+happens if a value contains a comma or a newline character?). Although its
+escaping rules have been formally specified [ 13], not all parsers implement them
+correctly.
+Despite these flaws, JSON, XML, and CSV are good enough for many purposes. It’s
+likely that they will remain popular, especially as data interchange formats (i.e., for
+sending data from one organization to another). In these situations, as long as people
+agree on what the format is, it often doesn’t matter how pretty or efficient the format
+is. The difficulty of getting different organizations to agree on anything outweighs
+most other concerns.
+Binary encoding
+For data that is used only internally within your organization, there is less pressure to
+use a lowest-common-denominator encoding format. For example, you could choose
+a format that is more compact or faster to parse. For a small dataset, the gains are
+negligible, but once you get into the terabytes, the choice of data format can have a
+big impact.
+JSON is less verbose than XML, but both still use a lot of space compared to binary
+formats. This observation led to the development of a profusion of binary encodings
+for JSON (MessagePack, BSON, BJSON, UBJSON, BISON, and Smile, to name a few)
+and for XML (WBXML and Fast Infoset, for example). These formats have been
+adopted in various niches, but none of them are as widely adopted as the textual ver‐
+sions of JSON and XML.
+Some of these formats extend the set of datatypes (e.g., distinguishing integers and
+floating-point numbers, or adding support for binary strings), but otherwise they
+keep the JSON/XML data model unchanged. In particular, since they don’t prescribe
+a schema, they need to include all the object field names within the encoded data.
+That is, in a binary encoding of the JSON document in Example 4-1, they will need to
+include the strings userName, favoriteNumber, and interests somewhere.
+Formats for Encoding Data | 115
+
+Example 4-1. Example record which we will encode in several binary formats in this
+chapter
+{
+    "userName": "Martin",
+    "favoriteNumber": 1337,
+    "interests": ["daydreaming", "hacking"]
+}
+Let’s look at an example of MessagePack, a binary encoding for JSON. Figure 4-1
+shows the byte sequence that you get if you encode the JSON document in
+Example 4-1 with MessagePack [14]. The first few bytes are as follows:
+1. The first byte, 0x83, indicates that what follows is an object (top four bits = 0x80)
+with three fields (bottom four bits = 0x03). (In case you’re wondering what hap‐
+pens if an object has more than 15 fields, so that the number of fields doesn’t fit
+in four bits, it then gets a different type indicator, and the number of fields is
+encoded in two or four bytes.)
+2. The second byte, 0xa8, indicates that what follows is a string (top four bits =
+0xa0) that is eight bytes long (bottom four bits = 0x08).
+3. The next eight bytes are the field name userName in ASCII. Since the length was
+indicated previously, there’s no need for any marker to tell us where the string
+ends (or any escaping).
+4. The next seven bytes encode the six-letter string value Martin with a prefix 0xa6,
+and so on.
+The binary encoding is 66 bytes long, which is only a little less than the 81 bytes taken
+by the textual JSON encoding (with whitespace removed). All the binary encodings of
+JSON are similar in this regard. It’s not clear whether such a small space reduction
+(and perhaps a speedup in parsing) is worth the loss of human-readability.
+In the following sections we will see how we can do much better, and encode the
+same record in just 32 bytes.
+116 | Chapter 4: Encoding and Evolution
+
+Figure 4-1. Example record (Example 4-1) encoded using MessagePack.
+Thrift and Protocol Buffers
+Apache Thrift [15] and Protocol Buffers (protobuf) [16] are binary encoding libraries
+that are based on the same principle. Protocol Buffers was originally developed at
+Google, Thrift was originally developed at Facebook, and both were made open
+source in 2007–08 [ 17].
+Both Thrift and Protocol Buffers require a schema for any data that is encoded. To
+encode the data in Example 4-1  in Thrift, you would describe the schema in the
+Thrift interface definition language (IDL) like this:
+struct Person {
+  1: required string       userName,
+  2: optional i64          favoriteNumber,
+  3: optional list<string> interests
+}
+Formats for Encoding Data | 117
+
+iii. Actually, it has three—BinaryProtocol, CompactProtocol, and DenseProtocol—although DenseProtocol
+is only supported by the C++ implementation, so it doesn’t count as cross-language [ 18]. Besides those, it also
+has two different JSON-based encoding formats [19]. What fun!
+The equivalent schema definition for Protocol Buffers looks very similar:
+message Person {
+    required string user_name       = 1;
+    optional int64  favorite_number = 2;
+    repeated string interests       = 3;
+}
+Thrift and Protocol Buffers each come with a code generation tool that takes a
+schema definition like the ones shown here, and produces classes that implement the
+schema in various programming languages [ 18]. Your application code can call this
+generated code to encode or decode records of the schema.
+What does data encoded with this schema look like? Confusingly, Thrift has two dif‐
+ferent binary encoding formats, iii called BinaryProtocol and CompactProtocol, respec‐
+tively. Let’s look at BinaryProtocol first. Encoding Example 4-1 in that format takes
+59 bytes, as shown in Figure 4-2 [19].
+Figure 4-2. Example record encoded using Thrift’s BinaryProtocol.
+118 | Chapter 4: Encoding and Evolution
+
+Similarly to Figure 4-1, each field has a type annotation (to indicate whether it is a
+string, integer, list, etc.) and, where required, a length indication (length of a string,
+number of items in a list). The strings that appear in the data (“Martin”, “daydream‐
+ing”, “hacking”) are also encoded as ASCII (or rather, UTF-8), similar to before.
+The big difference compared to Figure 4-1 is that there are no field names (userName,
+favoriteNumber, interests). Instead, the encoded data contains field tags, which are
+numbers (1, 2, and 3). Those are the numbers that appear in the schema definition.
+Field tags are like aliases for fields—they are a compact way of saying what field we’re
+talking about, without having to spell out the field name.
+The Thrift CompactProtocol encoding is semantically equivalent to BinaryProtocol,
+but as you can see in Figure 4-3, it packs the same information into only 34 bytes. It
+does this by packing the field type and tag number into a single byte, and by using
+variable-length integers. Rather than using a full eight bytes for the number 1337, it is
+encoded in two bytes, with the top bit of each byte used to indicate whether there are
+still more bytes to come. This means numbers between –64 and 63 are encoded in
+one byte, numbers between –8192 and 8191 are encoded in two bytes, etc. Bigger
+numbers use more bytes.
+Figure 4-3. Example record encoded using Thrift’s CompactProtocol.
+Finally, Protocol Buffers (which has only one binary encoding format) encodes the
+same data as shown in Figure 4-4. It does the bit packing slightly differently, but is
+Formats for Encoding Data | 119
+
+otherwise very similar to Thrift’s CompactProtocol. Protocol Buffers fits the same
+record in 33 bytes.
+Figure 4-4. Example record encoded using Protocol Buffers.
+One detail to note: in the schemas shown earlier, each field was marked either
+required or optional, but this makes no difference to how the field is encoded
+(nothing in the binary data indicates whether a field was required). The difference is
+simply that required enables a runtime check that fails if the field is not set, which
+can be useful for catching bugs.
+Field tags and schema evolution
+We said previously that schemas inevitably need to change over time. We call this
+schema evolution. How do Thrift and Protocol Buffers handle schema changes while
+keeping backward and forward compatibility?
+As you can see from the examples, an encoded record is just the concatenation of its
+encoded fields. Each field is identified by its tag number (the numbers 1, 2, 3 in the
+sample schemas) and annotated with a datatype (e.g., string or integer). If a field
+value is not set, it is simply omitted from the encoded record. From this you can see
+that field tags are critical to the meaning of the encoded data. You can change the
+name of a field in the schema, since the encoded data never refers to field names, but
+you cannot change a field’s tag, since that would make all existing encoded data
+invalid.
+120 | Chapter 4: Encoding and Evolution
+
+You can add new fields to the schema, provided that you give each field a new tag
+number. If old code (which doesn’t know about the new tag numbers you added)
+tries to read data written by new code, including a new field with a tag number it
+doesn’t recognize, it can simply ignore that field. The datatype annotation allows the
+parser to determine how many bytes it needs to skip. This maintains forward com‐
+patibility: old code can read records that were written by new code.
+What about backward compatibility? As long as each field has a unique tag number,
+new code can always read old data, because the tag numbers still have the same
+meaning. The only detail is that if you add a new field, you cannot make it required.
+If you were to add a field and make it required, that check would fail if new code read
+data written by old code, because the old code will not have written the new field that
+you added. Therefore, to maintain backward compatibility, every field you add after
+the initial deployment of the schema must be optional or have a default value.
+Removing a field is just like adding a field, with backward and forward compatibility
+concerns reversed. That means you can only remove a field that is optional (a
+required field can never be removed), and you can never use the same tag number
+again (because you may still have data written somewhere that includes the old tag
+number, and that field must be ignored by new code). 
+Datatypes and schema evolution
+What about changing the datatype of a field? That may be possible—check the docu‐
+mentation for details—but there is a risk that values will lose precision or get trunca‐
+ted. For example, say you change a 32-bit integer into a 64-bit integer. New code can
+easily read data written by old code, because the parser can fill in any missing bits
+with zeros. However, if old code reads data written by new code, the old code is still
+using a 32-bit variable to hold the value. If the decoded 64-bit value won’t fit in 32
+bits, it will be truncated.
+A curious detail of Protocol Buffers is that it does not have a list or array datatype,
+but instead has a repeated marker for fields (which is a third option alongside
+required and optional). As you can see in Figure 4-4, the encoding of a repeated
+field is just what it says on the tin: the same field tag simply appears multiple times in
+the record. This has the nice effect that it’s okay to change an optional (single-
+valued) field into a repeated (multi-valued) field. New code reading old data sees a
+list with zero or one elements (depending on whether the field was present); old code
+reading new data sees only the last element of the list.
+Thrift has a dedicated list datatype, which is parameterized with the datatype of the
+list elements. This does not allow the same evolution from single-valued to multi-
+valued as Protocol Buffers does, but it has the advantage of supporting nested lists. 
+Formats for Encoding Data | 121
+
+Avro
+Apache Avro [ 20] is another binary encoding format that is interestingly different
+from Protocol Buffers and Thrift. It was started in 2009 as a subproject of Hadoop, as
+a result of Thrift not being a good fit for Hadoop’s use cases [ 21].
+Avro also uses a schema to specify the structure of the data being encoded. It has two
+schema languages: one (Avro IDL) intended for human editing, and one (based on
+JSON) that is more easily machine-readable.
+Our example schema, written in Avro IDL, might look like this:
+record Person {
+    string               userName;
+    union { null, long } favoriteNumber = null;
+    array<string>        interests;
+}
+The equivalent JSON representation of that schema is as follows:
+{
+    "type": "record",
+    "name": "Person",
+    "fields": [
+        {"name": "userName",       "type": "string"},
+        {"name": "favoriteNumber", "type": ["null", "long"], "default": null},
+        {"name": "interests",      "type": {"type": "array", "items": "string"}}
+    ]
+}
+First of all, notice that there are no tag numbers in the schema. If we encode our
+example record (Example 4-1) using this schema, the Avro binary encoding is just 32
+bytes long—the most compact of all the encodings we have seen. The breakdown of
+the encoded byte sequence is shown in Figure 4-5.
+If you examine the byte sequence, you can see that there is nothing to identify fields
+or their datatypes. The encoding simply consists of values concatenated together. A
+string is just a length prefix followed by UTF-8 bytes, but there’s nothing in the enco‐
+ded data that tells you that it is a string. It could just as well be an integer, or some‐
+thing else entirely. An integer is encoded using a variable-length encoding (the same
+as Thrift’s CompactProtocol).
+122 | Chapter 4: Encoding and Evolution
+
+Figure 4-5. Example record encoded using Avro.
+To parse the binary data, you go through the fields in the order that they appear in
+the schema and use the schema to tell you the datatype of each field. This means that
+the binary data can only be decoded correctly if the code reading the data is using the
+exact same schema  as the code that wrote the data. Any mismatch in the schema
+between the reader and the writer would mean incorrectly decoded data.
+So, how does Avro support schema evolution?
+The writer’s schema and the reader’s schema
+With Avro, when an application wants to encode some data (to write it to a file or
+database, to send it over the network, etc.), it encodes the data using whatever version
+of the schema it knows about—for example, that schema may be compiled into the
+application. This is known as the writer’s schema .
+When an application wants to decode some data (read it from a file or database,
+receive it from the network, etc.), it is expecting the data to be in some schema, which
+is known as the reader’s schema . That is the schema the application code is relying on
+—code may have been generated from that schema during the application’s build
+process.
+The key idea with Avro is that the writer’s schema and the reader’s schema don’t have
+to be the same —they only need to be compatible. When data is decoded (read), the
+Formats for Encoding Data | 123
+
+Avro library resolves the differences by looking at the writer’s schema and the
+reader’s schema side by side and translating the data from the writer’s schema into
+the reader’s schema. The Avro specification [ 20] defines exactly how this resolution
+works, and it is illustrated in Figure 4-6.
+For example, it’s no problem if the writer’s schema and the reader’s schema have
+their fields in a different order, because the schema resolution matches up the fields
+by field name. If the code reading the data encounters a field that appears in the
+writer’s schema but not in the reader’s schema, it is ignored. If the code reading the
+data expects some field, but the writer’s schema does not contain a field of that name,
+it is filled in with a default value declared in the reader’s schema.
+Figure 4-6. An Avro reader resolves differences between the writer’s schema and the
+reader’s schema.
+Schema evolution rules
+With Avro, forward compatibility means that you can have a new version of the
+schema as writer and an old version of the schema as reader. Conversely, backward
+compatibility means that you can have a new version of the schema as reader and an
+old version as writer.
+To maintain compatibility, you may only add or remove a field that has a default
+value. (The field favoriteNumber in our Avro schema has a default value of null.)
+For example, say you add a field with a default value, so this new field exists in the
+new schema but not the old one. When a reader using the new schema reads a record
+written with the old schema, the default value is filled in for the missing field.
+If you were to add a field that has no default value, new readers wouldn’t be able to
+read data written by old writers, so you would break backward compatibility. If you
+were to remove a field that has no default value, old readers wouldn’t be able to read
+data written by new writers, so you would break forward compatibility.
+124 | Chapter 4: Encoding and Evolution
+
+iv. To be precise, the default value must be of the type of the first branch of the union, although this is a
+specific limitation of Avro, not a general feature of union types.
+In some programming languages, null is an acceptable default for any variable, but
+this is not the case in Avro: if you want to allow a field to be null, you have to use a
+union type . For example, union { null, long, string } field;  indicates that
+field can be a number, or a string, or null. You can only use null as a default value if
+it is one of the branches of the union.iv This is a little more verbose than having every‐
+thing nullable by default, but it helps prevent bugs by being explicit about what can
+and cannot be null [22].
+Consequently, Avro doesn’t have optional and required markers in the same way as
+Protocol Buffers and Thrift do (it has union types and default values instead).
+Changing the datatype of a field is possible, provided that Avro can convert the type.
+Changing the name of a field is possible but a little tricky: the reader’s schema can
+contain aliases for field names, so it can match an old writer’s schema field names
+against the aliases. This means that changing a field name is backward compatible but
+not forward compatible. Similarly, adding a branch to a union type is backward com‐
+patible but not forward compatible.
+But what is the writer’s schema?
+There is an important question that we’ve glossed over so far: how does the reader
+know the writer’s schema with which a particular piece of data was encoded? We
+can’t just include the entire schema with every record, because the schema would
+likely be much bigger than the encoded data, making all the space savings from the
+binary encoding futile.
+The answer depends on the context in which Avro is being used. To give a few exam‐
+ples:
+Large file with lots of records
+A common use for Avro—especially in the context of Hadoop—is for storing a
+large file containing millions of records, all encoded with the same schema. (We
+will discuss this kind of situation in Chapter 10.) In this case, the writer of that
+file can just include the writer’s schema once at the beginning of the file. Avro
+specifies a file format (object container files) to do this.
+Database with individually written records
+In a database, different records may be written at different points in time using
+different writer’s schemas—you cannot assume that all the records will have the
+same schema. The simplest solution is to include a version number at the begin‐
+ning of every encoded record, and to keep a list of schema versions in your data‐
+Formats for Encoding Data | 125
+
+base. A reader can fetch a record, extract the version number, and then fetch the
+writer’s schema for that version number from the database. Using that writer’s
+schema, it can decode the rest of the record. (Espresso [ 23] works this way, for
+example.)
+Sending records over a network connection
+When two processes are communicating over a bidirectional network connec‐
+tion, they can negotiate the schema version on connection setup and then use
+that schema for the lifetime of the connection. The Avro RPC protocol (see
+“Dataflow Through Services: REST and RPC” on page 131 ) works like this.
+A database of schema versions is a useful thing to have in any case, since it acts as
+documentation and gives you a chance to check schema compatibility [ 24]. As the
+version number, you could use a simple incrementing integer, or you could use a
+hash of the schema.
+Dynamically generated schemas
+One advantage of Avro’s approach, compared to Protocol Buffers and Thrift, is that
+the schema doesn’t contain any tag numbers. But why is this important? What’s the
+problem with keeping a couple of numbers in the schema?
+The difference is that Avro is friendlier to dynamically generated schemas. For exam‐
+ple, say you have a relational database whose contents you want to dump to a file, and
+you want to use a binary format to avoid the aforementioned problems with textual
+formats (JSON, CSV, SQL). If you use Avro, you can fairly easily generate an Avro
+schema (in the JSON representation we saw earlier) from the relational schema and
+encode the database contents using that schema, dumping it all to an Avro object
+container file [ 25]. You generate a record schema for each database table, and each
+column becomes a field in that record. The column name in the database maps to the
+field name in Avro.
+Now, if the database schema changes (for example, a table has one column added and
+one column removed), you can just generate a new Avro schema from the updated
+database schema and export data in the new Avro schema. The data export process
+does not need to pay any attention to the schema change—it can simply do the
+schema conversion every time it runs. Anyone who reads the new data files will see
+that the fields of the record have changed, but since the fields are identified by name,
+the updated writer’s schema can still be matched up with the old reader’s schema.
+By contrast, if you were using Thrift or Protocol Buffers for this purpose, the field
+tags would likely have to be assigned by hand: every time the database schema
+changes, an administrator would have to manually update the mapping from data‐
+base column names to field tags. (It might be possible to automate this, but the
+schema generator would have to be very careful to not assign previously used field
+126 | Chapter 4: Encoding and Evolution
+
+tags.) This kind of dynamically generated schema simply wasn’t a design goal of
+Thrift or Protocol Buffers, whereas it was for Avro.
+Code generation and dynamically typed languages
+Thrift and Protocol Buffers rely on code generation: after a schema has been defined,
+you can generate code that implements this schema in a programming language of
+your choice. This is useful in statically typed languages such as Java, C++, or C#,
+because it allows efficient in-memory structures to be used for decoded data, and it
+allows type checking and autocompletion in IDEs when writing programs that access
+the data structures.
+In dynamically typed programming languages such as JavaScript, Ruby, or Python,
+there is not much point in generating code, since there is no compile-time type
+checker to satisfy. Code generation is often frowned upon in these languages, since
+they otherwise avoid an explicit compilation step. Moreover, in the case of a dynami‐
+cally generated schema (such as an Avro schema generated from a database table),
+code generation is an unnecessarily obstacle to getting to the data.
+Avro provides optional code generation for statically typed programming languages,
+but it can be used just as well without any code generation. If you have an object con‐
+tainer file (which embeds the writer’s schema), you can simply open it using the Avro
+library and look at the data in the same way as you could look at a JSON file. The file
+is self-describing since it includes all the necessary metadata.
+This property is especially useful in conjunction with dynamically typed data pro‐
+cessing languages like Apache Pig [ 26]. In Pig, you can just open some Avro files,
+start analyzing them, and write derived datasets to output files in Avro format
+without even thinking about schemas. 
+The Merits of Schemas
+As we saw, Protocol Buffers, Thrift, and Avro all use a schema to describe a binary
+encoding format. Their schema languages are much simpler than XML Schema or
+JSON Schema, which support much more detailed validation rules (e.g., “the string
+value of this field must match this regular expression” or “the integer value of this
+field must be between 0 and 100”). As Protocol Buffers, Thrift, and Avro are simpler
+to implement and simpler to use, they have grown to support a fairly wide range of
+programming languages.
+The ideas on which these encodings are based are by no means new. For example,
+they have a lot in common with ASN.1, a schema definition language that was first
+standardized in 1984 [ 27]. It was used to define various network protocols, and its
+binary encoding (DER) is still used to encode SSL certificates (X.509), for example
+[28]. ASN.1 supports schema evolution using tag numbers, similar to Protocol Buf‐
+Formats for Encoding Data | 127
+
+fers and Thrift [ 29]. However, it’s also very complex and badly documented, so
+ASN.1 is probably not a good choice for new applications.
+Many data systems also implement some kind of proprietary binary encoding for
+their data. For example, most relational databases have a network protocol over
+which you can send queries to the database and get back responses. Those protocols
+are generally specific to a particular database, and the database vendor provides a
+driver (e.g., using the ODBC or JDBC APIs) that decodes responses from the data‐
+base’s network protocol into in-memory data structures.
+So, we can see that although textual data formats such as JSON, XML, and CSV are
+widespread, binary encodings based on schemas are also a viable option. They have a
+number of nice properties:
+• They can be much more compact than the various “binary JSON” variants, since
+they can omit field names from the encoded data.
+• The schema is a valuable form of documentation, and because the schema is
+required for decoding, you can be sure that it is up to date (whereas manually
+maintained documentation may easily diverge from reality).
+• Keeping a database of schemas allows you to check forward and backward com‐
+patibility of schema changes, before anything is deployed.
+• For users of statically typed programming languages, the ability to generate code
+from the schema is useful, since it enables type checking at compile time.
+In summary, schema evolution allows the same kind of flexibility as schemaless/
+schema-on-read JSON databases provide (see “Schema flexibility in the document
+model”  on page 39), while also providing better guarantees about your data and bet‐
+ter tooling. 
+Modes of Dataflow
+At the beginning of this chapter we said that whenever you want to send some data to
+another process with which you don’t share memory—for example, whenever you
+want to send data over the network or write it to a file—you need to encode it as a
+sequence of bytes. We then discussed a variety of different encodings for doing this.
+We talked about forward and backward compatibility, which are important for evolv‐
+ability (making change easy by allowing you to upgrade different parts of your system
+independently, and not having to change everything at once). Compatibility is a rela‐
+tionship between one process that encodes the data, and another process that decodes
+it.
+128 | Chapter 4: Encoding and Evolution
+
+That’s a fairly abstract idea—there are many ways data can flow from one process to
+another. Who encodes the data, and who decodes it? In the rest of this chapter we
+will explore some of the most common ways how data flows between processes:
+• Via databases (see “Dataflow Through Databases” on page 129 )
+• Via service calls (see “Dataflow Through Services: REST and RPC” on page 131 )
+• Via asynchronous message passing (see “Message-Passing Dataflow” on page 136 )
+Dataflow Through Databases
+In a database, the process that writes to the database encodes the data, and the pro‐
+cess that reads from the database decodes it. There may just be a single process
+accessing the database, in which case the reader is simply a later version of the same
+process—in that case you can think of storing something in the database as sending a
+message to your future self.
+Backward compatibility is clearly necessary here; otherwise your future self won’t be
+able to decode what you previously wrote.
+In general, it’s common for several different processes to be accessing a database at
+the same time. Those processes might be several different applications or services, or
+they may simply be several instances of the same service (running in parallel for scal‐
+ability or fault tolerance). Either way, in an environment where the application is
+changing, it is likely that some processes accessing the database will be running newer
+code and some will be running older code—for example because a new version is cur‐
+rently being deployed in a rolling upgrade, so some instances have been updated
+while others haven’t yet.
+This means that a value in the database may be written by a newer version of the
+code, and subsequently read by an older version of the code that is still running.
+Thus, forward compatibility is also often required for databases.
+However, there is an additional snag. Say you add a field to a record schema, and the
+newer code writes a value for that new field to the database. Subsequently, an older
+version of the code (which doesn’t yet know about the new field) reads the record,
+updates it, and writes it back. In this situation, the desirable behavior is usually for
+the old code to keep the new field intact, even though it couldn’t be interpreted.
+The encoding formats discussed previously support such preservation of unknown
+fields, but sometimes you need to take care at an application level, as illustrated in
+Figure 4-7 . For example, if you decode a database value into model objects in the
+application, and later reencode those model objects, the unknown field might be lost
+in that translation process. Solving this is not a hard problem; you just need to be
+aware of it.
+Modes of Dataflow | 129

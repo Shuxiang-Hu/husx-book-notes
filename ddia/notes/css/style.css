@@ -1,0 +1,356 @@
+/* ── variables ─────────────────────────────────────────────────── */
+:root {
+  --ink:    #18181b;
+  --muted:  #52525b;
+  --border: #e4e4e7;
+  --bg:     #fafafa;
+  --surface:#ffffff;
+  --p1:     #1d4ed8;
+  --p1-lt:  #dbeafe;
+  --p2:     #b45309;
+  --p2-lt:  #fef3c7;
+  --p3:     #15803d;
+  --p3-lt:  #dcfce7;
+  --accent: #4f46e5;
+  --sw:     252px;
+  --mono:   "JetBrains Mono","Fira Code",ui-monospace,monospace;
+}
+
+/* ── reset ─────────────────────────────────────────────────────── */
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0 }
+html { font-size:16px; scroll-behavior:smooth }
+body {
+  font-family: Georgia,"Times New Roman",serif;
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.8;
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ── sidebar ────────────────────────────────────────────────────
+   Supports both  id="sidebar"  (ch01–ch05)
+   and            class="sidebar"  (ch06–ch12)                  */
+#sidebar, nav.sidebar {
+  position: fixed;
+  top: 0; left: 0;
+  width: var(--sw);
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--ink);
+  color: #e4e4e7;
+  padding: 0 0 2rem;
+  font-family: system-ui,sans-serif;
+  font-size: .78rem;
+  z-index: 100;
+  scrollbar-width: thin;
+}
+#sidebar::-webkit-scrollbar,
+nav.sidebar::-webkit-scrollbar { width: 4px }
+#sidebar::-webkit-scrollbar-thumb,
+nav.sidebar::-webkit-scrollbar-thumb { background:#3f3f46; border-radius:2px }
+
+/* brand / logo block — .sb-brand (ch01–ch05) or .sb-logo (ch06–ch12) */
+.sb-brand, .sb-logo {
+  padding: 1.25rem 1.1rem 1rem;
+  border-bottom: 1px solid #3f3f46;
+}
+.sb-brand a, .sb-logo a {
+  color: #f4f4f5;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: .88rem;
+  line-height: 1.3;
+  display: block;
+}
+.sb-brand .byline { font-size:.65rem; color:#71717a; margin-top:.2rem }
+
+/* part section headers */
+.sb-part {
+  padding: .9rem 1.1rem .2rem;
+  font-size: .6rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: #a1a1aa;            /* default; overridden below for index page */
+}
+.sb-part.p1 { color:#93c5fd }
+.sb-part.p2 { color:#fcd34d }
+.sb-part.p3 { color:#86efac }
+
+/* chapter links */
+#sidebar a.sb-ch,
+nav.sidebar a.sb-ch {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  padding: .28rem 1.1rem .28rem 1.4rem;
+  color: #a1a1aa;
+  text-decoration: none;
+  line-height: 1.35;
+  transition: background .12s, color .12s;
+}
+#sidebar a.sb-ch:hover,
+#sidebar a.sb-ch.active,
+nav.sidebar a.sb-ch:hover,
+nav.sidebar a.sb-ch.active {
+  background: #27272a;
+  color: #f4f4f5;
+}
+#sidebar a.sb-ch .n,
+nav.sidebar a.sb-ch .n {
+  font-family: var(--mono);
+  font-size: .6rem;
+  color: #52525b;
+  flex-shrink: 0;
+}
+
+/* ── main content ───────────────────────────────────────────────
+   Supports both  id="main"  (ch01–ch05)
+   and            bare <main>  (ch06–ch12)
+   Fix: use calc so it fills the full remaining viewport width,
+   eliminating the right-side whitespace.                        */
+#main, main {
+  margin-left: var(--sw);
+  padding: 2.5rem 3rem 5rem;
+  width: calc(100% - var(--sw));
+  min-height: 100vh;
+}
+@media(max-width:800px) {
+  #sidebar, nav.sidebar { position:relative; width:100%; height:auto }
+  #main, main { margin-left:0; padding:1.5rem; width:100% }
+}
+
+/* ── headings & body (for ch06–ch12 which use bare h1/h2/h3) ── */
+main h1, #main h1 {
+  font-family: system-ui,sans-serif;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1.2;
+  margin-bottom: .5rem;
+}
+main h2, #main h2 {
+  font-family: system-ui,sans-serif;
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin: 2.2rem 0 .8rem;
+  padding-bottom: .35rem;
+  border-bottom: 2px solid var(--border);
+}
+main h3, #main h3 {
+  font-family: system-ui,sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 1.6rem 0 .45rem;
+}
+main p, #main p { margin-bottom: .7rem }
+main ul, main ol, #main ul, #main ol { margin:.4rem 0 .7rem 1.4rem }
+main li, #main li { margin-bottom: .25rem }
+main code, #main code {
+  font-family: var(--mono);
+  font-size: .8em;
+  background: #f4f4f5;
+  padding: .1em .3em;
+  border-radius: 2px;
+}
+/* intro lead paragraph (ch06–ch12) */
+.lead {
+  font-size: 1.05rem;
+  color: var(--muted);
+  margin-bottom: 1.5rem;
+  font-style: italic;
+  border-left: 3px solid var(--border);
+  padding-left: .85rem;
+}
+
+/* ── page header (ch01–ch05 style) ─────────────────────────── */
+.pg-head { margin-bottom:2rem; padding-bottom:1.25rem; border-bottom:2px solid var(--border) }
+.pg-head h1 { font-family:system-ui,sans-serif; font-size:1.75rem; font-weight:800; line-height:1.2 }
+.pg-head .sub { margin-top:.4rem; font-style:italic; color:var(--muted); font-size:.95rem }
+
+/* part badge */
+.part-badge {
+  display: inline-block;
+  font-family: system-ui,sans-serif;
+  font-size: .6rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  padding: .18rem .55rem;
+  border-radius: 3px;
+  margin-bottom: .6rem;
+}
+.part-badge.p1 { background:var(--p1-lt); color:var(--p1) }
+.part-badge.p2 { background:var(--p2-lt); color:var(--p2) }
+.part-badge.p3 { background:var(--p3-lt); color:var(--p3) }
+
+/* ── chapter section ────────────────────────────────────────── */
+.chapter { margin-bottom: 3.5rem }
+.ch-header {
+  display: flex;
+  align-items: baseline;
+  gap: .7rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: .45rem;
+  border-bottom: 2px solid var(--border);
+}
+.ch-num { font-family:var(--mono); font-size:.7rem; font-weight:700; color:var(--muted); white-space:nowrap }
+.ch-title { font-family:system-ui,sans-serif; font-size:1.3rem; font-weight:700; line-height:1.2 }
+
+/* ch-body (ch01–ch05 inner wrapper) */
+.ch-body h3 { font-family:system-ui,sans-serif; font-size:1rem; font-weight:700; margin:1.6rem 0 .45rem }
+.ch-body h4 { font-family:system-ui,sans-serif; font-size:.82rem; font-weight:700; margin:1.1rem 0 .3rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted) }
+.ch-body p { margin-bottom:.7rem }
+.ch-body ul, .ch-body ol { margin:.4rem 0 .7rem 1.4rem }
+.ch-body li { margin-bottom:.25rem }
+.ch-body code { font-family:var(--mono); font-size:.8em; background:#f4f4f5; padding:.1em .3em; border-radius:2px }
+
+/* ── callouts ───────────────────────────────────────────────── */
+.key-concept {
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+  padding: .85rem 1.1rem;
+  margin: 1.1rem 0;
+  border-radius: 0 5px 5px 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,.05);
+}
+.key-concept .kc-label {
+  font-family: system-ui,sans-serif;
+  font-size: .62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--accent);
+  margin-bottom: .3rem;
+}
+.insight {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 5px;
+  padding: .8rem 1.1rem;
+  margin: 1.1rem 0;
+  font-style: italic;
+  color: #78350f;
+  font-size: .92rem;
+}
+
+/* ── definition list ────────────────────────────────────────── */
+dl.defs { margin: .6rem 0 }
+dl.defs dt { font-family:var(--mono); font-size:.78rem; font-weight:700; color:var(--p1); margin-top:.7rem }
+dl.defs dd { margin-left:1.2rem; color:var(--ink) }
+
+/* ── figures / diagrams ─────────────────────────────────────── */
+.diagram-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.1rem;
+  margin: 1.4rem 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,.05);
+}
+.diagram-wrap svg { display:block; width:100%; height:auto }
+
+/* caption injected by app.js (class="diagram-caption") */
+.diagram-caption {
+  font-family: system-ui,sans-serif;
+  font-size: .72rem;
+  color: var(--muted);
+  margin-top: .6rem;
+  text-align: center;
+  font-style: italic;
+  letter-spacing: .01em;
+}
+.diagram-caption .cap-num {
+  font-weight: 700;
+  font-style: normal;
+  color: var(--ink);
+  margin-right: .15em;
+}
+
+/* ── tables ─────────────────────────────────────────────────── */
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: system-ui,sans-serif;
+  font-size: .8rem;
+  margin: 1.1rem 0;
+}
+.comparison-table caption {
+  caption-side: top;
+  text-align: left;
+  font-family: system-ui,sans-serif;
+  font-size: .72rem;
+  color: var(--muted);
+  padding-bottom: .4rem;
+  font-style: italic;
+}
+.comparison-table caption .cap-num {
+  font-weight: 700;
+  font-style: normal;
+  color: var(--ink);
+}
+.comparison-table th {
+  background: var(--ink);
+  color: #f4f4f5;
+  padding: .45rem .7rem;
+  text-align: left;
+  font-weight: 600;
+}
+.comparison-table td { padding:.4rem .7rem; border-bottom:1px solid var(--border); vertical-align:top }
+.comparison-table tr:nth-child(even) td { background:#fafafa }
+.comparison-table .g { color:#15803d; font-weight:600 }
+.comparison-table .b { color:#b91c1c; font-weight:600 }
+.comparison-table .n { color:var(--muted) }
+
+/* ── two-col layout ─────────────────────────────────────────── */
+.two-col { display:grid; grid-template-columns:1fr 1fr; gap:.9rem; margin:1.1rem 0 }
+@media(max-width:600px) { .two-col { grid-template-columns:1fr } }
+
+/* ── chapter nav ─────────────────────────────────────────────  */
+.ch-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  font-family: system-ui,sans-serif;
+  font-size: .8rem;
+}
+.ch-nav a { color:var(--p1); text-decoration:none; font-weight:600 }
+.ch-nav a:hover { text-decoration:underline }
+
+/* ── index page ─────────────────────────────────────────────── */
+.index-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill,minmax(230px,1fr));
+  gap: .9rem;
+  margin-top: 1.25rem;
+}
+.idx-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .9rem 1.1rem;
+  text-decoration: none;
+  color: var(--ink);
+  transition: box-shadow .15s, transform .12s;
+  display: block;
+}
+.idx-card:hover { box-shadow:0 4px 12px rgba(0,0,0,.09); transform:translateY(-1px) }
+.idx-card .cn { font-family:var(--mono); font-size:.65rem; color:var(--muted) }
+.idx-card .ct { font-family:system-ui,sans-serif; font-weight:700; font-size:.88rem; margin-top:.2rem; line-height:1.3 }
+.idx-card .cd { font-size:.75rem; color:var(--muted); margin-top:.35rem; line-height:1.4; font-family:system-ui,sans-serif }
+.idx-card.p1 { border-top:3px solid var(--p1) }
+.idx-card.p2 { border-top:3px solid var(--p2) }
+.idx-card.p3 { border-top:3px solid var(--p3) }
+
+.part-head {
+  font-family: system-ui,sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 1.75rem 0 .65rem;
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+}
+.part-head::after { content:''; flex:1; height:1px; background:var(--border) }

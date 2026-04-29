@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch06 · Partitioning — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage &amp; Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding &amp; Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency &amp; Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+
+<main id="main">
+  <span class="part-badge p2">Part II — Distributed Data</span>
+  <h1>Chapter 6 · Partitioning</h1>
+  <p class="lead">Partitioning (sharding) breaks a large dataset across multiple nodes so that each node holds only a subset of the data. Combined with replication it enables horizontal scalability — but choosing how to partition and how to route requests requires careful thought.</p>
+
+  <!-- ── Overview ─────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Why Partition?</h2>
+    <div class="two-col">
+      <div>
+        <p>A single machine has finite disk, RAM, and CPU. Replication copies the <em>same</em> data to more machines; partitioning splits <em>different</em> data across machines. Together they let a cluster scale to petabytes while each node handles only a fraction of the total load.</p>
+        <p>The goal is <strong>fair load distribution</strong>. An uneven split — where one partition receives far more reads/writes than others — is called a <strong>hot spot</strong>.</p>
+      </div>
+      <div>
+        <div class="diagram-wrap">
+          <!-- Why partition: single vs distributed -->
+          <svg viewBox="0 0 440 200" font-family="inherit" font-size="13">
+            <defs>
+              <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+              </marker>
+            </defs>
+            <!-- Single node -->
+            <rect x="20" y="20" width="120" height="160" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+            <text x="80" y="45" text-anchor="middle" font-weight="bold" fill="#92400e">Single Node</text>
+            <text x="80" y="65" text-anchor="middle" fill="#78350f" font-size="11">All 1 TB data</text>
+            <text x="80" y="85" text-anchor="middle" fill="#ef4444" font-size="11">CPU bottleneck</text>
+            <text x="80" y="105" text-anchor="middle" fill="#ef4444" font-size="11">Disk limit</text>
+            <text x="80" y="125" text-anchor="middle" fill="#ef4444" font-size="11">Single point</text>
+            <text x="80" y="145" text-anchor="middle" fill="#ef4444" font-size="11">of failure</text>
+            <!-- arrow -->
+            <line x1="155" y1="100" x2="185" y2="100" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="170" y="93" text-anchor="middle" fill="#475569" font-size="11">shard</text>
+            <!-- Partitioned nodes -->
+            <rect x="195" y="20" width="80" height="50" rx="6" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+            <text x="235" y="42" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="11">Node A</text>
+            <text x="235" y="58" text-anchor="middle" fill="#1e40af" font-size="10">keys 0–33%</text>
+            <rect x="195" y="85" width="80" height="50" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+            <text x="235" y="107" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="11">Node B</text>
+            <text x="235" y="123" text-anchor="middle" fill="#166534" font-size="10">keys 34–66%</text>
+            <rect x="195" y="150" width="80" height="50" rx="6" fill="#fce7f3" stroke="#be185d" stroke-width="1.5"/>
+            <text x="235" y="172" text-anchor="middle" font-weight="bold" fill="#9d174d" font-size="11">Node C</text>
+            <text x="235" y="188" text-anchor="middle" fill="#be185d" font-size="10">keys 67–100%</text>
+            <!-- Each node label -->
+            <text x="340" y="50" fill="#475569" font-size="11">~333 GB each</text>
+            <text x="340" y="115" fill="#475569" font-size="11">Parallel reads</text>
+            <text x="340" y="180" fill="#475569" font-size="11">Parallel writes</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Partitioning Strategies ────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Partitioning Strategies</h2>
+
+    <div class="diagram-wrap">
+      <!-- Range vs Hash comparison -->
+      <svg viewBox="0 0 700 320" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+
+        <!-- === Range Partitioning === -->
+        <text x="170" y="22" text-anchor="middle" font-size="15" font-weight="bold" fill="#1d4ed8">Range Partitioning</text>
+        <!-- Key space ruler -->
+        <rect x="20" y="38" width="300" height="24" rx="4" fill="#e2e8f0" stroke="#94a3b8"/>
+        <text x="26" y="55" fill="#475569" font-size="11">a</text>
+        <text x="170" y="55" text-anchor="middle" fill="#475569" font-size="11">Key space →</text>
+        <text x="314" y="55" fill="#475569" font-size="11">z</text>
+        <!-- Partitions -->
+        <rect x="20" y="75" width="70" height="40" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="55" y="91" text-anchor="middle" font-weight="bold" fill="#1e40af" font-size="11">P1</text>
+        <text x="55" y="107" text-anchor="middle" fill="#1e40af" font-size="10">a–f</text>
+        <rect x="100" y="75" width="70" height="40" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="135" y="91" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="11">P2</text>
+        <text x="135" y="107" text-anchor="middle" fill="#14532d" font-size="10">g–n</text>
+        <rect x="180" y="75" width="70" height="40" rx="5" fill="#fce7f3" stroke="#ec4899"/>
+        <text x="215" y="91" text-anchor="middle" font-weight="bold" fill="#9d174d" font-size="11">P3</text>
+        <text x="215" y="107" text-anchor="middle" fill="#be185d" font-size="10">o–t</text>
+        <rect x="260" y="75" width="60" height="40" rx="5" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="290" y="91" text-anchor="middle" font-weight="bold" fill="#92400e" font-size="11">P4</text>
+        <text x="290" y="107" text-anchor="middle" fill="#92400e" font-size="10">u–z</text>
+
+        <!-- Pros/cons for range -->
+        <rect x="20" y="128" width="300" height="80" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="30" y="147" fill="#16a34a" font-size="12">✔ Range scans efficient</text>
+        <text x="30" y="163" fill="#16a34a" font-size="12">✔ Keys in sorted order</text>
+        <text x="30" y="179" fill="#dc2626" font-size="12">✗ Hot spots if keys cluster</text>
+        <text x="30" y="195" fill="#dc2626" font-size="12">✗ Need split/merge over time</text>
+
+        <!-- Example: timestamps -->
+        <rect x="20" y="218" width="300" height="88" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+        <text x="170" y="237" text-anchor="middle" font-weight="bold" fill="#92400e" font-size="12">Hot-spot example: timestamp keys</text>
+        <text x="30" y="255" fill="#78350f" font-size="11">All today's writes → same partition</text>
+        <text x="30" y="271" fill="#78350f" font-size="11">Yesterday's partitions sit idle</text>
+        <text x="30" y="287" fill="#78350f" font-size="11">Fix: prefix with sensor ID, then timestamp</text>
+        <text x="30" y="303" fill="#78350f" font-size="11">e.g. "sensor42_2024-01-15T10:…"</text>
+
+        <!-- Divider -->
+        <line x1="360" y1="20" x2="360" y2="310" stroke="#e2e8f0" stroke-width="2" stroke-dasharray="6,4"/>
+
+        <!-- === Hash Partitioning === -->
+        <text x="530" y="22" text-anchor="middle" font-size="15" font-weight="bold" fill="#b45309">Hash Partitioning</text>
+        <!-- Hash funnel -->
+        <text x="400" y="55" fill="#475569" font-size="12">key: "user_12345"</text>
+        <line x1="480" y1="62" x2="480" y2="82" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <rect x="420" y="83" width="120" height="28" rx="5" fill="#e0e7ff" stroke="#6366f1"/>
+        <text x="480" y="102" text-anchor="middle" font-weight="bold" fill="#4338ca" font-size="12">hash(key) mod N</text>
+        <line x1="480" y1="111" x2="480" y2="125" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <!-- Hash partitions -->
+        <rect x="380" y="127" width="55" height="36" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="407" y="150" text-anchor="middle" fill="#1e40af" font-size="12">P0</text>
+        <rect x="443" y="127" width="55" height="36" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="470" y="150" text-anchor="middle" fill="#14532d" font-size="12">P1</text>
+        <rect x="506" y="127" width="55" height="36" rx="5" fill="#fce7f3" stroke="#ec4899"/>
+        <text x="533" y="150" text-anchor="middle" fill="#9d174d" font-size="12">P2</text>
+        <rect x="569" y="127" width="55" height="36" rx="5" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="596" y="150" text-anchor="middle" fill="#92400e" font-size="12">P3</text>
+        <!-- arrows from hash to partitions -->
+        <line x1="460" y1="125" x2="407" y2="127" stroke="#6366f1" stroke-width="1.5"/>
+        <line x1="470" y1="125" x2="470" y2="127" stroke="#6366f1" stroke-width="1.5"/>
+        <line x1="490" y1="125" x2="533" y2="127" stroke="#6366f1" stroke-width="1.5"/>
+        <line x1="496" y1="125" x2="596" y2="127" stroke="#6366f1" stroke-width="1.5"/>
+
+        <!-- Pros/cons for hash -->
+        <rect x="375" y="176" width="295" height="80" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="385" y="195" fill="#16a34a" font-size="12">✔ Even distribution of keys</text>
+        <text x="385" y="211" fill="#16a34a" font-size="12">✔ Avoids hot spots in most cases</text>
+        <text x="385" y="227" fill="#dc2626" font-size="12">✗ Range scans require scatter-gather</text>
+        <text x="385" y="243" fill="#dc2626" font-size="12">✗ Lose sorted order</text>
+
+        <!-- Cassandra compound key -->
+        <rect x="375" y="266" width="295" height="44" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="522" y="283" text-anchor="middle" font-weight="bold" fill="#15803d" font-size="11">Cassandra compound key</text>
+        <text x="385" y="300" fill="#166534" font-size="11">partition_key → hash route | clustering_key → range sort</text>
+      </svg>
+    </div>
+
+    <div class="key-concept">
+      <strong>Consistent Hashing</strong> — Originally proposed for CDNs. Each node is assigned multiple points on a hash ring; a key is stored on the first node clockwise from its hash. Adding/removing a node only moves a fraction of keys. Modern databases like Cassandra and DynamoDB use variants of this idea.
+    </div>
+
+    <div class="diagram-wrap">
+      <!-- Consistent Hash Ring -->
+      <svg viewBox="0 0 500 340" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="carr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#6366f1"/>
+          </marker>
+        </defs>
+        <text x="250" y="22" text-anchor="middle" font-size="15" font-weight="bold" fill="#4338ca">Consistent Hash Ring</text>
+        <!-- Ring -->
+        <circle cx="250" cy="185" r="110" fill="none" stroke="#c7d2fe" stroke-width="3"/>
+        <!-- Node A at top -->
+        <circle cx="250" cy="75" r="22" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+        <text x="250" y="72" text-anchor="middle" font-weight="bold" fill="#1e40af" font-size="12">Node</text>
+        <text x="250" y="88" text-anchor="middle" font-weight="bold" fill="#1e40af" font-size="12">A</text>
+        <!-- Node B at right -->
+        <circle cx="355" cy="135" r="22" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+        <text x="355" y="132" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="12">Node</text>
+        <text x="355" y="148" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="12">B</text>
+        <!-- Node C at bottom-right -->
+        <circle cx="340" cy="265" r="22" fill="#fce7f3" stroke="#ec4899" stroke-width="2"/>
+        <text x="340" y="262" text-anchor="middle" font-weight="bold" fill="#9d174d" font-size="12">Node</text>
+        <text x="340" y="278" text-anchor="middle" font-weight="bold" fill="#9d174d" font-size="12">C</text>
+        <!-- Node D at bottom-left -->
+        <circle cx="165" cy="265" r="22" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+        <text x="165" y="262" text-anchor="middle" font-weight="bold" fill="#92400e" font-size="12">Node</text>
+        <text x="165" y="278" text-anchor="middle" font-weight="bold" fill="#92400e" font-size="12">D</text>
+        <!-- Node E at left -->
+        <circle cx="148" cy="135" r="22" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
+        <text x="148" y="132" text-anchor="middle" font-weight="bold" fill="#5b21b6" font-size="12">Node</text>
+        <text x="148" y="148" text-anchor="middle" font-weight="bold" fill="#5b21b6" font-size="12">E</text>
+        <!-- Key K1 (on ring between A and B) -->
+        <circle cx="316" cy="87" r="8" fill="#fbbf24" stroke="#d97706" stroke-width="2"/>
+        <text x="330" y="83" fill="#92400e" font-size="11" font-weight="bold">K1→B</text>
+        <!-- Key K2 between D and E -->
+        <circle cx="144" cy="205" r="8" fill="#fbbf24" stroke="#d97706" stroke-width="2"/>
+        <text x="112" y="202" fill="#92400e" font-size="11" font-weight="bold">K2→E</text>
+        <!-- New node insertion arrow -->
+        <text x="250" y="155" text-anchor="middle" fill="#64748b" font-size="11">+ Node F</text>
+        <text x="250" y="171" text-anchor="middle" fill="#64748b" font-size="11">only moves keys</text>
+        <text x="250" y="187" text-anchor="middle" fill="#64748b" font-size="11">between F and its</text>
+        <text x="250" y="203" text-anchor="middle" fill="#64748b" font-size="11">predecessor</text>
+        <!-- Legend -->
+        <circle cx="30" cy="310" r="7" fill="#fbbf24" stroke="#d97706" stroke-width="1.5"/>
+        <text x="45" y="315" fill="#475569" font-size="11">= key; routed clockwise to first node</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── Secondary Indexes ───────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Secondary Indexes &amp; Partitioning</h2>
+    <p>Primary key partitioning is straightforward, but secondary indexes don't map cleanly onto partitions. Two approaches exist:</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 310" font-family="inherit" font-size="13">
+        <!-- === Document-based (local) index === -->
+        <text x="170" y="22" text-anchor="middle" font-size="14" font-weight="bold" fill="#1d4ed8">Document-partitioned Index</text>
+        <text x="170" y="40" text-anchor="middle" font-size="11" fill="#475569">(local / scatter-gather)</text>
+
+        <!-- Partition 0 -->
+        <rect x="20" y="55" width="145" height="110" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="92" y="73" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="11">Partition 0</text>
+        <text x="30" y="90" fill="#1e40af" font-size="10">doc 1: color=red</text>
+        <text x="30" y="104" fill="#1e40af" font-size="10">doc 2: color=blue</text>
+        <text x="30" y="118" fill="#475569" font-size="10">— local index —</text>
+        <text x="30" y="132" fill="#1e40af" font-size="10">red → [1]</text>
+        <text x="30" y="146" fill="#1e40af" font-size="10">blue → [2]</text>
+
+        <!-- Partition 1 -->
+        <rect x="175" y="55" width="145" height="110" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="247" y="73" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="11">Partition 1</text>
+        <text x="185" y="90" fill="#14532d" font-size="10">doc 3: color=red</text>
+        <text x="185" y="104" fill="#14532d" font-size="10">doc 4: color=red</text>
+        <text x="185" y="118" fill="#475569" font-size="10">— local index —</text>
+        <text x="185" y="132" fill="#14532d" font-size="10">red → [3, 4]</text>
+
+        <!-- Query: find color=red -->
+        <text x="170" y="180" text-anchor="middle" fill="#dc2626" font-size="12" font-weight="bold">Query "color=red"</text>
+        <text x="170" y="197" text-anchor="middle" fill="#475569" font-size="11">must query ALL partitions</text>
+        <text x="170" y="213" text-anchor="middle" fill="#475569" font-size="11">then merge results</text>
+        <text x="170" y="235" text-anchor="middle" fill="#b45309" font-size="11">(scatter-gather = expensive)</text>
+        <rect x="20" y="250" width="300" height="48" rx="6" fill="#fef3c7" stroke="#fcd34d"/>
+        <text x="170" y="268" text-anchor="middle" fill="#78350f" font-size="11">Used by: MongoDB, Riak, Elasticsearch,</text>
+        <text x="170" y="284" text-anchor="middle" fill="#78350f" font-size="11">SolrCloud — each node owns its shard index</text>
+
+        <!-- Divider -->
+        <line x1="360" y1="10" x2="360" y2="300" stroke="#e2e8f0" stroke-width="2" stroke-dasharray="6,4"/>
+
+        <!-- === Term-based (global) index === -->
+        <text x="530" y="22" text-anchor="middle" font-size="14" font-weight="bold" fill="#b45309">Term-partitioned Index</text>
+        <text x="530" y="40" text-anchor="middle" font-size="11" fill="#475569">(global / efficient reads)</text>
+
+        <!-- Data partitions -->
+        <rect x="380" y="55" width="100" height="60" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="430" y="73" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="10">Data P0</text>
+        <text x="390" y="89" fill="#1e40af" font-size="10">doc 1: color=red</text>
+        <text x="390" y="103" fill="#1e40af" font-size="10">doc 2: color=blue</text>
+
+        <rect x="490" y="55" width="100" height="60" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="540" y="73" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="10">Data P1</text>
+        <text x="500" y="89" fill="#14532d" font-size="10">doc 3: color=red</text>
+        <text x="500" y="103" fill="#14532d" font-size="10">doc 4: color=red</text>
+
+        <!-- Global index partitions -->
+        <text x="530" y="140" text-anchor="middle" fill="#475569" font-size="11">Global index partitioned by term:</text>
+        <rect x="370" y="155" width="115" height="55" rx="6" fill="#ede9fe" stroke="#8b5cf6"/>
+        <text x="427" y="172" text-anchor="middle" font-weight="bold" fill="#5b21b6" font-size="11">Index P0</text>
+        <text x="380" y="188" fill="#5b21b6" font-size="10">blue → [2]</text>
+        <text x="380" y="202" fill="#475569" font-size="10">(terms a–m)</text>
+
+        <rect x="495" y="155" width="115" height="55" rx="6" fill="#fce7f3" stroke="#ec4899"/>
+        <text x="552" y="172" text-anchor="middle" font-weight="bold" fill="#9d174d" font-size="11">Index P1</text>
+        <text x="505" y="188" fill="#9d174d" font-size="10">red → [1, 3, 4]</text>
+        <text x="505" y="202" fill="#475569" font-size="10">(terms n–z)</text>
+
+        <!-- Query goes to one index partition -->
+        <text x="530" y="230" text-anchor="middle" fill="#16a34a" font-size="12" font-weight="bold">Query "color=red"</text>
+        <text x="530" y="247" text-anchor="middle" fill="#475569" font-size="11">→ only hits Index P1</text>
+        <text x="530" y="263" text-anchor="middle" fill="#16a34a" font-size="11">single-partition read!</text>
+        <rect x="370" y="275" width="240" height="30" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="490" y="294" text-anchor="middle" fill="#15803d" font-size="11">Writes update multiple index partitions (async)</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead><tr><th>Approach</th><th>Read cost</th><th>Write cost</th><th>Example systems</th></tr></thead>
+      <tbody>
+        <tr><td>Document-partitioned (local)</td><td class="n">Scatter-gather all N partitions</td><td class="g">Write one partition</td><td>MongoDB, Elasticsearch, Riak</td></tr>
+        <tr><td>Term-partitioned (global)</td><td class="g">Query one index partition</td><td class="n">Update K index partitions (often async)</td><td>DynamoDB GSI, BigTable</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── Rebalancing ─────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Rebalancing Partitions</h2>
+    <p>Nodes are added/removed over time. Rebalancing must move data to restore balance while keeping the database available.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 260" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="rarr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Strategy 1: hash mod N -->
+        <rect x="10" y="10" width="190" height="240" rx="8" fill="#fef2f2" stroke="#fca5a5"/>
+        <text x="105" y="30" text-anchor="middle" font-weight="bold" fill="#991b1b" font-size="12">hash mod N</text>
+        <text x="15" y="52" fill="#7f1d1d" font-size="10">3 nodes: key → hash%3</text>
+        <text x="15" y="68" fill="#7f1d1d" font-size="10">Add 4th node: hash%4</text>
+        <text x="15" y="84" fill="#dc2626" font-size="11" font-weight="bold">→ Most keys must move!</text>
+        <text x="15" y="104" fill="#7f1d1d" font-size="10">Very disruptive during</text>
+        <text x="15" y="120" fill="#7f1d1d" font-size="10">node addition/removal</text>
+        <text x="105" y="148" text-anchor="middle" fill="#dc2626" font-size="22">✗</text>
+        <text x="105" y="175" text-anchor="middle" fill="#b91c1c" font-size="11">Avoid for dynamic</text>
+        <text x="105" y="191" text-anchor="middle" fill="#b91c1c" font-size="11">clusters</text>
+
+        <!-- Strategy 2: fixed partitions -->
+        <rect x="215" y="10" width="210" height="240" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="320" y="30" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="12">Fixed # of Partitions</text>
+        <text x="225" y="52" fill="#166534" font-size="10">Create 1000 partitions for 10 nodes</text>
+        <text x="225" y="68" fill="#166534" font-size="10">→ 100 partitions/node</text>
+        <text x="225" y="88" fill="#166534" font-size="10">Add node 11:</text>
+        <text x="225" y="104" fill="#166534" font-size="10">steal ~9 partitions from each</text>
+        <text x="225" y="120" fill="#166534" font-size="10">existing node</text>
+        <text x="225" y="140" fill="#166534" font-size="10">Partitions move, not re-keyed.</text>
+        <text x="320" y="168" text-anchor="middle" fill="#16a34a" font-size="22">✓</text>
+        <text x="320" y="195" text-anchor="middle" fill="#15803d" font-size="11">Riak, Elasticsearch,</text>
+        <text x="320" y="211" text-anchor="middle" fill="#15803d" font-size="11">CouchDB, Voldemort</text>
+
+        <!-- Strategy 3: dynamic partitioning -->
+        <rect x="440" y="10" width="230" height="240" rx="8" fill="#eff6ff" stroke="#93c5fd"/>
+        <text x="555" y="30" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="12">Dynamic Partitioning</text>
+        <text x="450" y="52" fill="#1e40af" font-size="10">Partitions split when too large</text>
+        <text x="450" y="68" fill="#1e40af" font-size="10">(e.g. HBase: 10 GB default)</text>
+        <text x="450" y="88" fill="#1e40af" font-size="10">Partitions merge when too small</text>
+        <text x="450" y="108" fill="#1e40af" font-size="10">Number adapts to data volume</text>
+        <text x="450" y="128" fill="#1e40af" font-size="10">Works well for range partitioning</text>
+        <text x="555" y="165" text-anchor="middle" fill="#2563eb" font-size="22">✓</text>
+        <text x="555" y="192" text-anchor="middle" fill="#1d4ed8" font-size="11">HBase, MongoDB,</text>
+        <text x="555" y="208" text-anchor="middle" fill="#1d4ed8" font-size="11">RethinkDB</text>
+      </svg>
+    </div>
+
+    <div class="insight">
+      <strong>Auto vs. Manual Rebalancing</strong> — Fully automatic rebalancing is convenient but dangerous: a node appears slow (e.g. GC pause), cluster decides to move its partitions, network gets saturated, other nodes become slow, triggering a cascade. Couchbase, Riak, and Voldemort generate a suggested rebalancing plan automatically but require <em>operator approval</em> to execute.
+    </div>
+  </section>
+
+  <!-- ── Request Routing ─────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Request Routing</h2>
+    <p>When a client sends a request, which node should handle it? Three approaches:</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 260" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="rarr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+
+        <!-- Client icon (shared) -->
+        <!-- Approach 1: contact any node -->
+        <rect x="10" y="10" width="190" height="240" rx="8" fill="#fafafa" stroke="#e2e8f0"/>
+        <text x="105" y="30" text-anchor="middle" font-weight="bold" fill="#374151" font-size="12">1. Contact Any Node</text>
+        <circle cx="105" cy="60" r="16" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="105" y="65" text-anchor="middle" fill="#92400e" font-size="11">Client</text>
+        <line x1="105" y1="76" x2="105" y2="96" stroke="#64748b" stroke-width="1.5" marker-end="url(#rarr2)"/>
+        <rect x="60" y="97" width="90" height="28" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="105" y="116" text-anchor="middle" fill="#1e40af" font-size="11">Node A (wrong)</text>
+        <line x1="105" y1="125" x2="105" y2="145" stroke="#64748b" stroke-width="1.5" marker-end="url(#rarr2)"/>
+        <text x="105" y="142" text-anchor="middle" fill="#475569" font-size="10">forwards to</text>
+        <rect x="60" y="148" width="90" height="28" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="105" y="167" text-anchor="middle" fill="#14532d" font-size="11">Node B (owns key)</text>
+        <text x="105" y="205" text-anchor="middle" fill="#475569" font-size="10">Each node knows</text>
+        <text x="105" y="220" text-anchor="middle" fill="#475569" font-size="10">partition ownership</text>
+        <text x="105" y="235" text-anchor="middle" fill="#64748b" font-size="10">Cassandra, Riak</text>
+
+        <!-- Approach 2: routing tier -->
+        <rect x="220" y="10" width="200" height="240" rx="8" fill="#fafafa" stroke="#e2e8f0"/>
+        <text x="320" y="30" text-anchor="middle" font-weight="bold" fill="#374151" font-size="12">2. Routing Tier</text>
+        <circle cx="320" cy="60" r="16" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="320" y="65" text-anchor="middle" fill="#92400e" font-size="11">Client</text>
+        <line x1="320" y1="76" x2="320" y2="96" stroke="#64748b" stroke-width="1.5" marker-end="url(#rarr2)"/>
+        <rect x="255" y="97" width="130" height="28" rx="5" fill="#ede9fe" stroke="#8b5cf6"/>
+        <text x="320" y="116" text-anchor="middle" fill="#5b21b6" font-size="11">Routing Tier / LB</text>
+        <line x1="320" y1="125" x2="320" y2="145" stroke="#64748b" stroke-width="1.5" marker-end="url(#rarr2)"/>
+        <rect x="265" y="148" width="110" height="28" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="320" y="167" text-anchor="middle" fill="#14532d" font-size="11">Correct Node</text>
+        <text x="320" y="205" text-anchor="middle" fill="#475569" font-size="10">Tier tracks partition</text>
+        <text x="320" y="220" text-anchor="middle" fill="#475569" font-size="10">→ node mapping</text>
+        <text x="320" y="235" text-anchor="middle" fill="#64748b" font-size="10">HBase/ZooKeeper</text>
+
+        <!-- Approach 3: client-side -->
+        <rect x="440" y="10" width="210" height="240" rx="8" fill="#fafafa" stroke="#e2e8f0"/>
+        <text x="545" y="30" text-anchor="middle" font-weight="bold" fill="#374151" font-size="12">3. Client-aware Routing</text>
+        <circle cx="545" cy="60" r="16" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="545" y="65" text-anchor="middle" fill="#92400e" font-size="11">Client</text>
+        <text x="545" y="90" text-anchor="middle" fill="#475569" font-size="10">knows partition map</text>
+        <line x1="545" y1="98" x2="545" y2="118" stroke="#64748b" stroke-width="1.5" marker-end="url(#rarr2)"/>
+        <rect x="490" y="119" width="110" height="28" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="545" y="138" text-anchor="middle" fill="#14532d" font-size="11">Direct to owner</text>
+        <text x="545" y="175" text-anchor="middle" fill="#475569" font-size="10">Client subscribes to</text>
+        <text x="545" y="191" text-anchor="middle" fill="#475569" font-size="10">ZooKeeper for updates</text>
+        <text x="545" y="207" text-anchor="middle" fill="#475569" font-size="10">Fewest hops</text>
+        <text x="545" y="235" text-anchor="middle" fill="#64748b" font-size="10">Kafka, Cassandra driver</text>
+      </svg>
+    </div>
+
+    <div class="key-concept">
+      <strong>ZooKeeper</strong> is commonly used as the coordination service: nodes register themselves, ZooKeeper propagates partition-to-node mappings, and routing tiers or clients subscribe to changes. LinkedIn's Helix, HBase, SolrCloud, and Kafka all use ZooKeeper this way.
+    </div>
+  </section>
+
+  <!-- ── Partitioning + Replication ─────────────────────────────── -->
+  <section class="chapter">
+    <h2>Partitioning + Replication Together</h2>
+    <div class="two-col">
+      <div>
+        <p>In practice, partitioning is almost always combined with replication. Each partition has a leader and followers across different nodes. A single node will typically be the leader for some partitions and a follower for others.</p>
+        <p>The choice of partitioning scheme is largely independent of replication scheme — they compose orthogonally.</p>
+      </div>
+      <div>
+        <div class="diagram-wrap">
+          <svg viewBox="0 0 320 200" font-family="inherit" font-size="12">
+            <!-- 3 nodes, 3 partitions, replication factor=2 -->
+            <!-- Node 1 -->
+            <rect x="10" y="10" width="88" height="175" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+            <text x="54" y="28" text-anchor="middle" font-weight="bold" fill="#374151">Node 1</text>
+            <rect x="18" y="36" width="72" height="30" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+            <text x="54" y="56" text-anchor="middle" fill="#1e40af" font-size="11">P1 LEADER</text>
+            <rect x="18" y="74" width="72" height="30" rx="4" fill="#fce7f3" stroke="#ec4899" stroke-dasharray="4,2"/>
+            <text x="54" y="94" text-anchor="middle" fill="#9d174d" font-size="11">P3 follower</text>
+            <!-- Node 2 -->
+            <rect x="116" y="10" width="88" height="175" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+            <text x="160" y="28" text-anchor="middle" font-weight="bold" fill="#374151">Node 2</text>
+            <rect x="124" y="36" width="72" height="30" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+            <text x="160" y="56" text-anchor="middle" fill="#14532d" font-size="11">P2 LEADER</text>
+            <rect x="124" y="74" width="72" height="30" rx="4" fill="#dbeafe" stroke="#3b82f6" stroke-dasharray="4,2"/>
+            <text x="160" y="94" text-anchor="middle" fill="#1e40af" font-size="11">P1 follower</text>
+            <!-- Node 3 -->
+            <rect x="222" y="10" width="88" height="175" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+            <text x="266" y="28" text-anchor="middle" font-weight="bold" fill="#374151">Node 3</text>
+            <rect x="230" y="36" width="72" height="30" rx="4" fill="#fce7f3" stroke="#ec4899"/>
+            <text x="266" y="56" text-anchor="middle" fill="#9d174d" font-size="11">P3 LEADER</text>
+            <rect x="230" y="74" width="72" height="30" rx="4" fill="#dcfce7" stroke="#22c55e" stroke-dasharray="4,2"/>
+            <text x="266" y="94" text-anchor="middle" fill="#14532d" font-size="11">P2 follower</text>
+            <!-- legend -->
+            <rect x="18" y="148" width="12" height="12" fill="#dbeafe" stroke="#3b82f6"/>
+            <text x="34" y="159" fill="#475569" font-size="10">LEADER</text>
+            <rect x="100" y="148" width="12" height="12" fill="#dbeafe" stroke="#3b82f6" stroke-dasharray="3,2"/>
+            <text x="116" y="159" fill="#475569" font-size="10">follower</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Key Takeaways ──────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Key Takeaways</h2>
+    <dl class="defs">
+      <dt>Goal</dt>
+      <dd>Spread data and query load evenly; avoid hot spots.</dd>
+      <dt>Range partitioning</dt>
+      <dd>Keys in sorted order — efficient range scans, but can create hot spots on sequential writes (e.g., timestamps).</dd>
+      <dt>Hash partitioning</dt>
+      <dd>Uniform distribution, but loses sort order. Consistent hashing minimises data movement on cluster resize.</dd>
+      <dt>Secondary index — document</dt>
+      <dd>Each partition indexes only its own documents. Reads scatter-gather across all partitions.</dd>
+      <dt>Secondary index — term</dt>
+      <dd>Global index, itself partitioned by term. Reads hit one partition; writes update multiple index partitions (often async).</dd>
+      <dt>Rebalancing</dt>
+      <dd>Fixed number of logical partitions (Riak/Elasticsearch) or dynamic splitting (HBase). Avoid hash-mod-N.</dd>
+      <dt>Request routing</dt>
+      <dd>Any node + forwarding; dedicated routing tier; or client-side routing. ZooKeeper often used for coordination.</dd>
+    </dl>
+  </section>
+
+  <div class="ch-nav">
+    <a href="../part2/ch05.html">← Ch05 · Replication</a>
+    <a href="../part2/ch07.html">Ch07 · Transactions →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

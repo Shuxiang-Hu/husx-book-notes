@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch08 · Trouble with Distributed Systems — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage &amp; Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding &amp; Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency &amp; Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+
+<main id="main">
+  <span class="part-badge p2">Part II — Distributed Data</span>
+  <h1>Chapter 8 · The Trouble with Distributed Systems</h1>
+  <p class="lead">Distributed systems face a unique class of problems: partial failures are the norm, not the exception. Networks drop packets, clocks drift, garbage collectors pause the world, and nodes may be slow without knowing it. This chapter catalogs these failure modes so we can reason about them precisely.</p>
+
+  <!-- ── Network Unreliability ───────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Network Unreliability</h2>
+    <p>Unlike a single computer where operations either succeed or fail atomically, distributed systems face <strong>partial failures</strong>. When a message is sent and no reply arrives, there are at least three equally plausible explanations:</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 260" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="na" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+
+        <!-- Sender -->
+        <rect x="20" y="80" width="100" height="100" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="70" y="135" text-anchor="middle" font-weight="bold" fill="#1e3a8a">Sender</text>
+        <!-- Receiver -->
+        <rect x="560" y="80" width="100" height="100" rx="8" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="610" y="135" text-anchor="middle" font-weight="bold" fill="#14532d">Receiver</text>
+
+        <!-- Request arrow -->
+        <line x1="120" y1="115" x2="558" y2="115" stroke="#3b82f6" stroke-width="2" marker-end="url(#na)"/>
+        <text x="340" y="108" text-anchor="middle" fill="#1d4ed8" font-size="12">request</text>
+
+        <!-- Three failure branches -->
+        <!-- 1: Request lost -->
+        <rect x="200" y="140" width="160" height="48" rx="6" fill="#fee2e2" stroke="#ef4444"/>
+        <text x="280" y="160" text-anchor="middle" fill="#991b1b" font-size="11" font-weight="bold">Request lost</text>
+        <text x="280" y="176" text-anchor="middle" fill="#7f1d1d" font-size="10">Dropped by router or NIC</text>
+        <line x1="280" y1="115" x2="280" y2="140" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+        <!-- 2: Message queued -->
+        <rect x="200" y="202" width="160" height="48" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="280" y="222" text-anchor="middle" fill="#92400e" font-size="11" font-weight="bold">Receiver slow/crashed</text>
+        <text x="280" y="238" text-anchor="middle" fill="#78350f" font-size="10">Never processed, or processing</text>
+        <text x="280" y="250" text-anchor="middle" fill="#78350f" font-size="10">but reply lost</text>
+        <line x1="280" y1="188" x2="280" y2="202" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+        <!-- 3: Reply lost -->
+        <rect x="380" y="140" width="165" height="48" rx="6" fill="#ede9fe" stroke="#8b5cf6"/>
+        <text x="462" y="160" text-anchor="middle" fill="#5b21b6" font-size="11" font-weight="bold">Reply lost</text>
+        <text x="462" y="176" text-anchor="middle" fill="#4c1d95" font-size="10">Request processed; response</text>
+        <text x="462" y="188" text-anchor="middle" fill="#4c1d95" font-size="10">dropped on the way back</text>
+        <line x1="462" y1="115" x2="462" y2="140" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+        <!-- Sender doesn't know -->
+        <rect x="20" y="10" width="640" height="56" rx="6" fill="#f8fafc" stroke="#94a3b8"/>
+        <text x="340" y="30" text-anchor="middle" font-weight="bold" fill="#374151" font-size="12">From the sender's perspective all three look identical: timeout.</text>
+        <text x="340" y="50" text-anchor="middle" fill="#475569" font-size="11">The sender cannot distinguish "request lost", "receiver crashed", or "reply lost" without additional information.</text>
+      </svg>
+    </div>
+
+    <div class="key-concept">
+      <strong>Timeouts are the only reliable detection mechanism</strong> — but they don't tell you <em>what</em> happened. A long timeout avoids false positives; a short timeout detects failures faster but may declare a slow node dead. Choose based on application latency requirements and expected network variance.
+    </div>
+
+    <div class="two-col">
+      <div>
+        <h3>Synchronous vs. Asynchronous Networks</h3>
+        <p>The telephone network (circuit-switched) allocates a fixed bandwidth slice per call — latency is bounded. The internet (packet-switched) is designed for bursty traffic with no bandwidth reservation — latency is <em>unbounded</em>.</p>
+        <p>TCP queues packets in buffers; a full buffer causes queuing delay. This is why tail latency (p99, p999) matters more than mean latency for distributed systems.</p>
+      </div>
+      <div>
+        <div class="diagram-wrap">
+          <svg viewBox="0 0 300 180" font-family="inherit" font-size="12">
+            <!-- Latency distribution sketch -->
+            <text x="150" y="16" text-anchor="middle" fill="#374151" font-size="12" font-weight="bold">Network Latency Distribution</text>
+            <!-- axes -->
+            <line x1="30" y1="140" x2="280" y2="140" stroke="#94a3b8" stroke-width="1.5"/>
+            <line x1="30" y1="30" x2="30" y2="140" stroke="#94a3b8" stroke-width="1.5"/>
+            <text x="155" y="158" text-anchor="middle" fill="#64748b" font-size="10">Latency →</text>
+            <text x="18" y="90" fill="#64748b" font-size="10" transform="rotate(-90,18,90)">Freq</text>
+            <!-- Normal fast responses -->
+            <polyline points="40,138 60,120 80,60 100,40 120,50 140,80 160,110 180,128 200,136 220,138 240,138" fill="none" stroke="#3b82f6" stroke-width="2"/>
+            <!-- Long tail -->
+            <polyline points="200,136 220,133 240,130 260,127 275,124" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="4,3"/>
+            <!-- Labels -->
+            <text x="100" y="55" fill="#1d4ed8" font-size="10">fast path</text>
+            <text x="245" y="122" fill="#dc2626" font-size="10">tail</text>
+            <!-- percentile markers -->
+            <line x1="165" y1="105" x2="165" y2="140" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2"/>
+            <text x="167" y="138" fill="#475569" font-size="9">p50</text>
+            <line x1="220" y1="128" x2="220" y2="140" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,2"/>
+            <text x="222" y="138" fill="#475569" font-size="9">p99</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Clocks ──────────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Unreliable Clocks</h2>
+    <p>Every machine has its own clock, drifting slightly from real time. NTP can synchronize to within a few milliseconds on a LAN — worse over the internet. Clock problems cause subtle, hard-to-reproduce bugs.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 280" font-family="inherit" font-size="13">
+
+        <!-- Time-of-day vs Monotonic -->
+        <rect x="10" y="10" width="300" height="120" rx="8" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="160" y="32" text-anchor="middle" font-weight="bold" fill="#92400e" font-size="13">Time-of-Day Clock</text>
+        <text x="20" y="52" fill="#78350f" font-size="11">• Returns "wall clock" time (NTP-synced)</text>
+        <text x="20" y="68" fill="#78350f" font-size="11">• May jump forwards or backwards</text>
+        <text x="20" y="84" fill="#78350f" font-size="11">  (leap seconds, NTP step adjustment)</text>
+        <text x="20" y="100" fill="#dc2626" font-size="11">✗ Not safe for measuring elapsed time</text>
+        <text x="20" y="116" fill="#78350f" font-size="11">  or ordering events across machines</text>
+
+        <rect x="330" y="10" width="340" height="120" rx="8" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="500" y="32" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="13">Monotonic Clock</text>
+        <text x="340" y="52" fill="#166634" font-size="11">• Only moves forward; measures duration</text>
+        <text x="340" y="68" fill="#166634" font-size="11">• e.g., System.nanoTime() in Java</text>
+        <text x="340" y="84" fill="#166634" font-size="11">• Not comparable across machines</text>
+        <text x="340" y="100" fill="#16a34a" font-size="11">✔ Safe for measuring timeout intervals</text>
+        <text x="340" y="116" fill="#166634" font-size="11">  within a single node</text>
+
+        <!-- Clock drift illustration -->
+        <rect x="10" y="145" width="660" height="120" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="340" y="165" text-anchor="middle" font-weight="bold" fill="#374151" font-size="13">Clock Drift Between Nodes</text>
+        <!-- Time line (actual) -->
+        <text x="20" y="188" fill="#475569" font-size="11">Actual:</text>
+        <line x1="80" y1="184" x2="640" y2="184" stroke="#94a3b8" stroke-width="2"/>
+        <text x="80" y="198" fill="#475569" font-size="10">t=0</text>
+        <text x="360" y="198" fill="#475569" font-size="10">t=5s</text>
+        <text x="634" y="198" fill="#475569" font-size="10">t=10s</text>
+        <!-- Node 1 clock (fast) -->
+        <text x="20" y="220" fill="#3b82f6" font-size="11">Node 1:</text>
+        <line x1="80" y1="216" x2="640" y2="216" stroke="#3b82f6" stroke-width="2"/>
+        <text x="80" y="228" fill="#3b82f6" font-size="10">0</text>
+        <text x="390" y="228" fill="#3b82f6" font-size="10">5.1s (fast)</text>
+        <text x="655" y="228" fill="#3b82f6" font-size="10">10.2s</text>
+        <!-- Node 2 clock (slow) -->
+        <text x="20" y="250" fill="#ef4444" font-size="11">Node 2:</text>
+        <line x1="80" y1="246" x2="640" y2="246" stroke="#ef4444" stroke-width="2"/>
+        <text x="80" y="258" fill="#ef4444" font-size="10">0</text>
+        <text x="325" y="258" fill="#ef4444" font-size="10">4.9s (slow)</text>
+        <text x="630" y="258" fill="#ef4444" font-size="10">9.8s</text>
+        <!-- skew arrow -->
+        <line x1="640" y1="218" x2="640" y2="244" stroke="#f59e0b" stroke-width="2"/>
+        <text x="645" y="234" fill="#92400e" font-size="10">±200ms</text>
+        <text x="645" y="246" fill="#92400e" font-size="10">skew</text>
+      </svg>
+    </div>
+
+    <h3>Dangerous Patterns with Clocks</h3>
+    <table class="comparison-table">
+      <thead><tr><th>Pattern</th><th>Problem</th><th>Better Alternative</th></tr></thead>
+      <tbody>
+        <tr><td>Last-write-wins by timestamp</td><td class="n">Clock skew can reorder causally-related writes; newer write gets silently discarded</td><td>Logical clocks / version vectors</td></tr>
+        <tr><td>Lease / lock expiry by timestamp</td><td class="n">A paused process may act on an expired lease thinking it's valid</td><td>Fencing tokens (monotonically increasing)</td></tr>
+        <tr><td>Event ordering across nodes</td><td class="n">Timestamps from different nodes can't be compared reliably</td><td>Lamport clocks / hybrid logical clocks</td></tr>
+        <tr><td>Snapshot reads across nodes</td><td class="b">Google Spanner uses TrueTime with bounded uncertainty; waits out the uncertainty window</td><td>TrueTime API with commit-wait</td></tr>
+      </tbody>
+    </table>
+
+    <div class="key-concept">
+      <strong>TrueTime (Google Spanner)</strong> — GPS receivers and atomic clocks in each datacenter. TrueTime exposes an interval <em>[earliest, latest]</em> within which the true time lies. Spanner waits for the uncertainty window to pass before committing a read-write transaction, ensuring globally consistent snapshots. The interval is typically &lt;7 ms.
+    </div>
+  </section>
+
+  <!-- ── Process Pauses ─────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Process Pauses &amp; Node Death</h2>
+    <p>A process can be paused for seconds at a time without knowing it. Causes include:</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 180" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="pa" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Timeline for node -->
+        <text x="20" y="20" fill="#374151" font-size="12" font-weight="bold">Node timeline — from the node's perspective</text>
+        <line x1="20" y1="50" x2="660" y2="50" stroke="#94a3b8" stroke-width="2"/>
+        <!-- Running phase -->
+        <rect x="20" y="35" width="200" height="30" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="120" y="55" text-anchor="middle" fill="#14532d" font-size="11">Running normally</text>
+        <!-- Pause phase -->
+        <rect x="220" y="35" width="220" height="30" rx="4" fill="#fee2e2" stroke="#ef4444"/>
+        <text x="330" y="52" text-anchor="middle" fill="#991b1b" font-size="11">PAUSED (GC / page fault / swap /</text>
+        <text x="330" y="64" text-anchor="middle" fill="#991b1b" font-size="11">hypervisor migration / OS scheduling)</text>
+        <!-- Resuming -->
+        <rect x="440" y="35" width="220" height="30" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="550" y="55" text-anchor="middle" fill="#14532d" font-size="11">Resumed — thinks no time has passed</text>
+
+        <!-- What happened meanwhile -->
+        <line x1="330" y1="65" x2="330" y2="90" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <rect x="150" y="92" width="360" height="75" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+        <text x="330" y="111" text-anchor="middle" fill="#92400e" font-size="11" font-weight="bold">Meanwhile, the rest of the cluster:</text>
+        <text x="165" y="128" fill="#78350f" font-size="11">• Lease expired — another node became leader</text>
+        <text x="165" y="144" fill="#78350f" font-size="11">• Other nodes wrote new data to the "leader" partition</text>
+        <text x="165" y="160" fill="#78350f" font-size="11">• Paused node wakes up and writes with stale lease → split-brain!</text>
+      </svg>
+    </div>
+
+    <div class="key-concept">
+      <strong>Fencing Tokens</strong> — A monotonically increasing number issued every time a lock or lease is granted. Every write to the storage service must include the fencing token; the service rejects writes with a token older than the one it last saw. Even a zombie leader (woken from GC pause with an expired lease) cannot corrupt data.
+    </div>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 560 200" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="fa" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <text x="280" y="18" text-anchor="middle" font-weight="bold" fill="#374151" font-size="13">Fencing Token in Action</text>
+        <!-- Client 1 (valid) -->
+        <rect x="10" y="30" width="100" height="50" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="60" y="52" text-anchor="middle" fill="#1e40af" font-size="11">Client 1</text>
+        <text x="60" y="67" text-anchor="middle" fill="#1e40af" font-size="10">token=34</text>
+        <!-- Client 2 (zombie) -->
+        <rect x="10" y="120" width="100" height="50" rx="6" fill="#fee2e2" stroke="#ef4444"/>
+        <text x="60" y="142" text-anchor="middle" fill="#991b1b" font-size="11">Client 2</text>
+        <text x="60" y="157" text-anchor="middle" fill="#991b1b" font-size="10">token=33 (old)</text>
+
+        <!-- Lock server -->
+        <rect x="225" y="68" width="100" height="40" rx="6" fill="#ede9fe" stroke="#8b5cf6"/>
+        <text x="275" y="90" text-anchor="middle" fill="#5b21b6" font-size="11">Lock Server</text>
+        <!-- Storage -->
+        <rect x="440" y="55" width="100" height="65" rx="6" fill="#f0fdf4" stroke="#22c55e"/>
+        <text x="490" y="78" text-anchor="middle" fill="#14532d" font-size="11">Storage</text>
+        <text x="490" y="96" text-anchor="middle" fill="#14532d" font-size="10">last seen</text>
+        <text x="490" y="112" text-anchor="middle" fill="#14532d" font-size="10">token: 34</text>
+
+        <!-- Client 1 gets token 34 -->
+        <line x1="110" y1="55" x2="224" y2="85" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#fa)"/>
+        <text x="168" y="60" fill="#1d4ed8" font-size="10">get token</text>
+        <line x1="326" y1="85" x2="438" y2="78" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#fa)"/>
+        <text x="370" y="74" fill="#1d4ed8" font-size="10">write(token=34) ✔</text>
+
+        <!-- Client 2 rejected -->
+        <line x1="110" y1="145" x2="438" y2="105" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#fa)"/>
+        <text x="280" y="140" fill="#dc2626" font-size="10">write(token=33) ✗ REJECTED</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── Byzantine Faults ───────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Byzantine Faults</h2>
+
+    <div class="two-col">
+      <div>
+        <p>So far we assumed nodes may <em>crash or be slow</em>, but always follow the protocol honestly. <strong>Byzantine faults</strong> are worse: a node may send <em>deliberately incorrect</em> data — corrupted, malicious, or buggy.</p>
+        <p>Most databases and distributed systems do <em>not</em> defend against Byzantine faults — they assume nodes in a trusted datacenter behave honestly. Byzantine fault tolerance is primarily needed for:</p>
+        <ul>
+          <li>Blockchain / cryptocurrency (untrusted participants)</li>
+          <li>Aerospace systems (cosmic ray bit flips)</li>
+          <li>Multi-organization coordination</li>
+        </ul>
+      </div>
+      <div>
+        <div class="diagram-wrap">
+          <svg viewBox="0 0 280 200" font-family="inherit" font-size="12">
+            <!-- Fault model spectrum -->
+            <text x="140" y="18" text-anchor="middle" font-weight="bold" fill="#374151" font-size="13">Fault Model Spectrum</text>
+            <!-- Crash-fail -->
+            <rect x="10" y="30" width="120" height="50" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+            <text x="70" y="52" text-anchor="middle" fill="#14532d" font-size="11">Crash-Fail</text>
+            <text x="70" y="67" text-anchor="middle" fill="#166634" font-size="10">Node stops. Doesn't</text>
+            <text x="70" y="79" text-anchor="middle" fill="#166634" font-size="10">send bad messages.</text>
+            <!-- Crash-recovery -->
+            <rect x="10" y="90" width="120" height="50" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+            <text x="70" y="112" text-anchor="middle" fill="#92400e" font-size="11">Crash-Recovery</text>
+            <text x="70" y="127" text-anchor="middle" fill="#78350f" font-size="10">Node crashes then</text>
+            <text x="70" y="139" text-anchor="middle" fill="#78350f" font-size="10">recovers. May have</text>
+            <text x="70" y="151" text-anchor="middle" fill="#78350f" font-size="10">stale state.</text>
+            <!-- Byzantine -->
+            <rect x="10" y="150" width="120" height="40" rx="6" fill="#fee2e2" stroke="#ef4444"/>
+            <text x="70" y="172" text-anchor="middle" fill="#991b1b" font-size="11">Byzantine</text>
+            <text x="70" y="184" text-anchor="middle" fill="#7f1d1d" font-size="10">Sends arbitrary msgs.</text>
+            <!-- Right side: what systems assume -->
+            <rect x="145" y="30" width="125" height="160" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+            <text x="207" y="50" text-anchor="middle" fill="#374151" font-size="11" font-weight="bold">Systems assume:</text>
+            <text x="155" y="70" fill="#15803d" font-size="10">Most DBs: crash-fail</text>
+            <text x="155" y="88" fill="#92400e" font-size="10">Zookeeper/Kafka:</text>
+            <text x="155" y="100" fill="#92400e" font-size="10">crash-recovery</text>
+            <text x="155" y="120" fill="#dc2626" font-size="10">Bitcoin/Tendermint:</text>
+            <text x="155" y="132" fill="#dc2626" font-size="10">Byzantine</text>
+            <text x="155" y="152" fill="#475569" font-size="10">Higher model =</text>
+            <text x="155" y="164" fill="#475569" font-size="10">more overhead</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── System Model ───────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>System Models</h2>
+    <p>To reason rigorously about distributed algorithms, we pick a <em>system model</em> — a set of assumptions about what can fail:</p>
+
+    <table class="comparison-table">
+      <thead><tr><th>System Model</th><th>Network</th><th>Clocks</th><th>Process Faults</th><th>Used for</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Synchronous</strong></td>
+          <td>Bounded delay</td>
+          <td>Bounded drift</td>
+          <td>Crash-fail</td>
+          <td class="n">Theoretically clean; unrealistic for internet</td>
+        </tr>
+        <tr>
+          <td><strong>Partially synchronous</strong></td>
+          <td>Usually bounded; rarely unbounded</td>
+          <td>Usually bounded</td>
+          <td>Crash-recovery</td>
+          <td class="g">Most real-world algorithms (Raft, Paxos)</td>
+        </tr>
+        <tr>
+          <td><strong>Asynchronous</strong></td>
+          <td>No bounds at all</td>
+          <td>No clocks</td>
+          <td>Crash-fail</td>
+          <td class="b">Very conservative; FLP impossibility applies</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="key-concept">
+      <strong>FLP Impossibility</strong> — In a purely asynchronous system with even one possible crash, no algorithm can guarantee that consensus is reached in finite time (Fischer, Lynch, Paterson 1985). This doesn't mean consensus is impossible in practice — it means you must either use timeouts (partial synchrony) or accept that the algorithm may sometimes block. Raft and Paxos make progress under partial synchrony.
+    </div>
+
+    <div class="insight">
+      <strong>The Core Thesis of Chapter 8</strong> — In a distributed system, there is no global shared memory, no accurate global clock, and no way to tell if a remote node is dead or just slow. All knowledge is local and based on messages that may be delayed. Algorithms must be designed to tolerate these realities rather than assuming them away.
+    </div>
+  </section>
+
+  <!-- ── Summary ────────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Key Takeaways</h2>
+    <dl class="defs">
+      <dt>Network</dt>
+      <dd>Asynchronous, unreliable. Timeouts are the only detection mechanism. Cannot distinguish "lost request" from "slow response" from "lost reply".</dd>
+      <dt>Clocks</dt>
+      <dd>Each node has a local clock that drifts. NTP gives millisecond accuracy at best. Never use timestamps to order distributed events — use logical clocks.</dd>
+      <dt>Process pauses</dt>
+      <dd>GC, swapping, hypervisor migration can pause a process for seconds. The process wakes up with no idea time has passed. Expired leases become dangerous.</dd>
+      <dt>Fencing tokens</dt>
+      <dd>Monotonically increasing token per lock grant. Storage rejects writes with old tokens. Protects against zombie leaders acting on expired leases.</dd>
+      <dt>Byzantine faults</dt>
+      <dd>Nodes may send arbitrary incorrect data. Most distributed databases don't defend against this — only relevant in adversarial or multi-org environments.</dd>
+      <dt>System model</dt>
+      <dd>Most real algorithms assume partially synchronous network and crash-recovery faults. FLP impossibility applies to fully asynchronous systems.</dd>
+    </dl>
+  </section>
+
+  <div class="ch-nav">
+    <a href="../part2/ch07.html">← Ch07 · Transactions</a>
+    <a href="../part2/ch09.html">Ch09 · Consistency &amp; Consensus →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

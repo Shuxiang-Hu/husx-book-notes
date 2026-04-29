@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch09 · Consistency &amp; Consensus — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage &amp; Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding &amp; Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency &amp; Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+
+<main id="main">
+  <span class="part-badge p2">Part II — Distributed Data</span>
+  <h1>Chapter 9 · Consistency &amp; Consensus</h1>
+  <p class="lead">Chapter 8 cataloged what can go wrong in distributed systems. This chapter asks: given those constraints, what guarantees can we actually provide? It covers the strongest consistency guarantee (linearizability), why it conflicts with availability (CAP), ordering guarantees (causality, total order), and the consensus problem that underpins leader election and atomic commits.</p>
+
+  <!-- ── Consistency Guarantees ─────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Consistency Guarantee Spectrum</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 200" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="ca" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Spectrum bar -->
+        <defs>
+          <linearGradient id="specGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#fee2e2"/>
+            <stop offset="50%" stop-color="#fef3c7"/>
+            <stop offset="100%" stop-color="#dcfce7"/>
+          </linearGradient>
+        </defs>
+        <rect x="20" y="10" width="640" height="36" rx="8" fill="url(#specGrad)" stroke="#e2e8f0"/>
+        <text x="40" y="33" fill="#991b1b" font-size="12" font-weight="bold">Weakest →</text>
+        <text x="600" y="33" fill="#14532d" font-size="12" font-weight="bold">← Strongest</text>
+        <text x="340" y="33" text-anchor="middle" fill="#374151" font-size="12">consistency spectrum</text>
+
+        <!-- Eventual consistency -->
+        <rect x="20" y="58" width="130" height="130" rx="6" fill="#fee2e2" stroke="#ef4444"/>
+        <text x="85" y="78" text-anchor="middle" font-weight="bold" fill="#991b1b" font-size="12">Eventual</text>
+        <text x="30" y="96" fill="#7f1d1d" font-size="10">Given no new writes,</text>
+        <text x="30" y="110" fill="#7f1d1d" font-size="10">all replicas converge.</text>
+        <text x="30" y="126" fill="#7f1d1d" font-size="10">No guarantee on when.</text>
+        <text x="30" y="148" fill="#b91c1c" font-size="10">DynamoDB default</text>
+        <text x="30" y="162" fill="#b91c1c" font-size="10">Cassandra, Riak</text>
+        <text x="30" y="178" fill="#b91c1c" font-size="10">(no quorum)</text>
+
+        <!-- Causal consistency -->
+        <rect x="162" y="58" width="145" height="130" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="234" y="78" text-anchor="middle" font-weight="bold" fill="#92400e" font-size="12">Causal</text>
+        <text x="172" y="96" fill="#78350f" font-size="10">Causally related ops</text>
+        <text x="172" y="110" fill="#78350f" font-size="10">seen in order. Concurrent</text>
+        <text x="172" y="124" fill="#78350f" font-size="10">ops may be in any order.</text>
+        <text x="172" y="142" fill="#78350f" font-size="10">Strongest model that</text>
+        <text x="172" y="156" fill="#78350f" font-size="10">doesn't require coord.</text>
+        <text x="172" y="176" fill="#b45309" font-size="10">COPS, Bolt-on causal</text>
+
+        <!-- Read-your-writes -->
+        <rect x="319" y="58" width="155" height="130" rx="6" fill="#e0e7ff" stroke="#6366f1"/>
+        <text x="396" y="78" text-anchor="middle" font-weight="bold" fill="#4338ca" font-size="12">Session Guarantees</text>
+        <text x="329" y="96" fill="#4338ca" font-size="10">Read-your-writes</text>
+        <text x="329" y="110" fill="#4338ca" font-size="10">Monotonic reads</text>
+        <text x="329" y="124" fill="#4338ca" font-size="10">Monotonic writes</text>
+        <text x="329" y="138" fill="#4338ca" font-size="10">Writes-follow-reads</text>
+        <text x="329" y="158" fill="#4338ca" font-size="10">Per-session only;</text>
+        <text x="329" y="172" fill="#4338ca" font-size="10">no cross-session ordering</text>
+
+        <!-- Linearizability -->
+        <rect x="486" y="58" width="174" height="130" rx="6" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+        <text x="573" y="78" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="12">Linearizability</text>
+        <text x="496" y="96" fill="#166634" font-size="10">Appears as single copy.</text>
+        <text x="496" y="110" fill="#166634" font-size="10">Every op takes effect</text>
+        <text x="496" y="124" fill="#166634" font-size="10">atomically between</text>
+        <text x="496" y="138" fill="#166634" font-size="10">call and return.</text>
+        <text x="496" y="158" fill="#dc2626" font-size="10">Expensive — requires</text>
+        <text x="496" y="172" fill="#dc2626" font-size="10">synchronous coordination</text>
+        <text x="496" y="186" fill="#14532d" font-size="10">ZooKeeper, etcd (reads)</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── Linearizability ────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Linearizability</h2>
+    <p>Linearizability (also called atomic consistency or strong consistency) makes a distributed system appear to behave like a single copy of the data, with all operations appearing to take effect at a single point in time.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 260" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="la" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+
+        <!-- NOT linearizable example -->
+        <text x="10" y="18" font-weight="bold" fill="#991b1b" font-size="12">NOT Linearizable (e.g., async replication)</text>
+        <!-- time axis -->
+        <line x1="10" y1="32" x2="650" y2="32" stroke="#94a3b8" stroke-width="1.5"/>
+        <!-- Client A writes -->
+        <rect x="10" y="42" width="200" height="22" rx="4" fill="#fce7f3" stroke="#ec4899"/>
+        <text x="110" y="58" text-anchor="middle" fill="#9d174d" font-size="11">Client A: write(x=1) → ok</text>
+        <!-- Client B reads immediately after -->
+        <rect x="220" y="42" width="200" height="22" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="320" y="58" text-anchor="middle" fill="#1e40af" font-size="11">Client B: read(x) → 0 ← stale!</text>
+        <!-- Client C reads even later -->
+        <rect x="430" y="42" width="200" height="22" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="530" y="58" text-anchor="middle" fill="#14532d" font-size="11">Client C: read(x) → 1 ← up to date</text>
+        <!-- violation note -->
+        <line x1="320" y1="64" x2="320" y2="80" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="3,2"/>
+        <text x="320" y="95" text-anchor="middle" fill="#dc2626" font-size="11">B reads a value before A's write even though</text>
+        <text x="320" y="110" text-anchor="middle" fill="#dc2626" font-size="11">A's write call returned before B's read call started.</text>
+
+        <!-- Linearizable example -->
+        <text x="10" y="138" font-weight="bold" fill="#14532d" font-size="12">Linearizable (single copy appearance)</text>
+        <line x1="10" y1="152" x2="650" y2="152" stroke="#94a3b8" stroke-width="1.5"/>
+        <!-- linearization point -->
+        <line x1="130" y1="142" x2="130" y2="238" stroke="#f59e0b" stroke-width="2" stroke-dasharray="5,3"/>
+        <text x="133" y="150" fill="#92400e" font-size="10">lin. point</text>
+        <!-- write op bar -->
+        <rect x="10" y="162" width="220" height="22" rx="4" fill="#fce7f3" stroke="#ec4899"/>
+        <text x="120" y="178" text-anchor="middle" fill="#9d174d" font-size="11">A: write(x=1) ──── ok</text>
+        <!-- concurrent read op -->
+        <rect x="60" y="192" width="180" height="22" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="150" y="208" text-anchor="middle" fill="#1e40af" font-size="11">B: read(x) ──── 1</text>
+        <!-- later read -->
+        <rect x="250" y="192" width="180" height="22" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="340" y="208" text-anchor="middle" fill="#14532d" font-size="11">C: read(x) → 1</text>
+        <text x="340" y="232" text-anchor="middle" fill="#16a34a" font-size="11">Once any reader sees x=1, all subsequent reads return x=1</text>
+      </svg>
+    </div>
+
+    <h3>When do you need Linearizability?</h3>
+    <table class="comparison-table">
+      <thead><tr><th>Use Case</th><th>Why Linearizable?</th></tr></thead>
+      <tbody>
+        <tr><td>Leader election (ZooKeeper)</td><td class="g">Only one node should believe it is leader — requires atomic compare-and-set on a single register</td></tr>
+        <tr><td>Uniqueness constraints (username, booking)</td><td class="g">Two users picking same username must be rejected; needs atomic check-and-set</td></tr>
+        <tr><td>Cross-channel ordering (Alice + Bob via diff paths)</td><td class="g">If Alice updates then messages Bob, Bob must see Alice's update (requires causally + linearizable)</td></tr>
+        <tr><td>Counters, sequence numbers</td><td class="b">Need linearizable increment to avoid duplicates</td></tr>
+        <tr><td>User profile reads</td><td class="n">Eventual consistency usually fine — stale for a few seconds is acceptable</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── CAP Theorem ────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>CAP Theorem</h2>
+
+    <div class="two-col">
+      <div>
+        <p>Brewer's CAP theorem (2000, formally proved by Gilbert &amp; Lynch 2002): a distributed data store can guarantee at most two of:</p>
+        <ul>
+          <li><strong>C</strong>onsistency — Linearizability (not ACID consistency)</li>
+          <li><strong>A</strong>vailability — every request receives a response (not an error)</li>
+          <li><strong>P</strong>artition tolerance — the system continues to operate if network partitions occur</li>
+        </ul>
+        <p>Since network partitions <em>will</em> occur in any distributed system, the real choice is between <strong>CP</strong> (consistent, partition-tolerant) and <strong>AP</strong> (available, partition-tolerant). CA is not a useful option for distributed systems.</p>
+        <div class="insight">
+          <strong>CAP is often misunderstood</strong> — Kleppmann argues it's a poor framework. "Consistency" means linearizability (not ACID's C). "Availability" means every request gets a response (not a specific response). The theorem only applies during partition events. Most systems are not cleanly CP or AP.
+        </div>
+      </div>
+      <div>
+        <div class="diagram-wrap">
+          <svg viewBox="0 0 280 260" font-family="inherit" font-size="12">
+            <!-- Venn-like triangle -->
+            <text x="140" y="18" text-anchor="middle" font-weight="bold" fill="#374151" font-size="13">CAP Choices</text>
+            <!-- C circle -->
+            <circle cx="140" cy="80" r="55" fill="#dbeafe" fill-opacity="0.6" stroke="#3b82f6" stroke-width="2"/>
+            <text x="140" y="40" text-anchor="middle" fill="#1e3a8a" font-size="13" font-weight="bold">C</text>
+            <text x="140" y="56" text-anchor="middle" fill="#1e40af" font-size="10">Consistency</text>
+            <!-- A circle -->
+            <circle cx="95" cy="165" r="55" fill="#dcfce7" fill-opacity="0.6" stroke="#22c55e" stroke-width="2"/>
+            <text x="55" y="200" text-anchor="middle" fill="#14532d" font-size="13" font-weight="bold">A</text>
+            <text x="55" y="215" text-anchor="middle" fill="#166634" font-size="10">Availability</text>
+            <!-- P circle -->
+            <circle cx="185" cy="165" r="55" fill="#fce7f3" fill-opacity="0.6" stroke="#ec4899" stroke-width="2"/>
+            <text x="230" y="200" text-anchor="middle" fill="#9d174d" font-size="13" font-weight="bold">P</text>
+            <text x="226" y="215" text-anchor="middle" fill="#be185d" font-size="10">Partition</text>
+            <text x="226" y="228" text-anchor="middle" fill="#be185d" font-size="10">Tolerance</text>
+            <!-- Labels in intersections -->
+            <text x="140" y="135" text-anchor="middle" fill="#374151" font-size="10" font-weight="bold">CP</text>
+            <text x="140" y="148" text-anchor="middle" fill="#475569" font-size="9">ZooKeeper, HBase</text>
+            <text x="110" y="205" text-anchor="middle" fill="#374151" font-size="10" font-weight="bold">CA</text>
+            <text x="110" y="217" text-anchor="middle" fill="#dc2626" font-size="9">Not realistically</text>
+            <text x="110" y="229" text-anchor="middle" fill="#dc2626" font-size="9">possible (P required)</text>
+            <text x="170" y="205" text-anchor="middle" fill="#374151" font-size="10" font-weight="bold">AP</text>
+            <text x="175" y="217" text-anchor="middle" fill="#475569" font-size="9">Cassandra, CouchDB</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Ordering & Causality ───────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Ordering &amp; Causality</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 200" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="oa" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Lamport clocks -->
+        <text x="10" y="18" font-weight="bold" fill="#374151" font-size="13">Lamport Timestamps — capturing causality</text>
+        <!-- Node A -->
+        <text x="30" y="45" fill="#1d4ed8" font-weight="bold" font-size="12">Node A:</text>
+        <circle cx="80" cy="70" r="14" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="80" y="75" text-anchor="middle" fill="#1e3a8a" font-size="11">1</text>
+        <line x1="94" y1="70" x2="136" y2="70" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#oa)"/>
+        <circle cx="150" cy="70" r="14" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="150" y="75" text-anchor="middle" fill="#1e3a8a" font-size="11">2</text>
+        <!-- sync arrow from B to A -->
+        <line x1="230" y1="115" x2="164" y2="75" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#oa)"/>
+        <text x="185" y="102" fill="#b45309" font-size="10">msg (ts=3)</text>
+        <circle cx="260" cy="70" r="14" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="260" y="75" text-anchor="middle" fill="#1e3a8a" font-size="11">4</text>
+        <text x="260" y="52" text-anchor="middle" fill="#b45309" font-size="10">max(2,3)+1=4</text>
+        <line x1="274" y1="70" x2="316" y2="70" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#oa)"/>
+        <circle cx="330" cy="70" r="14" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="330" y="75" text-anchor="middle" fill="#1e3a8a" font-size="11">5</text>
+
+        <!-- Node B -->
+        <text x="30" y="120" fill="#b45309" font-weight="bold" font-size="12">Node B:</text>
+        <circle cx="80" cy="130" r="14" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="80" y="135" text-anchor="middle" fill="#92400e" font-size="11">1</text>
+        <line x1="94" y1="130" x2="136" y2="130" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#oa)"/>
+        <circle cx="150" cy="130" r="14" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="150" y="135" text-anchor="middle" fill="#92400e" font-size="11">2</text>
+        <line x1="164" y1="130" x2="216" y2="120" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#oa)"/>
+        <circle cx="230" cy="115" r="14" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="230" y="120" text-anchor="middle" fill="#92400e" font-size="11">3</text>
+        <line x1="244" y1="115" x2="286" y2="115" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#oa)"/>
+        <circle cx="300" cy="115" r="14" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="300" y="120" text-anchor="middle" fill="#92400e" font-size="11">6</text>
+
+        <!-- Legend -->
+        <rect x="400" y="45" width="250" height="115" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="525" y="65" text-anchor="middle" fill="#374151" font-size="12" font-weight="bold">Lamport Clock Rules</text>
+        <text x="410" y="84" fill="#475569" font-size="11">1. Increment counter on each event</text>
+        <text x="410" y="100" fill="#475569" font-size="11">2. Send timestamp with each message</text>
+        <text x="410" y="116" fill="#475569" font-size="11">3. On receive: counter = max(local,</text>
+        <text x="418" y="132" fill="#475569" font-size="11">   received) + 1</text>
+        <text x="410" y="150" fill="#dc2626" font-size="10">⚠ Captures causal order but does NOT</text>
+        <text x="410" y="162" fill="#dc2626" font-size="10">detect concurrent events (use vector clocks)</text>
+      </svg>
+    </div>
+
+    <div class="key-concept">
+      <strong>Total Order vs Causal Order</strong> — Causality is a partial order (some events have no causal relation and are concurrent). Linearizability provides a <em>total</em> order — every pair of operations has a defined order. Total order broadcast (atomic broadcast) is equivalent in power to consensus.
+    </div>
+  </section>
+
+  <!-- ── Consensus ──────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Distributed Consensus</h2>
+    <p>Consensus: getting multiple nodes to agree on a single value. Formally requires:</p>
+    <ul>
+      <li><strong>Uniform agreement</strong>: no two nodes decide differently</li>
+      <li><strong>Integrity</strong>: a node decides at most once</li>
+      <li><strong>Validity</strong>: the decided value was proposed by some node</li>
+      <li><strong>Termination</strong>: every non-crashed node eventually decides</li>
+    </ul>
+
+    <h3>Two-Phase Commit (2PC) — Atomic Commit</h3>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 280" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="pc" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Coordinator -->
+        <rect x="250" y="10" width="160" height="36" rx="6" fill="#ede9fe" stroke="#8b5cf6"/>
+        <text x="330" y="33" text-anchor="middle" font-weight="bold" fill="#5b21b6" font-size="13">Coordinator</text>
+
+        <!-- Participants -->
+        <rect x="30" y="10" width="130" height="36" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="95" y="33" text-anchor="middle" fill="#1e40af" font-size="12">Participant A</text>
+        <rect x="500" y="10" width="130" height="36" rx="6" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="565" y="33" text-anchor="middle" fill="#14532d" font-size="12">Participant B</text>
+
+        <!-- Phase 1: Prepare -->
+        <text x="330" y="62" text-anchor="middle" fill="#374151" font-size="12" font-weight="bold">Phase 1: Prepare</text>
+        <line x1="250" y1="72" x2="160" y2="95" stroke="#8b5cf6" stroke-width="1.5" marker-end="url(#pc)"/>
+        <line x1="410" y1="72" x2="500" y2="95" stroke="#8b5cf6" stroke-width="1.5" marker-end="url(#pc)"/>
+        <text x="190" y="82" fill="#7c3aed" font-size="10">prepare?</text>
+        <text x="438" y="82" fill="#7c3aed" font-size="10">prepare?</text>
+
+        <!-- Participants lock & reply -->
+        <rect x="30" y="100" width="130" height="40" rx="5" fill="#f0f9ff" stroke="#7dd3fc"/>
+        <text x="95" y="118" text-anchor="middle" fill="#0369a1" font-size="10">write to WAL</text>
+        <text x="95" y="132" text-anchor="middle" fill="#0369a1" font-size="10">acquire locks</text>
+        <rect x="500" y="100" width="130" height="40" rx="5" fill="#f0f9ff" stroke="#7dd3fc"/>
+        <text x="565" y="118" text-anchor="middle" fill="#0369a1" font-size="10">write to WAL</text>
+        <text x="565" y="132" text-anchor="middle" fill="#0369a1" font-size="10">acquire locks</text>
+
+        <line x1="160" y1="120" x2="250" y2="155" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#pc)"/>
+        <line x1="500" y1="120" x2="410" y2="155" stroke="#22c55e" stroke-width="1.5" marker-end="url(#pc)"/>
+        <text x="192" y="140" fill="#1d4ed8" font-size="10">yes (vote)</text>
+        <text x="420" y="140" fill="#15803d" font-size="10">yes (vote)</text>
+
+        <!-- Phase 2: Commit -->
+        <text x="330" y="174" text-anchor="middle" fill="#374151" font-size="12" font-weight="bold">Phase 2: Commit (all voted yes)</text>
+        <line x1="250" y1="184" x2="160" y2="207" stroke="#8b5cf6" stroke-width="1.5" marker-end="url(#pc)"/>
+        <line x1="410" y1="184" x2="500" y2="207" stroke="#8b5cf6" stroke-width="1.5" marker-end="url(#pc)"/>
+        <text x="192" y="196" fill="#7c3aed" font-size="10">commit</text>
+        <text x="432" y="196" fill="#7c3aed" font-size="10">commit</text>
+
+        <rect x="30" y="210" width="130" height="30" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="95" y="230" text-anchor="middle" fill="#14532d" font-size="10">commit &amp; release locks</text>
+        <rect x="500" y="210" width="130" height="30" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="565" y="230" text-anchor="middle" fill="#14532d" font-size="10">commit &amp; release locks</text>
+
+        <!-- Problem note -->
+        <rect x="120" y="252" width="420" height="26" rx="5" fill="#fee2e2" stroke="#fca5a5"/>
+        <text x="330" y="269" text-anchor="middle" fill="#991b1b" font-size="11">If coordinator crashes after phase 1 but before phase 2: participants are stuck in "uncertain" state (blocking)</text>
+      </svg>
+    </div>
+
+    <div class="key-concept">
+      <strong>2PC is a "blocking" protocol</strong> — if the coordinator crashes after sending prepare but before sending commit/abort, participants holding locks are stuck. They cannot abort (they voted yes) and cannot commit (haven't received the directive). They must wait for the coordinator to recover — potentially for hours.
+    </div>
+
+    <h3>Fault-Tolerant Consensus: Raft &amp; Paxos</h3>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 220" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="ra" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+
+        <!-- Raft overview -->
+        <text x="10" y="18" font-weight="bold" fill="#1d4ed8" font-size="13">Raft Consensus Algorithm</text>
+
+        <!-- Leader -->
+        <rect x="260" y="30" width="130" height="44" rx="6" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+        <text x="325" y="52" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="13">Leader</text>
+        <text x="325" y="67" text-anchor="middle" fill="#1e40af" font-size="10">term=4</text>
+
+        <!-- Followers -->
+        <rect x="30" y="120" width="110" height="38" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="85" y="141" text-anchor="middle" fill="#15803d" font-size="11">Follower 1</text>
+        <rect x="155" y="120" width="110" height="38" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="210" y="141" text-anchor="middle" fill="#15803d" font-size="11">Follower 2</text>
+        <rect x="385" y="120" width="110" height="38" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="440" y="141" text-anchor="middle" fill="#15803d" font-size="11">Follower 3</text>
+        <rect x="510" y="120" width="110" height="38" rx="6" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="565" y="141" text-anchor="middle" fill="#15803d" font-size="11">Follower 4</text>
+
+        <!-- AppendEntries arrows -->
+        <line x1="290" y1="74" x2="120" y2="120" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#ra)"/>
+        <line x1="305" y1="74" x2="210" y2="120" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#ra)"/>
+        <line x1="355" y1="74" x2="440" y2="120" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#ra)"/>
+        <line x1="370" y1="74" x2="565" y2="120" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#ra)"/>
+        <text x="325" y="100" text-anchor="middle" fill="#1d4ed8" font-size="10">AppendEntries (log replication + heartbeat)</text>
+
+        <!-- Quorum note -->
+        <rect x="10" y="175" width="640" height="40" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+        <text x="330" y="192" text-anchor="middle" fill="#92400e" font-size="11">Quorum = majority (3/5 nodes). Entry committed when replicated to majority. Leader elected by majority vote.</text>
+        <text x="330" y="208" text-anchor="middle" fill="#78350f" font-size="11">Safety: at most 1 leader per term. Liveness: leader election succeeds eventually (randomized timeout).</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead><tr><th>Algorithm</th><th>Approach</th><th>Fault tolerance</th><th>Key properties</th></tr></thead>
+      <tbody>
+        <tr><td><strong>2PC</strong></td><td>Coordinator-driven, two phases</td><td class="n">Blocks if coordinator crashes (not fault-tolerant)</td><td>Used for atomic cross-shard commit; requires coordinator recovery</td></tr>
+        <tr><td><strong>Paxos</strong></td><td>Multi-round proposal/accept</td><td class="g">Tolerates f failures with 2f+1 nodes</td><td>Difficult to understand; basis for Chubby, ZooKeeper</td></tr>
+        <tr><td><strong>Raft</strong></td><td>Leader-driven log replication</td><td class="g">Tolerates f failures with 2f+1 nodes</td><td>Designed for understandability; used in etcd, CockroachDB, TiKV</td></tr>
+        <tr><td><strong>Zab</strong></td><td>ZooKeeper Atomic Broadcast</td><td class="g">Like Raft; primary-backup</td><td>Used in ZooKeeper; total-order broadcast</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── Key Takeaways ──────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Key Takeaways</h2>
+    <dl class="defs">
+      <dt>Linearizability</dt>
+      <dd>Makes a distributed system appear as a single copy. Expensive — requires synchronous coordination. Needed for leader election, uniqueness constraints, and cross-channel ordering.</dd>
+      <dt>CAP theorem</dt>
+      <dd>During a network partition, choose between consistency (linearizability) and availability. Partition tolerance is not optional; CA in a distributed system is not achievable.</dd>
+      <dt>Causal consistency</dt>
+      <dd>Strongest model achievable without coordination. Causally related operations appear in order; concurrent operations may appear in any order. Uses version vectors or Lamport clocks.</dd>
+      <dt>2PC</dt>
+      <dd>Provides atomic commit across multiple nodes but blocks if coordinator crashes. Used inside databases for distributed transactions; not a consensus algorithm.</dd>
+      <dt>Raft / Paxos</dt>
+      <dd>Fault-tolerant consensus. Tolerate f failures with 2f+1 nodes. Raft designed for understandability; Paxos is the theoretical foundation. Equivalent in power to total-order broadcast and linearizable storage.</dd>
+    </dl>
+  </section>
+
+  <div class="ch-nav">
+    <a href="../part2/ch08.html">← Ch08 · Trouble with Distributed Systems</a>
+    <a href="../part3/ch10.html">Ch10 · Batch Processing →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

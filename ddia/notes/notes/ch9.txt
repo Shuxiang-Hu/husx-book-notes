@@ -1,0 +1,1596 @@
+Knowledge, Truth, and Lies
+So far in this chapter we have explored the ways in which distributed systems are dif‐
+ferent from programs running on a single computer: there is no shared memory, only
+message passing via an unreliable network with variable delays, and the systems may
+suffer from partial failures, unreliable clocks, and processing pauses.
+The consequences of these issues are profoundly disorienting if you’re not used to
+distributed systems. A node in the network cannot know anything for sure—it can
+only make guesses based on the messages it receives (or doesn’t receive) via the net‐
+work. A node can only find out what state another node is in (what data it has stored,
+whether it is correctly functioning, etc.) by exchanging messages with it. If a remote
+node doesn’t respond, there is no way of knowing what state it is in, because prob‐
+lems in the network cannot reliably be distinguished from problems at a node.
+Discussions of these systems border on the philosophical: What do we know to be
+true or false in our system? How sure can we be of that knowledge, if the mechanisms
+for perception and measurement are unreliable? Should software systems obey the
+laws that we expect of the physical world, such as cause and effect?
+Fortunately, we don’t need to go as far as figuring out the meaning of life. In a dis‐
+tributed system, we can state the assumptions we are making about the behavior (the
+system model) and design the actual system in such a way that it meets those assump‐
+tions. Algorithms can be proved to function correctly within a certain system model.
+This means that reliable behavior is achievable, even if the underlying system model
+provides very few guarantees.
+However, although it is possible to make software well behaved in an unreliable sys‐
+tem model, it is not straightforward to do so. In the rest of this chapter we will further
+explore the notions of knowledge and truth in distributed systems, which will help us
+think about the kinds of assumptions we can make and the guarantees we may want
+to provide. In Chapter 9 we will proceed to look at some examples of distributed sys‐
+tems, algorithms that provide particular guarantees under particular assumptions.
+The Truth Is Defined by the Majority
+Imagine a network with an asymmetric fault: a node is able to receive all messages
+sent to it, but any outgoing messages from that node are dropped or delayed [ 19].
+Even though that node is working perfectly well, and is receiving requests from other
+nodes, the other nodes cannot hear its responses. After some timeout, the other
+nodes declare it dead, because they haven’t heard from the node. The situation
+unfolds like a nightmare: the semi-disconnected node is dragged to the graveyard,
+kicking and screaming “I’m not dead!”—but since nobody can hear its screaming, the
+funeral procession continues with stoic determination.
+300 | Chapter 8: The Trouble with Distributed Systems
+
+In a slightly less nightmarish scenario, the semi-disconnected node may notice that
+the messages it is sending are not being acknowledged by other nodes, and so realize
+that there must be a fault in the network. Nevertheless, the node is wrongly declared
+dead by the other nodes, and the semi-disconnected node cannot do anything about
+it.
+As a third scenario, imagine a node that experiences a long stop-the-world garbage
+collection pause. All of the node’s threads are preempted by the GC and paused for
+one minute, and consequently, no requests are processed and no responses are sent.
+The other nodes wait, retry, grow impatient, and eventually declare the node dead
+and load it onto the hearse. Finally, the GC finishes and the node’s threads continue
+as if nothing had happened. The other nodes are surprised as the supposedly dead
+node suddenly raises its head out of the coffin, in full health, and starts cheerfully
+chatting with bystanders. At first, the GCing node doesn’t even realize that an entire
+minute has passed and that it was declared dead—from its perspective, hardly any
+time has passed since it was last talking to the other nodes.
+The moral of these stories is that a node cannot necessarily trust its own judgment of
+a situation. A distributed system cannot exclusively rely on a single node, because a
+node may fail at any time, potentially leaving the system stuck and unable to recover.
+Instead, many distributed algorithms rely on a quorum, that is, voting among the
+nodes (see “Quorums for reading and writing” on page 179): decisions require some
+minimum number of votes from several nodes in order to reduce the dependence on
+any one particular node.
+That includes decisions about declaring nodes dead. If a quorum of nodes declares
+another node dead, then it must be considered dead, even if that node still very much
+feels alive. The individual node must abide by the quorum decision and step down.
+Most commonly, the quorum is an absolute majority of more than half the nodes
+(although other kinds of quorums are possible). A majority quorum allows the sys‐
+tem to continue working if individual nodes have failed (with three nodes, one failure
+can be tolerated; with five nodes, two failures can be tolerated). However, it is still
+safe, because there can only be only one majority in the system—there cannot be two
+majorities with conflicting decisions at the same time. We will discuss the use of quo‐
+rums in more detail when we get to consensus algorithms in Chapter 9.
+The leader and the lock
+Frequently, a system requires there to be only one of some thing. For example:
+• Only one node is allowed to be the leader for a database partition, to avoid split
+brain (see “Handling Node Outages” on page 156 ).
+• Only one transaction or client is allowed to hold the lock for a particular resource
+or object, to prevent concurrently writing to it and corrupting it.
+Knowledge, Truth, and Lies | 301
+
+• Only one user is allowed to register a particular username, because a username
+must uniquely identify a user.
+Implementing this in a distributed system requires care: even if a node believes that it
+is “the chosen one” (the leader of the partition, the holder of the lock, the request
+handler of the user who successfully grabbed the username), that doesn’t necessarily
+mean a quorum of nodes agrees! A node may have formerly been the leader, but if
+the other nodes declared it dead in the meantime (e.g., due to a network interruption
+or GC pause), it may have been demoted and another leader may have already been
+elected.
+If a node continues acting as the chosen one, even though the majority of nodes have
+declared it dead, it could cause problems in a system that is not carefully designed.
+Such a node could send messages to other nodes in its self-appointed capacity, and if
+other nodes believe it, the system as a whole may do something incorrect.
+For example, Figure 8-4 shows a data corruption bug due to an incorrect implemen‐
+tation of locking. (The bug is not theoretical: HBase used to have this problem [ 74,
+75].) Say you want to ensure that a file in a storage service can only be accessed by
+one client at a time, because if multiple clients tried to write to it, the file would
+become corrupted. You try to implement this by requiring a client to obtain a lease
+from a lock service before accessing the file.
+Figure 8-4. Incorrect implementation of a distributed lock: client 1 believes that it still
+has a valid lease, even though it has expired, and thus corrupts a file in storage.
+The problem is an example of what we discussed in “Process Pauses”  on page 295: if
+the client holding the lease is paused for too long, its lease expires. Another client can
+obtain a lease for the same file, and start writing to the file. When the paused client
+comes back, it believes (incorrectly) that it still has a valid lease and proceeds to also
+write to the file. As a result, the clients’ writes clash and corrupt the file.
+302 | Chapter 8: The Trouble with Distributed Systems
+
+Fencing tokens
+When using a lock or lease to protect access to some resource, such as the file storage
+in Figure 8-4, we need to ensure that a node that is under a false belief of being “the
+chosen one” cannot disrupt the rest of the system. A fairly simple technique that ach‐
+ieves this goal is called fencing, and is illustrated in Figure 8-5.
+Figure 8-5. Making access to storage safe by allowing writes only in the order of increas‐
+ing fencing tokens.
+Let’s assume that every time the lock server grants a lock or lease, it also returns a
+fencing token , which is a number that increases every time a lock is granted (e.g.,
+incremented by the lock service). We can then require that every time a client sends a
+write request to the storage service, it must include its current fencing token.
+In Figure 8-5, client 1 acquires the lease with a token of 33, but then it goes into a
+long pause and the lease expires. Client 2 acquires the lease with a token of 34 (the
+number always increases) and then sends its write request to the storage service,
+including the token of 34. Later, client 1 comes back to life and sends its write to the
+storage service, including its token value 33. However, the storage server remembers
+that it has already processed a write with a higher token number (34), and so it rejects
+the request with token 33.
+If ZooKeeper is used as lock service, the transaction ID zxid or the node version
+cversion can be used as fencing token. Since they are guaranteed to be monotoni‐
+cally increasing, they have the required properties [74].
+Note that this mechanism requires the resource itself to take an active role in check‐
+ing tokens by rejecting any writes with an older token than one that has already been
+processed—it is not sufficient to rely on clients checking their lock status themselves.
+For resources that do not explicitly support fencing tokens, you might still be able
+work around the limitation (for example, in the case of a file storage service you
+could include the fencing token in the filename). However, some kind of check is
+necessary to avoid processing requests outside of the lock’s protection.
+Knowledge, Truth, and Lies | 303
+
+Checking a token on the server side may seem like a downside, but it is arguably a
+good thing: it is unwise for a service to assume that its clients will always be well
+behaved, because the clients are often run by people whose priorities are very differ‐
+ent from the priorities of the people running the service [ 76]. Thus, it is a good idea
+for any service to protect itself from accidentally abusive clients. 
+Byzantine Faults
+Fencing tokens can detect and block a node that is inadvertently acting in error (e.g.,
+because it hasn’t yet found out that its lease has expired). However, if the node delib‐
+erately wanted to subvert the system’s guarantees, it could easily do so by sending
+messages with a fake fencing token.
+In this book we assume that nodes are unreliable but honest: they may be slow or
+never respond (due to a fault), and their state may be outdated (due to a GC pause or
+network delays), but we assume that if a node does respond, it is telling the “truth”: to
+the best of its knowledge, it is playing by the rules of the protocol.
+Distributed systems problems become much harder if there is a risk that nodes may
+“lie” (send arbitrary faulty or corrupted responses)—for example, if a node may claim
+to have received a particular message when in fact it didn’t. Such behavior is known
+as a Byzantine fault, and the problem of reaching consensus in this untrusting envi‐
+ronment is known as the Byzantine Generals Problem [77].
+The Byzantine Generals Problem
+The Byzantine Generals Problem is a generalization of the so-called Two Generals
+Problem [78], which imagines a situation in which two army generals need to agree
+on a battle plan. As they have set up camp on two different sites, they can only com‐
+municate by messenger, and the messengers sometimes get delayed or lost (like pack‐
+ets in a network). We will discuss this problem of consensus in Chapter 9.
+In the Byzantine version of the problem, there are n generals who need to agree, and
+their endeavor is hampered by the fact that there are some traitors in their midst.
+Most of the generals are loyal, and thus send truthful messages, but the traitors may
+try to deceive and confuse the others by sending fake or untrue messages (while try‐
+ing to remain undiscovered). It is not known in advance who the traitors are.
+Byzantium was an ancient Greek city that later became Constantinople, in the place
+which is now Istanbul in Turkey. There isn’t any historic evidence that the generals of
+Byzantium were any more prone to intrigue and conspiracy than those elsewhere.
+Rather, the name is derived from Byzantine in the sense of excessively complicated,
+bureaucratic, devious, which was used in politics long before computers [ 79]. Lamp‐
+ort wanted to choose a nationality that would not offend any readers, and he was
+advised that calling it The Albanian Generals Problem was not such a good idea [80].
+304 | Chapter 8: The Trouble with Distributed Systems
+
+A system is Byzantine fault-tolerant if it continues to operate correctly even if some
+of the nodes are malfunctioning and not obeying the protocol, or if malicious attack‐
+ers are interfering with the network. This concern is relevant in certain specific cir‐
+cumstances. For example:
+• In aerospace environments, the data in a computer’s memory or CPU register
+could become corrupted by radiation, leading it to respond to other nodes in
+arbitrarily unpredictable ways. Since a system failure would be very expensive
+(e.g., an aircraft crashing and killing everyone on board, or a rocket colliding
+with the International Space Station), flight control systems must tolerate Byzan‐
+tine faults [81, 82].
+• In a system with multiple participating organizations, some participants may
+attempt to cheat or defraud others. In such circumstances, it is not safe for a
+node to simply trust another node’s messages, since they may be sent with mali‐
+cious intent. For example, peer-to-peer networks like Bitcoin and other block‐
+chains can be considered to be a way of getting mutually untrusting parties to
+agree whether a transaction happened or not, without relying on a central
+authority [83].
+However, in the kinds of systems we discuss in this book, we can usually safely
+assume that there are no Byzantine faults. In your datacenter, all the nodes are con‐
+trolled by your organization (so they can hopefully be trusted) and radiation levels
+are low enough that memory corruption is not a major problem. Protocols for mak‐
+ing systems Byzantine fault-tolerant are quite complicated [ 84], and fault-tolerant
+embedded systems rely on support from the hardware level [ 81]. In most server-side
+data systems, the cost of deploying Byzantine fault-tolerant solutions makes them
+impractical.
+Web applications do need to expect arbitrary and malicious behavior of clients that
+are under end-user control, such as web browsers. This is why input validation, sani‐
+tization, and output escaping are so important: to prevent SQL injection and cross-
+site scripting, for example. However, we typically don’t use Byzantine fault-tolerant
+protocols here, but simply make the server the authority on deciding what client
+behavior is and isn’t allowed. In peer-to-peer networks, where there is no such cen‐
+tral authority, Byzantine fault tolerance is more relevant.
+A bug in the software could be regarded as a Byzantine fault, but if you deploy the
+same software to all nodes, then a Byzantine fault-tolerant algorithm cannot save you.
+Most Byzantine fault-tolerant algorithms require a supermajority of more than two-
+thirds of the nodes to be functioning correctly (i.e., if you have four nodes, at most
+one may malfunction). To use this approach against bugs, you would have to have
+four independent implementations of the same software and hope that a bug only
+appears in one of the four implementations.
+Knowledge, Truth, and Lies | 305
+
+Similarly, it would be appealing if a protocol could protect us from vulnerabilities,
+security compromises, and malicious attacks. Unfortunately, this is not realistic
+either: in most systems, if an attacker can compromise one node, they can probably
+compromise all of them, because they are probably running the same software. Thus,
+traditional mechanisms (authentication, access control, encryption, firewalls, and so
+on) continue to be the main protection against attackers.
+Weak forms of lying
+Although we assume that nodes are generally honest, it can be worth adding mecha‐
+nisms to software that guard against weak forms of “lying”—for example, invalid
+messages due to hardware issues, software bugs, and misconfiguration. Such protec‐
+tion mechanisms are not full-blown Byzantine fault tolerance, as they would not
+withstand a determined adversary, but they are nevertheless simple and pragmatic
+steps toward better reliability. For example:
+• Network packets do sometimes get corrupted due to hardware issues or bugs in
+operating systems, drivers, routers, etc. Usually, corrupted packets are caught by
+the checksums built into TCP and UDP, but sometimes they evade detection [ 85,
+86, 87]. Simple measures are usually sufficient protection against such corrup‐
+tion, such as checksums in the application-level protocol.
+• A publicly accessible application must carefully sanitize any inputs from users,
+for example checking that a value is within a reasonable range and limiting the
+size of strings to prevent denial of service through large memory allocations. An
+internal service behind a firewall may be able to get away with less strict checks
+on inputs, but some basic sanity-checking of values (e.g., in protocol parsing
+[85]) is a good idea.
+• NTP clients can be configured with multiple server addresses. When synchroniz‐
+ing, the client contacts all of them, estimates their errors, and checks that a
+majority of servers agree on some time range. As long as most of the servers are
+okay, a misconfigured NTP server that is reporting an incorrect time is detected
+as an outlier and is excluded from synchronization [ 37]. The use of multiple
+servers makes NTP more robust than if it only uses a single server. 
+System Model and Reality
+Many algorithms have been designed to solve distributed systems problems—for
+example, we will examine solutions for the consensus problem in Chapter 9. In order
+to be useful, these algorithms need to tolerate the various faults of distributed systems
+that we discussed in this chapter.
+Algorithms need to be written in a way that does not depend too heavily on the
+details of the hardware and software configuration on which they are run. This in
+306 | Chapter 8: The Trouble with Distributed Systems
+
+turn requires that we somehow formalize the kinds of faults that we expect to happen
+in a system. We do this by defining a system model , which is an abstraction that
+describes what things an algorithm may assume.
+With regard to timing assumptions, three system models are in common use:
+Synchronous model
+The synchronous model assumes bounded network delay, bounded process pau‐
+ses, and bounded clock error. This does not imply exactly synchronized clocks or
+zero network delay; it just means you know that network delay, pauses, and clock
+drift will never exceed some fixed upper bound [ 88]. The synchronous model is
+not a realistic model of most practical systems, because (as discussed in this
+chapter) unbounded delays and pauses do occur.
+Partially synchronous model
+Partial synchrony means that a system behaves like a synchronous system most of
+the time, but it sometimes exceeds the bounds for network delay, process pauses,
+and clock drift [ 88]. This is a realistic model of many systems: most of the time,
+networks and processes are quite well behaved—otherwise we would never be
+able to get anything done—but we have to reckon with the fact that any timing
+assumptions may be shattered occasionally. When this happens, network delay,
+pauses, and clock error may become arbitrarily large.
+Asynchronous model
+In this model, an algorithm is not allowed to make any timing assumptions—in
+fact, it does not even have a clock (so it cannot use timeouts). Some algorithms
+can be designed for the asynchronous model, but it is very restrictive.
+Moreover, besides timing issues, we have to consider node failures. The three most
+common system models for nodes are:
+Crash-stop faults
+In the crash-stop model, an algorithm may assume that a node can fail in only
+one way, namely by crashing. This means that the node may suddenly stop
+responding at any moment, and thereafter that node is gone forever—it never
+comes back.
+Crash-recovery faults
+We assume that nodes may crash at any moment, and perhaps start responding
+again after some unknown time. In the crash-recovery model, nodes are assumed
+to have stable storage (i.e., nonvolatile disk storage) that is preserved across
+crashes, while the in-memory state is assumed to be lost.
+Byzantine (arbitrary) faults
+Nodes may do absolutely anything, including trying to trick and deceive other
+nodes, as described in the last section.
+Knowledge, Truth, and Lies | 307
+
+For modeling real systems, the partially synchronous model with crash-recovery
+faults is generally the most useful model. But how do distributed algorithms cope
+with that model?
+Correctness of an algorithm
+To define what it means for an algorithm to be correct, we can describe its properties.
+For example, the output of a sorting algorithm has the property that for any two dis‐
+tinct elements of the output list, the element further to the left is smaller than the ele‐
+ment further to the right. That is simply a formal way of defining what it means for a
+list to be sorted.
+Similarly, we can write down the properties we want of a distributed algorithm to
+define what it means to be correct. For example, if we are generating fencing tokens
+for a lock (see “Fencing tokens” on page 303), we may require the algorithm to have
+the following properties:
+Uniqueness
+No two requests for a fencing token return the same value.
+Monotonic sequence
+If request x returned token tx, and request y returned token ty, and x completed
+before y began, then tx < ty.
+Availability
+A node that requests a fencing token and does not crash eventually receives a
+response.
+An algorithm is correct in some system model if it always satisfies its properties in all
+situations that we assume may occur in that system model. But how does this make
+sense? If all nodes crash, or all network delays suddenly become infinitely long, then
+no algorithm will be able to get anything done.
+Safety and liveness
+To clarify the situation, it is worth distinguishing between two different kinds of
+properties: safety and liveness properties. In the example just given, uniqueness and
+monotonic sequence are safety properties, but availability is a liveness property.
+What distinguishes the two kinds of properties? A giveaway is that liveness properties
+often include the word “eventually” in their definition. (And yes, you guessed it—
+eventual consistency is a liveness property [89].)
+Safety is often informally defined as nothing bad happens , and liveness as something
+good eventually happens. However, it’s best to not read too much into those informal
+definitions, because the meaning of good and bad is subjective. The actual definitions
+of safety and liveness are precise and mathematical [90]:
+308 | Chapter 8: The Trouble with Distributed Systems
+
+• If a safety property is violated, we can point at a particular point in time at which
+it was broken (for example, if the uniqueness property was violated, we can iden‐
+tify the particular operation in which a duplicate fencing token was returned).
+After a safety property has been violated, the violation cannot be undone—the
+damage is already done.
+• A liveness property works the other way round: it may not hold at some point in
+time (for example, a node may have sent a request but not yet received a
+response), but there is always hope that it may be satisfied in the future (namely
+by receiving a response).
+An advantage of distinguishing between safety and liveness properties is that it helps
+us deal with difficult system models. For distributed algorithms, it is common to
+require that safety properties always hold, in all possible situations of a system model
+[88]. That is, even if all nodes crash, or the entire network fails, the algorithm must
+nevertheless ensure that it does not return a wrong result (i.e., that the safety proper‐
+ties remain satisfied).
+However, with liveness properties we are allowed to make caveats: for example, we
+could say that a request needs to receive a response only if a majority of nodes have
+not crashed, and only if the network eventually recovers from an outage. The defini‐
+tion of the partially synchronous model requires that eventually the system returns to
+a synchronous state—that is, any period of network interruption lasts only for a finite
+duration and is then repaired.
+Mapping system models to the real world
+Safety and liveness properties and system models are very useful for reasoning about
+the correctness of a distributed algorithm. However, when implementing an algo‐
+rithm in practice, the messy facts of reality come back to bite you again, and it
+becomes clear that the system model is a simplified abstraction of reality.
+For example, algorithms in the crash-recovery model generally assume that data in
+stable storage survives crashes. However, what happens if the data on disk is corrup‐
+ted, or the data is wiped out due to hardware error or misconfiguration [ 91]? What
+happens if a server has a firmware bug and fails to recognize its hard drives on
+reboot, even though the drives are correctly attached to the server [92]?
+Quorum algorithms (see “Quorums for reading and writing”  on page 179) rely on a
+node remembering the data that it claims to have stored. If a node may suffer from
+amnesia and forget previously stored data, that breaks the quorum condition, and
+thus breaks the correctness of the algorithm. Perhaps a new system model is needed,
+in which we assume that stable storage mostly survives crashes, but may sometimes
+be lost. But that model then becomes harder to reason about.
+Knowledge, Truth, and Lies | 309
+
+The theoretical description of an algorithm can declare that certain things are simply
+assumed not to happen—and in non-Byzantine systems, we do have to make some
+assumptions about faults that can and cannot happen. However, a real implementa‐
+tion may still have to include code to handle the case where something happens that
+was assumed to be impossible, even if that handling boils down to printf("Sucks to
+be you")  and exit(666)—i.e., letting a human operator clean up the mess [ 93].
+(This is arguably the difference between computer science and software engineering.)
+That is not to say that theoretical, abstract system models are worthless—quite the
+opposite. They are incredibly helpful for distilling down the complexity of real sys‐
+tems to a manageable set of faults that we can reason about, so that we can under‐
+stand the problem and try to solve it systematically. We can prove algorithms correct
+by showing that their properties always hold in some system model.
+Proving an algorithm correct does not mean its implementation on a real system will
+necessarily always behave correctly. But it’s a very good first step, because the theo‐
+retical analysis can uncover problems in an algorithm that might remain hidden for a
+long time in a real system, and that only come to bite you when your assumptions
+(e.g., about timing) are defeated due to unusual circumstances. Theoretical analysis
+and empirical testing are equally important. 
+Summary
+In this chapter we have discussed a wide range of problems that can occur in dis‐
+tributed systems, including:
+• Whenever you try to send a packet over the network, it may be lost or arbitrarily
+delayed. Likewise, the reply may be lost or delayed, so if you don’t get a reply,
+you have no idea whether the message got through.
+• A node’s clock may be significantly out of sync with other nodes (despite your
+best efforts to set up NTP), it may suddenly jump forward or back in time, and
+relying on it is dangerous because you most likely don’t have a good measure of
+your clock’s error interval.
+• A process may pause for a substantial amount of time at any point in its execu‐
+tion (perhaps due to a stop-the-world garbage collector), be declared dead by
+other nodes, and then come back to life again without realizing that it was
+paused.
+The fact that such partial failures  can occur is the defining characteristic of dis‐
+tributed systems. Whenever software tries to do anything involving other nodes,
+there is the possibility that it may occasionally fail, or randomly go slow, or not
+respond at all (and eventually time out). In distributed systems, we try to build toler‐
+310 | Chapter 8: The Trouble with Distributed Systems
+
+ance of partial failures into software, so that the system as a whole may continue
+functioning even when some of its constituent parts are broken.
+To tolerate faults, the first step is to detect them, but even that is hard. Most systems
+don’t have an accurate mechanism of detecting whether a node has failed, so most
+distributed algorithms rely on timeouts to determine whether a remote node is still
+available. However, timeouts can’t distinguish between network and node failures,
+and variable network delay sometimes causes a node to be falsely suspected of crash‐
+ing. Moreover, sometimes a node can be in a degraded state: for example, a Gigabit
+network interface could suddenly drop to 1 Kb/s throughput due to a driver bug [ 94].
+Such a node that is “limping” but not dead can be even more difficult to deal with
+than a cleanly failed node.
+Once a fault is detected, making a system tolerate it is not easy either: there is no
+global variable, no shared memory, no common knowledge or any other kind of
+shared state between the machines. Nodes can’t even agree on what time it is, let
+alone on anything more profound. The only way information can flow from one
+node to another is by sending it over the unreliable network. Major decisions cannot
+be safely made by a single node, so we require protocols that enlist help from other
+nodes and try to get a quorum to agree.
+If you’re used to writing software in the idealized mathematical perfection of a single
+computer, where the same operation always deterministically returns the same result,
+then moving to the messy physical reality of distributed systems can be a bit of a
+shock. Conversely, distributed systems engineers will often regard a problem as triv‐
+ial if it can be solved on a single computer [ 5], and indeed a single computer can do a
+lot nowadays [95]. If you can avoid opening Pandora’s box and simply keep things on
+a single machine, it is generally worth doing so.
+However, as discussed in the introduction to Part II, scalability is not the only reason
+for wanting to use a distributed system. Fault tolerance and low latency (by placing
+data geographically close to users) are equally important goals, and those things can‐
+not be achieved with a single node.
+In this chapter we also went on some tangents to explore whether the unreliability of
+networks, clocks, and processes is an inevitable law of nature. We saw that it isn’t: it
+is possible to give hard real-time response guarantees and bounded delays in net‐
+works, but doing so is very expensive and results in lower utilization of hardware
+resources. Most non-safety-critical systems choose cheap and unreliable over expen‐
+sive and reliable.
+We also touched on supercomputers, which assume reliable components and thus
+have to be stopped and restarted entirely when a component does fail. By contrast,
+distributed systems can run forever without being interrupted at the service level,
+because all faults and maintenance can be handled at the node level—at least in
+Summary | 311
+
+theory. (In practice, if a bad configuration change is rolled out to all nodes, that will
+still bring a distributed system to its knees.)
+This chapter has been all about problems, and has given us a bleak outlook. In the
+next chapter we will move on to solutions, and discuss some algorithms that have
+been designed to cope with all the problems in distributed systems. 
+References
+[1] Mark Cavage: “ There’s Just No Getting Around It: You’re Building a Distributed
+System,” ACM Queue , volume 11, number 4, pages 80-89, April 2013. doi:
+10.1145/2466486.2482856
+[2] Jay Kreps: “ Getting Real About Distributed System Reliability ,” blog.empathy‐
+box.com, March 19, 2012.
+[3] Sydney Padua: The Thrilling Adventures of Lovelace and Babbage: The (Mostly)
+True Story of the First Computer . Particular Books, April 2015. ISBN:
+978-0-141-98151-2
+[4] Coda Hale: “ You Can’t Sacrifice Partition Tolerance ,” codahale.com, October 7,
+2010.
+[5] Jeff Hodges: “ Notes on Distributed Systems for Young Bloods ,” somethingsimi‐
+lar.com, January 14, 2013.
+[6] Antonio Regalado: “ Who Coined ‘Cloud Computing’? ,” technologyreview.com,
+October 31, 2011.
+[7] Luiz André Barroso, Jimmy Clidaras, and Urs Hölzle: “ The Datacenter as a Com‐
+puter: An Introduction to the Design of Warehouse-Scale Machines, Second Edi‐
+tion,” Synthesis Lectures on Computer Architecture , volume 8, number 3, Morgan &
+Claypool Publishers, July 2013. doi:10.2200/S00516ED2V01Y201306CAC024, ISBN:
+978-1-627-05010-4
+[8] David Fiala, Frank Mueller, Christian Engelmann, et al.: “ Detection and Correc‐
+tion of Silent Data Corruption for Large-Scale High-Performance Computing ,” at
+International Conference for High Performance Computing, Networking, Storage and
+Analysis (SC12), November 2012.
+[9] Arjun Singh, Joon Ong, Amit Agarwal, et al.: “ Jupiter Rising: A Decade of Clos
+Topologies and Centralized Control in Google’s Datacenter Network ,” at Annual
+Conference of the ACM Special Interest Group on Data Communication (SIGCOMM),
+August 2015. doi:10.1145/2785956.2787508
+[10] Glenn K. Lockwood: “ Hadoop’s Uncomfortable Fit in HPC ,” glennklock‐
+wood.blogspot.co.uk, May 16, 2014.
+312 | Chapter 8: The Trouble with Distributed Systems
+
+[11] John von Neumann: “ Probabilistic Logics and the Synthesis of Reliable Organ‐
+isms from Unreliable Components ,” in Automata Studies (AM-34), edited by Claude
+E. Shannon and John McCarthy, Princeton University Press, 1956. ISBN:
+978-0-691-07916-5
+[12] Richard W. Hamming: The Art of Doing Science and Engineering. Taylor & Fran‐
+cis, 1997. ISBN: 978-9-056-99500-3
+[13] Claude E. Shannon: “ A Mathematical Theory of Communication ,” The Bell Sys‐
+tem Technical Journal, volume 27, number 3, pages 379–423 and 623–656, July 1948.
+[14] Peter Bailis and Kyle Kingsbury: “ The Network Is Reliable ,” ACM Queue, vol‐
+ume 12, number 7, pages 48-55, July 2014. doi:10.1145/2639988.2639988
+[15] Joshua B. Leners, Trinabh Gupta, Marcos K. Aguilera, and Michael Walfish:
+“ Taming Uncertainty in Distributed Systems with Help from the Network ,” at 10th
+European Conference on Computer Systems  (EuroSys), April 2015. doi:
+10.1145/2741948.2741976
+[16] Phillipa Gill, Navendu Jain, and Nachiappan Nagappan: “ Understanding Net‐
+work Failures in Data Centers: Measurement, Analysis, and Implications ,” at ACM
+SIGCOMM Conference, August 2011. doi:10.1145/2018436.2018477
+[17] Mark Imbriaco: “ Downtime Last Saturday,” github.com, December 26, 2012.
+[18] Will Oremus: “ The Global Internet Is Being Attacked by Sharks, Google Con‐
+firms,” slate.com, August 15, 2014.
+[19] Marc A. Donges: “ Re: bnx2 cards Intermittantly Going Offline ,” Message to
+Linux netdev mailing list, spinics.net, September 13, 2012.
+[20] Kyle Kingsbury: “ Call Me Maybe: Elasticsearch,” aphyr.com, June 15, 2014.
+[21] Salvatore Sanfilippo: “ A Few Arguments About Redis Sentinel Properties and
+Fail Scenarios,” antirez.com, October 21, 2014.
+[22] Bert Hubert: “ The Ultimate SO_LINGER Page, or: Why Is My TCP Not Relia‐
+ble,” blog.netherlabs.nl, January 18, 2009.
+[23] Nicolas Liochon: “ CAP: If All You Have Is a Timeout, Everything Looks Like a
+Partition,” blog.thislongrun.com, May 25, 2015.
+[24] Jerome H. Saltzer, David P. Reed, and David D. Clark: “ End-To-End Arguments
+in System Design ,” ACM Transactions on Computer Systems , volume 2, number 4,
+pages 277–288, November 1984. doi:10.1145/357401.357402
+[25] Matthew P. Grosvenor, Malte Schwarzkopf, Ionel Gog, et al.: “ Queues Don’t
+Matter When You Can JUMP Them! ,” at 12th USENIX Symposium on Networked
+Systems Design and Implementation (NSDI), May 2015.
+Summary | 313
+
+[26] Guohui Wang and T. S. Eugene Ng: “ The Impact of Virtualization on Network
+Performance of Amazon EC2 Data Center,” at 29th IEEE International Conference on
+Computer Communications  (INFOCOM), March 2010. doi:10.1109/INFCOM.
+2010.5461931
+[27] Van Jacobson: “ Congestion Avoidance and Control ,” at ACM Symposium on
+Communications Architectures and Protocols  (SIGCOMM), August 1988. doi:
+10.1145/52324.52356
+[28] Brandon Philips: “ etcd: Distributed Locking and Service Discovery ,” at Strange
+Loop, September 2014.
+[29] Steve Newman: “ A Systematic Look at EC2 I/O ,” blog.scalyr.com, October 16,
+2012.
+[30] Naohiro Hayashibara, Xavier Défago, Rami Yared, and Takuya Katayama: “ The
+ϕ  Accrual Failure Detector ,” Japan Advanced Institute of Science and Technology,
+School of Information Science, Technical Report IS-RR-2004-010, May 2004.
+[31] Jeffrey Wang: “ Phi Accrual Failure Detector ,” ternarysearch.blogspot.co.uk,
+August 11, 2013.
+[32] Srinivasan Keshav: An Engineering Approach to Computer Networking: ATM
+Networks, the Internet, and the Telephone Network . Addison-Wesley Professional,
+May 1997. ISBN: 978-0-201-63442-6
+[33] Cisco, “ Integrated Services Digital Network,” docwiki.cisco.com.
+[34] Othmar Kyas: ATM Networks. International Thomson Publishing, 1995. ISBN:
+978-1-850-32128-6
+[35] “ InfiniBand FAQ,” Mellanox Technologies, December 22, 2014.
+[36] Jose Renato Santos, Yoshio Turner, and G. (John) Janakiraman: “ End-to-End
+Congestion Control for InfiniBand ,” at 22nd Annual Joint Conference of the IEEE
+Computer and Communications Societies (INFOCOM), April 2003. Also published by
+HP Laboratories Palo Alto, Tech Report HPL-2002-359. doi:10.1109/INFCOM.
+2003.1208949
+[37] Ulrich Windl, David Dalton, Marc Martinec, and Dale R. Worley: “ The NTP
+FAQ and HOWTO,” ntp.org, November 2006.
+[38] John Graham-Cumming: “ How and why the leap second affected Cloudflare
+DNS,” blog.cloudflare.com, January 1, 2017.
+[39] David Holmes: “ Inside the Hotspot VM: Clocks, Timers and Scheduling Events
+– Part I – Windows ,” blogs.oracle.com, October 2, 2006.
+[40] Steve Loughran: “ Time on Multi-Core, Multi-Socket Servers ,” stevelough‐
+ran.blogspot.co.uk, September 17, 2015.
+314 | Chapter 8: The Trouble with Distributed Systems
+
+[41] James C. Corbett, Jeffrey Dean, Michael Epstein, et al.: “ Spanner: Google’s
+Globally-Distributed Database ,” at 10th USENIX Symposium on Operating System
+Design and Implementation (OSDI), October 2012.
+[42] M. Caporaloni and R. Ambrosini: “ How Closely Can a Personal Computer
+Clock Track the UTC Timescale Via the Internet? ,” European Journal of Physics, vol‐
+ume 23, number 4, pages L17–L21, June 2012. doi:10.1088/0143-0807/23/4/103
+[43] Nelson Minar: “ A Survey of the NTP Network ,” alumni.media.mit.edu, Decem‐
+ber 1999.
+[44] Viliam Holub: “ Synchronizing Clocks in a Cassandra Cluster Pt. 1 – The Prob‐
+lem,” blog.logentries.com, March 14, 2014.
+[45] Poul-Henning Kamp: “ The One-Second War (What Time Will You Die?) ,”
+ACM Queue , volume 9, number 4, pages 44–48, April 2011. doi:
+10.1145/1966989.1967009
+[46] Nelson Minar: “ Leap Second Crashes Half the Internet ,” somebits.com, July 3,
+2012.
+[47] Christopher Pascoe: “ Time, Technology and Leaping Seconds ,” googleblog.blog‐
+spot.co.uk, September 15, 2011.
+[48] Mingxue Zhao and Jeff Barr: “ Look Before You Leap – The Coming Leap Second
+and AWS,” aws.amazon.com, May 18, 2015.
+[49] Darryl Veitch and Kanthaiah Vijayalayan: “ Network Timing and the 2015 Leap
+Second,” at 17th International Conference on Passive and Active Measurement
+(PAM), April 2016. doi:10.1007/978-3-319-30505-9_29
+[50] “ Timekeeping in VMware Virtual Machines,” Information Guide, VMware, Inc.,
+December 2011.
+[51] “ MiFID II / MiFIR: Regulatory Technical and Implementing Standards – Annex
+I (Draft) ,” European Securities and Markets Authority, Report ESMA/2015/1464,
+September 2015.
+[52] Luke Bigum: “ Solving MiFID II Clock Synchronisation With Minimum Spend
+(Part 1),” lmax.com, November 27, 2015.
+[53] Kyle Kingsbury: “ Call Me Maybe: Cassandra,” aphyr.com, September 24, 2013.
+[54] John Daily: “ Clocks Are Bad, or, Welcome to the Wonderful World of Dis‐
+tributed Systems,” basho.com, November 12, 2013.
+[55] Kyle Kingsbury: “ The Trouble with Timestamps,” aphyr.com, October 12, 2013.
+Summary | 315
+
+[56] Leslie Lamport: “ Time, Clocks, and the Ordering of Events in a Distributed Sys‐
+tem,” Communications of the ACM , volume 21, number 7, pages 558–565, July 1978.
+doi:10.1145/359545.359563
+[57] Sandeep Kulkarni, Murat Demirbas, Deepak Madeppa, et al.: “ Logical Physical
+Clocks and Consistent Snapshots in Globally Distributed Databases,” State University
+of New York at Buffalo, Computer Science and Engineering Technical Report
+2014-04, May 2014.
+[58] Justin Sheehy: “ There Is No Now: Problems With Simultaneity in Distributed
+Systems,” ACM Queue , volume 13, number 3, pages 36–41, March 2015. doi:
+10.1145/2733108
+[59] Murat Demirbas: “ Spanner: Google’s Globally-Distributed Database ,” muratbuf‐
+falo.blogspot.co.uk, July 4, 2013.
+[60] Dahlia Malkhi and Jean-Philippe Martin: “ Spanner’s Concurrency Control ,”
+ACM SIGACT News , volume 44, number 3, pages 73–77, September 2013. doi:
+10.1145/2527748.2527767
+[61] Manuel Bravo, Nuno Diegues, Jingna Zeng, et al.: “ On the Use of Clocks to
+Enforce Consistency in the Cloud,” IEEE Data Engineering Bulletin, volume 38, num‐
+ber 1, pages 18–31, March 2015.
+[62] Spencer Kimball: “ Living Without Atomic Clocks,” cockroachlabs.com, February
+17, 2016.
+[63] Cary G. Gray and David R. Cheriton: “ Leases: An Efficient Fault-Tolerant Mech‐
+anism for Distributed File Cache Consistency ,” at 12th ACM Symposium on Operat‐
+ing Systems Principles (SOSP), December 1989. doi:10.1145/74850.74870
+[64] Todd Lipcon: “ Avoiding Full GCs in Apache HBase with MemStore-Local Allo‐
+cation Buffers: Part 1,” blog.cloudera.com, February 24, 2011.
+[65] Martin Thompson: “ Java Garbage Collection Distilled ,” mechanical-
+sympathy.blogspot.co.uk, July 16, 2013.
+[66] Alexey Ragozin: “ How to Tame Java GC Pauses? Surviving 16GiB Heap and
+Greater,” java.dzone.com, June 28, 2011.
+[67] Christopher Clark, Keir Fraser, Steven Hand, et al.: “ Live Migration of Virtual
+Machines,” at 2nd USENIX Symposium on Symposium on Networked Systems Design
+& Implementation (NSDI), May 2005.
+[68] Mike Shaver: “ fsyncers and Curveballs,” shaver.off.net, May 25, 2008.
+[69] Zhenyun Zhuang and Cuong Tran: “ Eliminating Large JVM GC Pauses Caused
+by Background IO Traffic,” engineering.linkedin.com, February 10, 2016.
+316 | Chapter 8: The Trouble with Distributed Systems
+
+[70] David Terei and Amit Levy: “ Blade: A Data Center Garbage Collector ,” arXiv:
+1504.02578, April 13, 2015.
+[71] Martin Maas, Tim Harris, Krste Asanović, and John Kubiatowicz: “ Trash Day:
+Coordinating Garbage Collection in Distributed Systems,” at 15th USENIX Workshop
+on Hot Topics in Operating Systems (HotOS), May 2015.
+[72] “ Predictable Low Latency ,” Cinnober Financial Technology AB, cinnober.com,
+November 24, 2013.
+[73] Martin Fowler: “ The LMAX Architecture,” martinfowler.com, July 12, 2011.
+[74] Flavio P. Junqueira and Benjamin Reed: ZooKeeper: Distributed Process Coordi‐
+nation. O’Reilly Media, 2013. ISBN: 978-1-449-36130-3
+[75] Enis Söztutar: “ HBase and HDFS: Understanding Filesystem Usage in HBase,” at
+HBaseCon, June 2013.
+[76] Caitie McCaffrey: “ Clients Are Jerks: AKA How Halo 4 DoSed the Services at
+Launch & How We Survived,” caitiem.com, June 23, 2015.
+[77] Leslie Lamport, Robert Shostak, and Marshall Pease: “ The Byzantine Generals
+Problem,” ACM Transactions on Programming Languages and Systems  (TOPLAS),
+volume 4, number 3, pages 382–401, July 1982. doi:10.1145/357172.357176
+[78] Jim N. Gray: “ Notes on Data Base Operating Systems,” in Operating Systems: An
+Advanced Course, Lecture Notes in Computer Science, volume 60, edited by R. Bayer,
+R. M. Graham, and G. Seegmüller, pages 393–481, Springer-Verlag, 1978. ISBN:
+978-3-540-08755-7
+[79] Brian Palmer: “ How Complicated Was the Byzantine Empire? ,” slate.com, Octo‐
+ber 20, 2011.
+[80] Leslie Lamport: “ My Writings,” research.microsoft.com, December 16, 2014. This
+page can be found by searching the web for the 23-character string obtained by
+removing the hyphens from the string allla-mport-spubso-ntheweb.
+[81] John Rushby: “ Bus Architectures for Safety-Critical Embedded Systems ,” at 1st
+International Workshop on Embedded Software (EMSOFT), October 2001.
+[82] Jake Edge: “ ELC: SpaceX Lessons Learned,” lwn.net, March 6, 2013.
+[83] Andrew Miller and Joseph J. LaViola, Jr.: “ Anonymous Byzantine Consensus
+from Moderately-Hard Puzzles: A Model for Bitcoin ,” University of Central Florida,
+Technical Report CS-TR-14-01, April 2014.
+[84] James Mickens: “ The Saddest Moment,” USENIX ;login: logout, May 2013.
+[85] Evan Gilman: “ The Discovery of Apache ZooKeeper’s Poison Packet ,” pagerd‐
+uty.com, May 7, 2015.
+Summary | 317
+
+[86] Jonathan Stone and Craig Partridge: “ When the CRC and TCP Checksum Disa‐
+gree,” at ACM Conference on Applications, Technologies, Architectures, and Protocols
+for Computer Communication  (SIGCOMM), August 2000. doi:
+10.1145/347059.347561
+[87] Evan Jones: “ How Both TCP and Ethernet Checksums Fail ,” evanjones.ca, Octo‐
+ber 5, 2015.
+[88] Cynthia Dwork, Nancy Lynch, and Larry Stockmeyer: “ Consensus in the Pres‐
+ence of Partial Synchrony ,” Journal of the ACM , volume 35, number 2, pages 288–
+323, April 1988. doi:10.1145/42282.42283
+[89] Peter Bailis and Ali Ghodsi: “ Eventual Consistency Today: Limitations, Exten‐
+sions, and Beyond ,” ACM Queue , volume 11, number 3, pages 55-63, March 2013.
+doi:10.1145/2460276.2462076
+[90] Bowen Alpern and Fred B. Schneider: “ Defining Liveness,” Information Process‐
+ing Letters , volume 21, number 4, pages 181–185, October 1985. doi:
+10.1016/0020-0190(85)90056-0
+[91] Flavio P. Junqueira: “ Dude, Where’s My Metadata? ,” fpj.me, May 28, 2015.
+[92] Scott Sanders: “ January 28th Incident Report,” github.com, February 3, 2016.
+[93] Jay Kreps: “ A Few Notes on Kafka and Jepsen ,” blog.empathybox.com, Septem‐
+ber 25, 2013.
+[94] Thanh Do, Mingzhe Hao, Tanakorn Leesatapornwongsa, et al.: “ Limplock:
+Understanding the Impact of Limpware on Scale-out Cloud Systems ,” at 4th ACM
+Symposium on Cloud Computing  (SoCC), October 2013. doi:
+10.1145/2523616.2523627
+[95] Frank McSherry, Michael Isard, and Derek G. Murray: “ Scalability! But at What
+COST?,” at 15th USENIX Workshop on Hot Topics in Operating Systems  (HotOS),
+May 2015.
+318 | Chapter 8: The Trouble with Distributed Systems
+
+CHAPTER 9
+Consistency and Consensus
+Is it better to be alive and wrong or right and dead?
+—Jay Kreps, A Few Notes on Kafka and Jepsen (2013)
+Lots of things can go wrong in distributed systems, as discussed in Chapter 8 . The
+simplest way of handling such faults is to simply let the entire service fail, and show
+the user an error message. If that solution is unacceptable, we need to find ways of
+tolerating faults—that is, of keeping the service functioning correctly, even if some
+internal component is faulty.
+In this chapter, we will talk about some examples of algorithms and protocols for
+building fault-tolerant distributed systems. We will assume that all the problems
+from Chapter 8  can occur: packets can be lost, reordered, duplicated, or arbitrarily
+delayed in the network; clocks are approximate at best; and nodes can pause (e.g., due
+to garbage collection) or crash at any time.
+The best way of building fault-tolerant systems is to find some general-purpose
+abstractions with useful guarantees, implement them once, and then let applications
+rely on those guarantees. This is the same approach as we used with transactions in
+Chapter 7 : by using a transaction, the application can pretend that there are no
+crashes (atomicity), that nobody else is concurrently accessing the database (isola‐
+tion), and that storage devices are perfectly reliable (durability). Even though crashes,
+race conditions, and disk failures do occur, the transaction abstraction hides those
+problems so that the application doesn’t need to worry about them.
+We will now continue along the same lines, and seek abstractions that can allow an
+application to ignore some of the problems with distributed systems. For example,
+one of the most important abstractions for distributed systems is consensus: that is,
+getting all of the nodes to agree on something. As we shall see in this chapter, reliably
+321
+
+reaching consensus in spite of network faults and process failures is a surprisingly
+tricky problem.
+Once you have an implementation of consensus, applications can use it for various
+purposes. For example, say you have a database with single-leader replication. If the
+leader dies and you need to fail over to another node, the remaining database nodes
+can use consensus to elect a new leader. As discussed in “Handling Node Outages” on
+page 156, it’s important that there is only one leader, and that all nodes agree who the
+leader is. If two nodes both believe that they are the leader, that situation is called split
+brain, and it often leads to data loss. Correct implementations of consensus help
+avoid such problems.
+Later in this chapter, in “Distributed Transactions and Consensus” on page 352, we
+will look into algorithms to solve consensus and related problems. But first we first
+need to explore the range of guarantees and abstractions that can be provided in a
+distributed system.
+We need to understand the scope of what can and cannot be done: in some situa‐
+tions, it’s possible for the system to tolerate faults and continue working; in other sit‐
+uations, that is not possible. The limits of what is and isn’t possible have been
+explored in depth, both in theoretical proofs and in practical implementations. We
+will get an overview of those fundamental limits in this chapter.
+Researchers in the field of distributed systems have been studying these topics for
+decades, so there is a lot of material—we’ll only be able to scratch the surface. In this
+book we don’t have space to go into details of the formal models and proofs, so we
+will stick with informal intuitions. The literature references offer plenty of additional
+depth if you’re interested.
+Consistency Guarantees
+In “Problems with Replication Lag” on page 161  we looked at some timing issues that
+occur in a replicated database. If you look at two database nodes at the same moment
+in time, you’re likely to see different data on the two nodes, because write requests
+arrive on different nodes at different times. These inconsistencies occur no matter
+what replication method the database uses (single-leader, multi-leader, or leaderless
+replication).
+Most replicated databases provide at least eventual consistency, which means that if
+you stop writing to the database and wait for some unspecified length of time, then
+eventually all read requests will return the same value [ 1]. In other words, the incon‐
+sistency is temporary, and it eventually resolves itself (assuming that any faults in the
+network are also eventually repaired). A better name for eventual consistency may be
+convergence, as we expect all replicas to eventually converge to the same value [2].
+322 | Chapter 9: Consistency and Consensus
+
+However, this is a very weak guarantee—it doesn’t say anything about when the repli‐
+cas will converge. Until the time of convergence, reads could return anything or
+nothing [ 1]. For example, if you write a value and then immediately read it again,
+there is no guarantee that you will see the value you just wrote, because the read may
+be routed to a different replica (see “Reading Your Own Writes” on page 162 ).
+Eventual consistency is hard for application developers because it is so different from
+the behavior of variables in a normal single-threaded program. If you assign a value
+to a variable and then read it shortly afterward, you don’t expect to read back the old
+value, or for the read to fail. A database looks superficially like a variable that you can
+read and write, but in fact it has much more complicated semantics [3].
+When working with a database that provides only weak guarantees, you need to be
+constantly aware of its limitations and not accidentally assume too much. Bugs are
+often subtle and hard to find by testing, because the application may work well most
+of the time. The edge cases of eventual consistency only become apparent when there
+is a fault in the system (e.g., a network interruption) or at high concurrency.
+In this chapter we will explore stronger consistency models that data systems may
+choose to provide. They don’t come for free: systems with stronger guarantees may
+have worse performance or be less fault-tolerant than systems with weaker guaran‐
+tees. Nevertheless, stronger guarantees can be appealing because they are easier to use
+correctly. Once you have seen a few different consistency models, you’ll be in a better
+position to decide which one best fits your needs.
+There is some similarity between distributed consistency models and the hierarchy of
+transaction isolation levels we discussed previously [ 4, 5] (see “Weak Isolation Lev‐
+els”  on page 233). But while there is some overlap, they are mostly independent con‐
+cerns: transaction isolation is primarily about avoiding race conditions due to
+concurrently executing transactions, whereas distributed consistency is mostly about
+coordinating the state of replicas in the face of delays and faults.
+This chapter covers a broad range of topics, but as we shall see, these areas are in fact
+deeply linked:
+• We will start by looking at one of the strongest consistency models in common
+use, linearizability, and examine its pros and cons.
+• We’ll then examine the issue of ordering events in a distributed system ( “Order‐
+ing Guarantees” on page 339 ), particularly around causality and total ordering.
+• In the third section ( “Distributed Transactions and Consensus” on page 352) we
+will explore how to atomically commit a distributed transaction, which will
+finally lead us toward solutions for the consensus problem.
+Consistency Guarantees | 323
+
+Linearizability
+In an eventually consistent database, if you ask two different replicas the same ques‐
+tion at the same time, you may get two different answers. That’s confusing. Wouldn’t
+it be a lot simpler if the database could give the illusion that there is only one replica
+(i.e., only one copy of the data)? Then every client would have the same view of the
+data, and you wouldn’t have to worry about replication lag.
+This is the idea behind linearizability [6] (also known as atomic consistency [7], strong
+consistency, immediate consistency, or external consistency [8]). The exact definition
+of linearizability is quite subtle, and we will explore it in the rest of this section. But
+the basic idea is to make a system appear as if there were only one copy of the data,
+and all operations on it are atomic. With this guarantee, even though there may be
+multiple replicas in reality, the application does not need to worry about them.
+In a linearizable system, as soon as one client successfully completes a write, all cli‐
+ents reading from the database must be able to see the value just written. Maintaining
+the illusion of a single copy of the data means guaranteeing that the value read is the
+most recent, up-to-date value, and doesn’t come from a stale cache or replica. In
+other words, linearizability is a recency guarantee. To clarify this idea, let’s look at an
+example of a system that is not linearizable.
+Figure 9-1. This system is not linearizable, causing football fans to be confused.
+324 | Chapter 9: Consistency and Consensus
+
+Figure 9-1 shows an example of a nonlinearizable sports website [ 9]. Alice and Bob
+are sitting in the same room, both checking their phones to see the outcome of the
+2014 FIFA World Cup final. Just after the final score is announced, Alice refreshes
+the page, sees the winner announced, and excitedly tells Bob about it. Bob incredu‐
+lously hits reload on his own phone, but his request goes to a database replica that is
+lagging, and so his phone shows that the game is still ongoing.
+If Alice and Bob had hit reload at the same time, it would have been less surprising if
+they had gotten two different query results, because they wouldn’t know at exactly
+what time their respective requests were processed by the server. However, Bob
+knows that he hit the reload button (initiated his query) after he heard Alice exclaim
+the final score, and therefore he expects his query result to be at least as recent as
+Alice’s. The fact that his query returned a stale result is a violation of linearizability.
+What Makes a System Linearizable?
+The basic idea behind linearizability is simple: to make a system appear as if there is
+only a single copy of the data. However, nailing down precisely what that means
+actually requires some care. In order to understand linearizability better, let’s look at
+some more examples.
+Figure 9-2 shows three clients concurrently reading and writing the same key x in a
+linearizable database. In the distributed systems literature, x is called a register—in
+practice, it could be one key in a key-value store, one row in a relational database, or
+one document in a document database, for example.
+Figure 9-2. If a read request is concurrent with a write request, it may return either the
+old or the new value.
+For simplicity, Figure 9-2 shows only the requests from the clients’ point of view, not
+the internals of the database. Each bar is a request made by a client, where the start of
+a bar is the time when the request was sent, and the end of a bar is when the response
+was received by the client. Due to variable network delays, a client doesn’t know
+Linearizability | 325
+
+i. A subtle detail of this diagram is that it assumes the existence of a global clock, represented by the horizon‐
+tal axis. Even though real systems typically don’t have accurate clocks (see “Unreliable Clocks” on page 287 ),
+this assumption is okay: for the purposes of analyzing a distributed algorithm, we may pretend that an accu‐
+rate global clock exists, as long as the algorithm doesn’t have access to it [ 47]. Instead, the algorithm can only
+see a mangled approximation of real time, as produced by a quartz oscillator and NTP.
+ii. A register in which reads may return either the old or the new value if they are concurrent with a write is
+known as a regular register [7, 25].
+exactly when the database processed its request—it only knows that it must have hap‐
+pened sometime between the client sending the request and receiving the response.i
+In this example, the register has two types of operations:
+• read(x) ⇒ v means the client requested to read the value of register x, and the
+database returned the value v.
+• write(x, v) ⇒ r means the client requested to set the register x to value v, and the
+database returned response r (which could be ok or error).
+In Figure 9-2, the value of x is initially 0, and client C performs a write request to set
+it to 1. While this is happening, clients A and B are repeatedly polling the database to
+read the latest value. What are the possible responses that A and B might get for their
+read requests?
+• The first read operation by client A completes before the write begins, so it must
+definitely return the old value 0.
+• The last read by client A begins after the write has completed, so it must defi‐
+nitely return the new value 1 if the database is linearizable: we know that the
+write must have been processed sometime between the start and end of the write
+operation, and the read must have been processed sometime between the start
+and end of the read operation. If the read started after the write ended, then the
+read must have been processed after the write, and therefore it must see the new
+value that was written.
+• Any read operations that overlap in time with the write operation might return
+either 0 or 1, because we don’t know whether or not the write has taken effect at
+the time when the read operation is processed. These operations are concurrent
+with the write.
+However, that is not yet sufficient to fully describe linearizability: if reads that are
+concurrent with a write can return either the old or the new value, then readers could
+see a value flip back and forth between the old and the new value several times while
+a write is going on. That is not what we expect of a system that emulates a “single
+copy of the data.” ii
+326 | Chapter 9: Consistency and Consensus
+
+To make the system linearizable, we need to add another constraint, illustrated in
+Figure 9-3.
+Figure 9-3. After any one read has returned the new value, all following reads (on the
+same or other clients) must also return the new value.
+In a linearizable system we imagine that there must be some point in time (between
+the start and end of the write operation) at which the value of x atomically flips from
+0 to 1. Thus, if one client’s read returns the new value 1, all subsequent reads must
+also return the new value, even if the write operation has not yet completed.
+This timing dependency is illustrated with an arrow in Figure 9-3. Client A is the first
+to read the new value, 1. Just after A’s read returns, B begins a new read. Since B’s
+read occurs strictly after A’s read, it must also return 1, even though the write by C is
+still ongoing. (It’s the same situation as with Alice and Bob in Figure 9-1: after Alice
+has read the new value, Bob also expects to read the new value.)
+We can further refine this timing diagram to visualize each operation taking effect
+atomically at some point in time. A more complex example is shown in Figure 9-4
+[10].
+In Figure 9-4 we add a third type of operation besides read and write:
+• cas(x, vold, vnew) ⇒ r means the client requested an atomic compare-and-set oper‐
+ation (see “Compare-and-set”  on page 245). If the current value of the register x
+equals vold, it should be atomically set to vnew. If x ≠ vold then the operation should
+leave the register unchanged and return an error. r is the database’s response ( ok
+or error).
+Each operation in Figure 9-4 is marked with a vertical line (inside the bar for each
+operation) at the time when we think the operation was executed. Those markers are
+joined up in a sequential order, and the result must be a valid sequence of reads and
+writes for a register (every read must return the value set by the most recent write).
+The requirement of linearizability is that the lines joining up the operation markers
+always move forward in time (from left to right), never backward. This requirement
+Linearizability | 327
+
+ensures the recency guarantee we discussed earlier: once a new value has been written
+or read, all subsequent reads see the value that was written, until it is overwritten
+again.
+Figure 9-4. Visualizing the points in time at which the reads and writes appear to have
+taken effect. The final read by B is not linearizable.
+There are a few interesting details to point out in Figure 9-4:
+• First client B sent a request to read x, then client D sent a request to set x to 0,
+and then client A sent a request to set x to 1. Nevertheless, the value returned to
+B’s read is 1 (the value written by A). This is okay: it means that the database first
+processed D’s write, then A’s write, and finally B’s read. Although this is not the
+order in which the requests were sent, it’s an acceptable order, because the three
+requests are concurrent. Perhaps B’s read request was slightly delayed in the net‐
+work, so it only reached the database after the two writes.
+• Client B’s read returned 1 before client A received its response from the database,
+saying that the write of the value 1 was successful. This is also okay: it doesn’t
+mean the value was read before it was written, it just means the ok response from
+the database to client A was slightly delayed in the network.
+• This model doesn’t assume any transaction isolation: another client may change
+a value at any time. For example, C first reads 1 and then reads 2, because the
+value was changed by B between the two reads. An atomic compare-and-set ( cas)
+operation can be used to check the value hasn’t been concurrently changed by
+another client: B and C’s cas requests succeed, but D’s cas request fails (by the
+time the database processes it, the value of x is no longer 0).
+• The final read by client B (in a shaded bar) is not linearizable. The operation is
+concurrent with C’s cas write, which updates x from 2 to 4. In the absence of
+328 | Chapter 9: Consistency and Consensus
+
+other requests, it would be okay for B’s read to return 2. However, client A has
+already read the new value 4 before B’s read started, so B is not allowed to read
+an older value than A. Again, it’s the same situation as with Alice and Bob in
+Figure 9-1.
+That is the intuition behind linearizability; the formal definition [ 6] describes it more
+precisely. It is possible (though computationally expensive) to test whether a system’s
+behavior is linearizable by recording the timings of all requests and responses, and
+checking whether they can be arranged into a valid sequential order [11]. 
+Linearizability Versus Serializability
+Linearizability is easily confused with serializability (see “Serializability” on page 251 ),
+as both words seem to mean something like “can be arranged in a sequential order.”
+However, they are two quite different guarantees, and it is important to distinguish
+between them:
+Serializability
+Serializability is an isolation property of transactions, where every transaction
+may read and write multiple objects (rows, documents, records)—see “Single-
+Object and Multi-Object Operations” on page 228. It guarantees that transac‐
+tions behave the same as if they had executed in some serial order (each
+transaction running to completion before the next transaction starts). It is okay
+for that serial order to be different from the order in which transactions were
+actually run [12].
+Linearizability
+Linearizability is a recency guarantee on reads and writes of a register (an indi‐
+vidual object). It doesn’t group operations together into transactions, so it does
+not prevent problems such as write skew (see “Write Skew and Phantoms” on
+page 246), unless you take additional measures such as materializing conflicts
+(see “Materializing conflicts” on page 251 ).
+A database may provide both serializability and linearizability, and this combination
+is known as strict serializability or strong one-copy serializability (strong-1SR) [4, 13].
+Implementations of serializability based on two-phase locking (see “Two-Phase Lock‐
+ing (2PL)” on page 257) or actual serial execution (see “Actual Serial Execution”  on
+page 252) are typically linearizable.
+However, serializable snapshot isolation (see “Serializable Snapshot Isolation (SSI)”
+on page 261) is not linearizable: by design, it makes reads from a consistent snapshot,
+to avoid lock contention between readers and writers. The whole point of a consistent
+snapshot is that it does not include writes that are more recent than the snapshot, and
+thus reads from the snapshot are not linearizable.
+Linearizability | 329
+
+iii. Strictly speaking, ZooKeeper and etcd provide linearizable writes, but reads may be stale, since by default
+they can be served by any one of the replicas. You can optionally request a linearizable read: etcd calls this a
+quorum read [16], and in ZooKeeper you need to call sync() before the read [15]; see “Implementing linear‐
+izable storage using total order broadcast” on page 350 .
+Relying on Linearizability
+In what circumstances is linearizability useful? Viewing the final score of a sporting
+match is perhaps a frivolous example: a result that is outdated by a few seconds is
+unlikely to cause any real harm in this situation. However, there a few areas in which
+linearizability is an important requirement for making a system work correctly.
+Locking and leader election
+A system that uses single-leader replication needs to ensure that there is indeed only
+one leader, not several (split brain). One way of electing a leader is to use a lock: every
+node that starts up tries to acquire the lock, and the one that succeeds becomes the
+leader [14]. No matter how this lock is implemented, it must be linearizable: all nodes
+must agree which node owns the lock; otherwise it is useless.
+Coordination services like Apache ZooKeeper [ 15] and etcd [ 16] are often used to
+implement distributed locks and leader election. They use consensus algorithms to
+implement linearizable operations in a fault-tolerant way (we discuss such algorithms
+later in this chapter, in “Fault-Tolerant Consensus” on page 364).iii There are still
+many subtle details to implementing locks and leader election correctly (see for
+example the fencing issue in “The leader and the lock” on page 301 ), and libraries like
+Apache Curator [ 17] help by providing higher-level recipes on top of ZooKeeper.
+However, a linearizable storage service is the basic foundation for these coordination
+tasks.
+Distributed locking is also used at a much more granular level in some distributed
+databases, such as Oracle Real Application Clusters (RAC) [ 18]. RAC uses a lock per
+disk page, with multiple nodes sharing access to the same disk storage system. Since
+these linearizable locks are on the critical path of transaction execution, RAC deploy‐
+ments usually have a dedicated cluster interconnect network for communication
+between database nodes.
+Constraints and uniqueness guarantees
+Uniqueness constraints are common in databases: for example, a username or email
+address must uniquely identify one user, and in a file storage service there cannot be
+two files with the same path and filename. If you want to enforce this constraint as
+the data is written (such that if two people try to concurrently create a user or a file
+with the same name, one of them will be returned an error), you need linearizability.
+330 | Chapter 9: Consistency and Consensus
+
+This situation is actually similar to a lock: when a user registers for your service, you
+can think of them acquiring a “lock” on their chosen username. The operation is also
+very similar to an atomic compare-and-set, setting the username to the ID of the user
+who claimed it, provided that the username is not already taken.
+Similar issues arise if you want to ensure that a bank account balance never goes neg‐
+ative, or that you don’t sell more items than you have in stock in the warehouse, or
+that two people don’t concurrently book the same seat on a flight or in a theater.
+These constraints all require there to be a single up-to-date value (the account bal‐
+ance, the stock level, the seat occupancy) that all nodes agree on.
+In real applications, it is sometimes acceptable to treat such constraints loosely (for
+example, if a flight is overbooked, you can move customers to a different flight and
+offer them compensation for the inconvenience). In such cases, linearizability may
+not be needed, and we will discuss such loosely interpreted constraints in “Timeliness
+and Integrity” on page 524 .
+However, a hard uniqueness constraint, such as the one you typically find in rela‐
+tional databases, requires linearizability. Other kinds of constraints, such as foreign
+key or attribute constraints, can be implemented without requiring linearizability
+[19].
+Cross-channel timing dependencies
+Notice a detail in Figure 9-1: if Alice hadn’t exclaimed the score, Bob wouldn’t have
+known that the result of his query was stale. He would have just refreshed the page
+again a few seconds later, and eventually seen the final score. The linearizability viola‐
+tion was only noticed because there was an additional communication channel in the
+system (Alice’s voice to Bob’s ears).
+Similar situations can arise in computer systems. For example, say you have a website
+where users can upload a photo, and a background process resizes the photos to
+lower resolution for faster download (thumbnails). The architecture and dataflow of
+this system is illustrated in Figure 9-5.
+The image resizer needs to be explicitly instructed to perform a resizing job, and this
+instruction is sent from the web server to the resizer via a message queue (see Chap‐
+ter 11). The web server doesn’t place the entire photo on the queue, since most mes‐
+sage brokers are designed for small messages, and a photo may be several megabytes
+in size. Instead, the photo is first written to a file storage service, and once the write is
+complete, the instruction to the resizer is placed on the queue.
+Linearizability | 331
+
+Figure 9-5. The web server and image resizer communicate both through file storage
+and a message queue, opening the potential for race conditions.
+If the file storage service is linearizable, then this system should work fine. If it is not
+linearizable, there is the risk of a race condition: the message queue (steps 3 and 4 in
+Figure 9-5) might be faster than the internal replication inside the storage service. In
+this case, when the resizer fetches the image (step 5), it might see an old version of the
+image, or nothing at all. If it processes an old version of the image, the full-size and
+resized images in the file storage become permanently inconsistent.
+This problem arises because there are two different communication channels
+between the web server and the resizer: the file storage and the message queue.
+Without the recency guarantee of linearizability, race conditions between these two
+channels are possible. This situation is analogous to Figure 9-1, where there was also
+a race condition between two communication channels: the database replication and
+the real-life audio channel between Alice’s mouth and Bob’s ears.
+Linearizability is not the only way of avoiding this race condition, but it’s the simplest
+to understand. If you control the additional communication channel (like in the case
+of the message queue, but not in the case of Alice and Bob), you can use alternative
+approaches similar to what we discussed in “Reading Your Own Writes” on page 162 ,
+at the cost of additional complexity. 
+Implementing Linearizable Systems
+Now that we’ve looked at a few examples in which linearizability is useful, let’s think
+about how we might implement a system that offers linearizable semantics.
+Since linearizability essentially means “behave as though there is only a single copy of
+the data, and all operations on it are atomic,” the simplest answer would be to really
+only use a single copy of the data. However, that approach would not be able to toler‐
+ate faults: if the node holding that one copy failed, the data would be lost, or at least
+inaccessible until the node was brought up again.
+332 | Chapter 9: Consistency and Consensus
+
+iv. Partitioning (sharding) a single-leader database, so that there is a separate leader per partition, does not
+affect linearizability, since it is only a single-object guarantee. Cross-partition transactions are a different mat‐
+ter (see “Distributed Transactions and Consensus” on page 352 ).
+The most common approach to making a system fault-tolerant is to use replication.
+Let’s revisit the replication methods from Chapter 5, and compare whether they can
+be made linearizable:
+Single-leader replication (potentially linearizable)
+In a system with single-leader replication (see “Leaders and Followers” on page
+152), the leader has the primary copy of the data that is used for writes, and the
+followers maintain backup copies of the data on other nodes. If you make reads
+from the leader, or from synchronously updated followers, they have the poten‐
+tial to be linearizable.iv However, not every single-leader database is actually line‐
+arizable, either by design (e.g., because it uses snapshot isolation) or due to
+concurrency bugs [10].
+Using the leader for reads relies on the assumption that you know for sure who
+the leader is. As discussed in “The Truth Is Defined by the Majority” on page
+300, it is quite possible for a node to think that it is the leader, when in fact it is
+not—and if the delusional leader continues to serve requests, it is likely to violate
+linearizability [20]. With asynchronous replication, failover may even lose com‐
+mitted writes (see “Handling Node Outages” on page 156), which violates both
+durability and linearizability.
+Consensus algorithms (linearizable)
+Some consensus algorithms, which we will discuss later in this chapter, bear a
+resemblance to single-leader replication. However, consensus protocols contain
+measures to prevent split brain and stale replicas. Thanks to these details, con‐
+sensus algorithms can implement linearizable storage safely. This is how Zoo‐
+Keeper [21] and etcd [22] work, for example.
+Multi-leader replication (not linearizable)
+Systems with multi-leader replication are generally not linearizable, because they
+concurrently process writes on multiple nodes and asynchronously replicate
+them to other nodes. For this reason, they can produce conflicting writes that
+require resolution (see “Handling Write Conflicts” on page 171). Such conflicts
+are an artifact of the lack of a single copy of the data.
+Leaderless replication (probably not linearizable)
+For systems with leaderless replication (Dynamo-style; see “Leaderless Replica‐
+tion”  on page 177), people sometimes claim that you can obtain “strong consis‐
+tency” by requiring quorum reads and writes ( w + r > n). Depending on the exact
+Linearizability | 333
+
+configuration of the quorums, and depending on how you define strong consis‐
+tency, this is not quite true.
+“Last write wins” conflict resolution methods based on time-of-day clocks (e.g.,
+in Cassandra; see “Relying on Synchronized Clocks” on page 291 ) are almost cer‐
+tainly nonlinearizable, because clock timestamps cannot be guaranteed to be
+consistent with actual event ordering due to clock skew. Sloppy quorums
+(“Sloppy Quorums and Hinted Handoff” on page 183) also ruin any chance of
+linearizability. Even with strict quorums, nonlinearizable behavior is possible, as
+demonstrated in the next section.
+Linearizability and quorums
+Intuitively, it seems as though strict quorum reads and writes should be linearizable
+in a Dynamo-style model. However, when we have variable network delays, it is pos‐
+sible to have race conditions, as demonstrated in Figure 9-6.
+Figure 9-6. A nonlinearizable execution, despite using a strict quorum.
+In Figure 9-6, the initial value of x is 0, and a writer client is updating x to 1 by send‐
+ing the write to all three replicas ( n = 3, w = 3). Concurrently, client A reads from a
+quorum of two nodes (r = 2) and sees the new value 1 on one of the nodes. Also con‐
+currently with the write, client B reads from a different quorum of two nodes, and
+gets back the old value 0 from both.
+The quorum condition is met ( w + r > n), but this execution is nevertheless not line‐
+arizable: B’s request begins after A’s request completes, but B returns the old value
+334 | Chapter 9: Consistency and Consensus
+
+while A returns the new value. (It’s once again the Alice and Bob situation from
+Figure 9-1.)
+Interestingly, it is possible to make Dynamo-style quorums linearizable at the cost of
+reduced performance: a reader must perform read repair (see “Read repair and anti-
+entropy”  on page 178) synchronously, before returning results to the application
+[23], and a writer must read the latest state of a quorum of nodes before sending its
+writes [24, 25]. However, Riak does not perform synchronous read repair due to the
+performance penalty [ 26]. Cassandra does wait for read repair to complete on quo‐
+rum reads [ 27], but it loses linearizability if there are multiple concurrent writes to
+the same key, due to its use of last-write-wins conflict resolution.
+Moreover, only linearizable read and write operations can be implemented in this
+way; a linearizable compare-and-set operation cannot, because it requires a consen‐
+sus algorithm [28].
+In summary, it is safest to assume that a leaderless system with Dynamo-style replica‐
+tion does not provide linearizability. 
+The Cost of Linearizability
+As some replication methods can provide linearizability and others cannot, it is inter‐
+esting to explore the pros and cons of linearizability in more depth.
+We already discussed some use cases for different replication methods in Chapter 5;
+for example, we saw that multi-leader replication is often a good choice for multi-
+datacenter replication (see “Multi-datacenter operation” on page 168 ). An example of
+such a deployment is illustrated in Figure 9-7.
+Figure 9-7. A network interruption forcing a choice between linearizability and availa‐
+bility.
+Linearizability | 335
+
+v. These two choices are sometimes known as CP (consistent but not available under network partitions) and
+AP (available but not consistent under network partitions), respectively. However, this classification scheme
+has several flaws [9], so it is best avoided.
+Consider what happens if there is a network interruption between the two datacen‐
+ters. Let’s assume that the network within each datacenter is working, and clients can
+reach the datacenters, but the datacenters cannot connect to each other.
+With a multi-leader database, each datacenter can continue operating normally: since
+writes from one datacenter are asynchronously replicated to the other, the writes are
+simply queued up and exchanged when network connectivity is restored.
+On the other hand, if single-leader replication is used, then the leader must be in one
+of the datacenters. Any writes and any linearizable reads must be sent to the leader—
+thus, for any clients connected to a follower datacenter, those read and write requests
+must be sent synchronously over the network to the leader datacenter.
+If the network between datacenters is interrupted in a single-leader setup, clients con‐
+nected to follower datacenters cannot contact the leader, so they cannot make any
+writes to the database, nor any linearizable reads. They can still make reads from the
+follower, but they might be stale (nonlinearizable). If the application requires linear‐
+izable reads and writes, the network interruption causes the application to become
+unavailable in the datacenters that cannot contact the leader.
+If clients can connect directly to the leader datacenter, this is not a problem, since the
+application continues to work normally there. But clients that can only reach a fol‐
+lower datacenter will experience an outage until the network link is repaired.
+The CAP theorem
+This issue is not just a consequence of single-leader and multi-leader replication: any
+linearizable database has this problem, no matter how it is implemented. The issue
+also isn’t specific to multi-datacenter deployments, but can occur on any unreliable
+network, even within one datacenter. The trade-off is as follows:v
+• If your application requires linearizability, and some replicas are disconnected
+from the other replicas due to a network problem, then some replicas cannot
+process requests while they are disconnected: they must either wait until the net‐
+work problem is fixed, or return an error (either way, they become unavailable).
+• If your application does not require linearizability, then it can be written in a way
+that each replica can process requests independently, even if it is disconnected
+from other replicas (e.g., multi-leader). In this case, the application can remain
+available in the face of a network problem, but its behavior is not linearizable.
+336 | Chapter 9: Consistency and Consensus
+
+vi. As discussed in “Network Faults in Practice” on page 279 , this book uses partitioning to refer to deliber‐
+ately breaking down a large dataset into smaller ones (sharding; see Chapter 6). By contrast, a network parti‐
+tion is a particular type of network fault, which we normally don’t consider separately from other kinds of
+faults. However, since it’s the P in CAP, we can’t avoid the confusion in this case.
+Thus, applications that don’t require linearizability can be more tolerant of network
+problems. This insight is popularly known as the CAP theorem  [29, 30, 31, 32],
+named by Eric Brewer in 2000, although the trade-off has been known to designers of
+distributed databases since the 1970s [33, 34, 35, 36].
+CAP was originally proposed as a rule of thumb, without precise definitions, with the
+goal of starting a discussion about trade-offs in databases. At the time, many dis‐
+tributed databases focused on providing linearizable semantics on a cluster of
+machines with shared storage [ 18], and CAP encouraged database engineers to
+explore a wider design space of distributed shared-nothing systems, which were more
+suitable for implementing large-scale web services [ 37]. CAP deserves credit for this
+culture shift—witness the explosion of new database technologies since the
+mid-2000s (known as NoSQL).
+The Unhelpful CAP Theorem
+CAP is sometimes presented as Consistency, Availability, Partition tolerance: pick 2
+out of 3. Unfortunately, putting it this way is misleading [ 32] because network parti‐
+tions are a kind of fault, so they aren’t something about which you have a choice: they
+will happen whether you like it or not [38].
+At times when the network is working correctly, a system can provide both consis‐
+tency (linearizability) and total availability. When a network fault occurs, you have to
+choose between either linearizability or total availability. Thus, a better way of phras‐
+ing CAP would be either Consistent or Available when Partitioned  [39]. A more relia‐
+ble network needs to make this choice less often, but at some point the choice is
+inevitable.
+In discussions of CAP there are several contradictory definitions of the term availa‐
+bility, and the formalization as a theorem [30] does not match its usual meaning [40].
+Many so-called “highly available” (fault-tolerant) systems actually do not meet CAP’s
+idiosyncratic definition of availability. All in all, there is a lot of misunderstanding
+and confusion around CAP, and it does not help us understand systems better, so
+CAP is best avoided.
+The CAP theorem as formally defined [ 30] is of very narrow scope: it only considers
+one consistency model (namely linearizability) and one kind of fault ( network parti‐
+tions,vi or nodes that are alive but disconnected from each other). It doesn’t say any‐
+Linearizability | 337
+
+thing about network delays, dead nodes, or other trade-offs. Thus, although CAP has
+been historically influential, it has little practical value for designing systems [9, 40].
+There are many more interesting impossibility results in distributed systems [ 41],
+and CAP has now been superseded by more precise results [ 2, 42], so it is of mostly
+historical interest today. 
+Linearizability and network delays
+Although linearizability is a useful guarantee, surprisingly few systems are actually
+linearizable in practice. For example, even RAM on a modern multi-core CPU is not
+linearizable [43]: if a thread running on one CPU core writes to a memory address,
+and a thread on another CPU core reads the same address shortly afterward, it is not
+guaranteed to read the value written by the first thread (unless a memory barrier or
+fence [44] is used).
+The reason for this behavior is that every CPU core has its own memory cache and
+store buffer. Memory access first goes to the cache by default, and any changes are
+asynchronously written out to main memory. Since accessing data in the cache is
+much faster than going to main memory [ 45], this feature is essential for good per‐
+formance on modern CPUs. However, there are now several copies of the data (one
+in main memory, and perhaps several more in various caches), and these copies are
+asynchronously updated, so linearizability is lost.
+Why make this trade-off? It makes no sense to use the CAP theorem to justify the
+multi-core memory consistency model: within one computer we usually assume reli‐
+able communication, and we don’t expect one CPU core to be able to continue oper‐
+ating normally if it is disconnected from the rest of the computer. The reason for
+dropping linearizability is performance, not fault tolerance.
+The same is true of many distributed databases that choose not to provide lineariza‐
+ble guarantees: they do so primarily to increase performance, not so much for fault
+tolerance [46]. Linearizability is slow—and this is true all the time, not only during a
+network fault.
+Can’t we maybe find a more efficient implementation of linearizable storage? It
+seems the answer is no: Attiya and Welch [ 47] prove that if you want linearizability,
+the response time of read and write requests is at least proportional to the uncertainty
+of delays in the network. In a network with highly variable delays, like most com‐
+puter networks (see “Timeouts and Unbounded Delays” on page 281), the response
+time of linearizable reads and writes is inevitably going to be high. A faster algorithm
+for linearizability does not exist, but weaker consistency models can be much faster,
+so this trade-off is important for latency-sensitive systems. In Chapter 12 we will dis‐
+cuss some approaches for avoiding linearizability without sacrificing correctness. 
+338 | Chapter 9: Consistency and Consensus
+
+Ordering Guarantees
+We said previously that a linearizable register behaves as if there is only a single copy
+of the data, and that every operation appears to take effect atomically at one point in
+time. This definition implies that operations are executed in some well-defined order.
+We illustrated the ordering in Figure 9-4 by joining up the operations in the order in
+which they seem to have executed.
+Ordering has been a recurring theme in this book, which suggests that it might be an
+important fundamental idea. Let’s briefly recap some of the other contexts in which
+we have discussed ordering:
+• In Chapter 5 we saw that the main purpose of the leader in single-leader replica‐
+tion is to determine the order of writes in the replication log—that is, the order in
+which followers apply those writes. If there is no single leader, conflicts can occur
+due to concurrent operations (see “Handling Write Conflicts” on page 171 ).
+• Serializability, which we discussed in Chapter 7, is about ensuring that transac‐
+tions behave as if they were executed in some sequential order. It can be achieved
+by literally executing transactions in that serial order, or by allowing concurrent
+execution while preventing serialization conflicts (by locking or aborting).
+• The use of timestamps and clocks in distributed systems that we discussed in
+Chapter 8  (see “Relying on Synchronized Clocks” on page 291) is another
+attempt to introduce order into a disorderly world, for example to determine
+which one of two writes happened later.
+It turns out that there are deep connections between ordering, linearizability, and
+consensus. Although this notion is a bit more theoretical and abstract than the rest of
+this book, it is very helpful for clarifying our understanding of what systems can and
+cannot do. We will explore this topic in the next few sections.
+Ordering and Causality
+There are several reasons why ordering keeps coming up, and one of the reasons is
+that it helps preserve causality. We have already seen several examples over the
+course of this book where causality has been important:
+• In “Consistent Prefix Reads” on page 165 (Figure 5-5) we saw an example where
+the observer of a conversation saw first the answer to a question, and then the
+question being answered. This is confusing because it violates our intuition of
+cause and effect: if a question is answered, then clearly the question had to be
+there first, because the person giving the answer must have seen the question
+(assuming they are not psychic and cannot see into the future). We say that there
+is a causal dependency between the question and the answer.
+Ordering Guarantees | 339
+
+• A similar pattern appeared in Figure 5-9 , where we looked at the replication
+between three leaders and noticed that some writes could “overtake” others due
+to network delays. From the perspective of one of the replicas it would look as
+though there was an update to a row that did not exist. Causality here means that
+a row must first be created before it can be updated.
+• In “Detecting Concurrent Writes” on page 184 we observed that if you have two
+operations A and B, there are three possibilities: either A happened before B, or B
+happened before A, or A and B are concurrent. This happened before relationship
+is another expression of causality: if A happened before B, that means B might
+have known about A, or built upon A, or depended on A. If A and B are concur‐
+rent, there is no causal link between them; in other words, we are sure that nei‐
+ther knew about the other.
+• In the context of snapshot isolation for transactions ( “Snapshot Isolation and
+Repeatable Read” on page 237 ), we said that a transaction reads from a consistent
+snapshot. But what does “consistent” mean in this context? It means consistent
+with causality: if the snapshot contains an answer, it must also contain the ques‐
+tion being answered [ 48]. Observing the entire database at a single point in time
+makes it consistent with causality: the effects of all operations that happened cau‐
+sally before that point in time are visible, but no operations that happened cau‐
+sally afterward can be seen. Read skew (non-repeatable reads, as illustrated in
+Figure 7-6) means reading data in a state that violates causality.
+• Our examples of write skew between transactions (see “Write Skew and Phan‐
+toms”  on page 246) also demonstrated causal dependencies: in Figure 7-8, Alice
+was allowed to go off call because the transaction thought that Bob was still on
+call, and vice versa. In this case, the action of going off call is causally dependent
+on the observation of who is currently on call. Serializable snapshot isolation (see
+“Serializable Snapshot Isolation (SSI)” on page 261) detects write skew by track‐
+ing the causal dependencies between transactions.
+• In the example of Alice and Bob watching football ( Figure 9-1), the fact that Bob
+got a stale result from the server after hearing Alice exclaim the result is a causal‐
+ity violation: Alice’s exclamation is causally dependent on the announcement of
+the score, so Bob should also be able to see the score after hearing Alice. The
+same pattern appeared again in “Cross-channel timing dependencies” on page
+331 in the guise of an image resizing service.
+Causality imposes an ordering on events: cause comes before effect; a message is sent
+before that message is received; the question comes before the answer. And, like in
+real life, one thing leads to another: one node reads some data and then writes some‐
+thing as a result, another node reads the thing that was written and writes something
+else in turn, and so on. These chains of causally dependent operations define the
+causal order in the system—i.e., what happened before what.
+340 | Chapter 9: Consistency and Consensus
+
+If a system obeys the ordering imposed by causality, we say that it is causally consis‐
+tent. For example, snapshot isolation provides causal consistency: when you read
+from the database, and you see some piece of data, then you must also be able to see
+any data that causally precedes it (assuming it has not been deleted in the meantime).
+The causal order is not a total order
+A total order allows any two elements to be compared, so if you have two elements,
+you can always say which one is greater and which one is smaller. For example, natu‐
+ral numbers are totally ordered: if I give you any two numbers, say 5 and 13, you can
+tell me that 13 is greater than 5.
+However, mathematical sets are not totally ordered: is { a, b} greater than {b, c}? Well,
+you can’t really compare them, because neither is a subset of the other. We say they
+are incomparable, and therefore mathematical sets are partially ordered: in some cases
+one set is greater than another (if one set contains all the elements of another), but in
+other cases they are incomparable.
+The difference between a total order and a partial order is reflected in different data‐
+base consistency models:
+Linearizability
+In a linearizable system, we have a total order of operations: if the system behaves
+as if there is only a single copy of the data, and every operation is atomic, this
+means that for any two operations we can always say which one happened first.
+This total ordering is illustrated as a timeline in Figure 9-4.
+Causality
+We said that two operations are concurrent if neither happened before the other
+(see “The “happens-before” relationship and concurrency” on page 186). Put
+another way, two events are ordered if they are causally related (one happened
+before the other), but they are incomparable if they are concurrent. This means
+that causality defines a partial order , not a total order: some operations are
+ordered with respect to each other, but some are incomparable.
+Therefore, according to this definition, there are no concurrent operations in a line‐
+arizable datastore: there must be a single timeline along which all operations are
+totally ordered. There might be several requests waiting to be handled, but the data‐
+store ensures that every request is handled atomically at a single point in time, acting
+on a single copy of the data, along a single timeline, without any concurrency.
+Concurrency would mean that the timeline branches and merges again—and in this
+case, operations on different branches are incomparable (i.e., concurrent). We saw
+this phenomenon in Chapter 5: for example, Figure 5-14 is not a straight-line total
+order, but rather a jumble of different operations going on concurrently. The arrows
+in the diagram indicate causal dependencies—the partial ordering of operations.
+Ordering Guarantees | 341
+
+If you are familiar with distributed version control systems such as Git, their version
+histories are very much like the graph of causal dependencies. Often one commit
+happens after another, in a straight line, but sometimes you get branches (when sev‐
+eral people concurrently work on a project), and merges are created when those con‐
+currently created commits are combined.
+Linearizability is stronger than causal consistency
+So what is the relationship between the causal order and linearizability? The answer is
+that linearizability implies causality: any system that is linearizable will preserve cau‐
+sality correctly [ 7]. In particular, if there are multiple communication channels in a
+system (such as the message queue and the file storage service in Figure 9-5), lineariz‐
+ability ensures that causality is automatically preserved without the system having to
+do anything special (such as passing around timestamps between different compo‐
+nents).
+The fact that linearizability ensures causality is what makes linearizable systems sim‐
+ple to understand and appealing. However, as discussed in “The Cost of Linearizabil‐
+ity”  on page 335, making a system linearizable can harm its performance and
+availability, especially if the system has significant network delays (for example, if it’s
+geographically distributed). For this reason, some distributed data systems have
+abandoned linearizability, which allows them to achieve better performance but can
+make them difficult to work with.
+The good news is that a middle ground is possible. Linearizability is not the only way
+of preserving causality—there are other ways too. A system can be causally consistent
+without incurring the performance hit of making it linearizable (in particular, the
+CAP theorem does not apply). In fact, causal consistency is the strongest possible
+consistency model that does not slow down due to network delays, and remains
+available in the face of network failures [2, 42].
+In many cases, systems that appear to require linearizability in fact only really require
+causal consistency, which can be implemented more efficiently. Based on this obser‐
+vation, researchers are exploring new kinds of databases that preserve causality, with
+performance and availability characteristics that are similar to those of eventually
+consistent systems [49, 50, 51].
+As this research is quite recent, not much of it has yet made its way into production
+systems, and there are still challenges to be overcome [ 52, 53]. However, it is a prom‐
+ising direction for future systems.
+Capturing causal dependencies
+We won’t go into all the nitty-gritty details of how nonlinearizable systems can main‐
+tain causal consistency here, but just briefly explore some of the key ideas.
+342 | Chapter 9: Consistency and Consensus
+
+In order to maintain causality, you need to know which operation happened before
+which other operation. This is a partial order: concurrent operations may be pro‐
+cessed in any order, but if one operation happened before another, then they must be
+processed in that order on every replica. Thus, when a replica processes an operation,
+it must ensure that all causally preceding operations (all operations that happened
+before) have already been processed; if some preceding operation is missing, the later
+operation must wait until the preceding operation has been processed.
+In order to determine causal dependencies, we need some way of describing the
+“knowledge” of a node in the system. If a node had already seen the value X when it
+issued the write Y, then X and Y may be causally related. The analysis uses the kinds
+of questions you would expect in a criminal investigation of fraud charges: did the
+CEO know about X at the time when they made decision Y?
+The techniques for determining which operation happened before which other oper‐
+ation are similar to what we discussed in “Detecting Concurrent Writes” on page 184 .
+That section discussed causality in a leaderless datastore, where we need to detect
+concurrent writes to the same key in order to prevent lost updates. Causal consis‐
+tency goes further: it needs to track causal dependencies across the entire database,
+not just for a single key. Version vectors can be generalized to do this [54].
+In order to determine the causal ordering, the database needs to know which version
+of the data was read by the application. This is why, in Figure 5-13, the version num‐
+ber from the prior operation is passed back to the database on a write. A similar idea
+appears in the conflict detection of SSI, as discussed in “Serializable Snapshot Isola‐
+tion (SSI)” on page 261: when a transaction wants to commit, the database checks
+whether the version of the data that it read is still up to date. To this end, the database
+keeps track of which data has been read by which transaction. 
+Sequence Number Ordering
+Although causality is an important theoretical concept, actually keeping track of all
+causal dependencies can become impractical. In many applications, clients read lots
+of data before writing something, and then it is not clear whether the write is causally
+dependent on all or only some of those prior reads. Explicitly tracking all the data
+that has been read would mean a large overhead.
+However, there is a better way: we can use sequence numbers or timestamps to order
+events. A timestamp need not come from a time-of-day clock (or physical clock,
+which have many problems, as discussed in “Unreliable Clocks”  on page 287). It can
+instead come from a logical clock , which is an algorithm to generate a sequence of
+numbers to identify operations, typically using counters that are incremented for
+every operation.
+Ordering Guarantees | 343
+
+vii. A total order that is inconsistent with causality is easy to create, but not very useful. For example, you can
+generate a random UUID for each operation, and compare UUIDs lexicographically to define the total order‐
+ing of operations. This is a valid total order, but the random UUIDs tell you nothing about which operation
+actually happened first, or whether the operations were concurrent.
+Such sequence numbers or timestamps are compact (only a few bytes in size), and
+they provide a total order: that is, every operation has a unique sequence number, and
+you can always compare two sequence numbers to determine which is greater (i.e.,
+which operation happened later).
+In particular, we can create sequence numbers in a total order that is consistent with
+causality:vii we promise that if operation A causally happened before B, then A occurs
+before B in the total order (A has a lower sequence number than B). Concurrent
+operations may be ordered arbitrarily. Such a total order captures all the causality
+information, but also imposes more ordering than strictly required by causality.
+In a database with single-leader replication (see “Leaders and Followers” on page
+152), the replication log defines a total order of write operations that is consistent
+with causality. The leader can simply increment a counter for each operation, and
+thus assign a monotonically increasing sequence number to each operation in the
+replication log. If a follower applies the writes in the order they appear in the replica‐
+tion log, the state of the follower is always causally consistent (even if it is lagging
+behind the leader).
+Noncausal sequence number generators
+If there is not a single leader (perhaps because you are using a multi-leader or leader‐
+less database, or because the database is partitioned), it is less clear how to generate
+sequence numbers for operations. Various methods are used in practice:
+• Each node can generate its own independent set of sequence numbers. For exam‐
+ple, if you have two nodes, one node can generate only odd numbers and the
+other only even numbers. In general, you could reserve some bits in the binary
+representation of the sequence number to contain a unique node identifier, and
+this would ensure that two different nodes can never generate the same sequence
+number.
+• You can attach a timestamp from a time-of-day clock (physical clock) to each
+operation [55]. Such timestamps are not sequential, but if they have sufficiently
+high resolution, they might be sufficient to totally order operations. This fact is
+used in the last write wins conflict resolution method (see “Timestamps for
+ordering events” on page 291 ).
+• You can preallocate blocks of sequence numbers. For example, node A might
+claim the block of sequence numbers from 1 to 1,000, and node B might claim
+344 | Chapter 9: Consistency and Consensus
+
+viii. It is possible to make physical clock timestamps consistent with causality: in “Synchronized clocks for
+global snapshots” on page 294  we discussed Google’s Spanner, which estimates the expected clock skew and
+waits out the uncertainty interval before committing a write. This method ensures that a causally later trans‐
+action is given a greater timestamp. However, most clocks cannot provide the required uncertainty metric.
+the block from 1,001 to 2,000. Then each node can independently assign
+sequence numbers from its block, and allocate a new block when its supply of
+sequence numbers begins to run low.
+These three options all perform better and are more scalable than pushing all opera‐
+tions through a single leader that increments a counter. They generate a unique,
+approximately increasing sequence number for each operation. However, they all
+have a problem: the sequence numbers they generate are not consistent with causality.
+The causality problems occur because these sequence number generators do not cor‐
+rectly capture the ordering of operations across different nodes:
+• Each node may process a different number of operations per second. Thus, if one
+node generates even numbers and the other generates odd numbers, the counter
+for even numbers may lag behind the counter for odd numbers, or vice versa. If
+you have an odd-numbered operation and an even-numbered operation, you
+cannot accurately tell which one causally happened first.
+• Timestamps from physical clocks are subject to clock skew, which can make
+them inconsistent with causality. For example, see Figure 8-3, which shows a sce‐
+nario in which an operation that happened causally later was actually assigned a
+lower timestamp.viii
+• In the case of the block allocator, one operation may be given a sequence number
+in the range from 1,001 to 2,000, and a causally later operation may be given a
+number in the range from 1 to 1,000. Here, again, the sequence number is incon‐
+sistent with causality.
+Lamport timestamps
+Although the three sequence number generators just described are inconsistent with
+causality, there is actually a simple method for generating sequence numbers that is
+consistent with causality. It is called a Lamport timestamp, proposed in 1978 by Leslie
+Lamport [56], in what is now one of the most-cited papers in the field of distributed
+systems.
+The use of Lamport timestamps is illustrated in Figure 9-8. Each node has a unique
+identifier, and each node keeps a counter of the number of operations it has pro‐
+cessed. The Lamport timestamp is then simply a pair of ( counter, node ID ). Two
+Ordering Guarantees | 345
+
+nodes may sometimes have the same counter value, but by including the node ID in
+the timestamp, each timestamp is made unique.
+Figure 9-8. Lamport timestamps provide a total ordering consistent with causality.
+A Lamport timestamp bears no relationship to a physical time-of-day clock, but it
+provides total ordering: if you have two timestamps, the one with a greater counter
+value is the greater timestamp; if the counter values are the same, the one with the
+greater node ID is the greater timestamp.
+So far this description is essentially the same as the even/odd counters described in
+the last section. The key idea about Lamport timestamps, which makes them consis‐
+tent with causality, is the following: every node and every client keeps track of the
+maximum counter value it has seen so far, and includes that maximum on every
+request. When a node receives a request or response with a maximum counter value
+greater than its own counter value, it immediately increases its own counter to that
+maximum.
+This is shown in Figure 9-8, where client A receives a counter value of 5 from node 2,
+and then sends that maximum of 5 to node 1. At that time, node 1’s counter was only
+1, but it was immediately moved forward to 5, so the next operation had an incre‐
+mented counter value of 6.
+As long as the maximum counter value is carried along with every operation, this
+scheme ensures that the ordering from the Lamport timestamps is consistent with
+causality, because every causal dependency results in an increased timestamp.
+Lamport timestamps are sometimes confused with version vectors, which we saw in
+“Detecting Concurrent Writes” on page 184. Although there are some similarities,
+they have a different purpose: version vectors can distinguish whether two operations
+are concurrent or whether one is causally dependent on the other, whereas Lamport
+timestamps always enforce a total ordering. From the total ordering of Lamport time‐
+346 | Chapter 9: Consistency and Consensus

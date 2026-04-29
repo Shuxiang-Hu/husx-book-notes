@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch10 · Batch Processing — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage &amp; Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding &amp; Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency &amp; Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+
+<main id="main">
+  <span class="part-badge p3">Part III — Derived Data</span>
+  <h1>Chapter 10 · Batch Processing</h1>
+  <p class="lead">Part III shifts from storing and retrieving data to <em>deriving</em> new data from existing data. Batch processing reads a large input dataset, runs a computation, and writes an output — without user interaction. MapReduce popularised this at web scale; modern engines like Spark improve upon it dramatically.</p>
+
+  <!-- ── Three Kinds of Systems ────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Three Kinds of Systems</h2>
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 140" font-family="inherit" font-size="13">
+        <rect x="10" y="10" width="190" height="120" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+        <text x="105" y="34" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="13">Services (Online)</text>
+        <text x="20" y="54" fill="#1e40af" font-size="11">• Wait for a request</text>
+        <text x="20" y="70" fill="#1e40af" font-size="11">• Handle it ASAP</text>
+        <text x="20" y="86" fill="#1e40af" font-size="11">• Return a response</text>
+        <text x="20" y="106" fill="#3b82f6" font-size="10">Key metric: response time</text>
+        <text x="20" y="120" fill="#475569" font-size="10">HTTP APIs, databases</text>
+        <rect x="235" y="10" width="190" height="120" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+        <text x="330" y="34" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="13">Batch (Offline)</text>
+        <text x="245" y="54" fill="#166634" font-size="11">• Reads large input</text>
+        <text x="245" y="70" fill="#166634" font-size="11">• Runs a computation</text>
+        <text x="245" y="86" fill="#166634" font-size="11">• Produces output</text>
+        <text x="245" y="106" fill="#22c55e" font-size="10">Key metric: throughput</text>
+        <text x="245" y="120" fill="#475569" font-size="10">MapReduce, Spark, Hive</text>
+        <rect x="460" y="10" width="190" height="120" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="2"/>
+        <text x="555" y="34" text-anchor="middle" font-weight="bold" fill="#9d174d" font-size="13">Stream (Near-RT)</text>
+        <text x="470" y="54" fill="#be185d" font-size="11">• Consumes events</text>
+        <text x="470" y="70" fill="#be185d" font-size="11">• Low-latency processing</text>
+        <text x="470" y="86" fill="#be185d" font-size="11">• Produces output/events</text>
+        <text x="470" y="106" fill="#ec4899" font-size="10">Key metric: latency + throughput</text>
+        <text x="470" y="120" fill="#475569" font-size="10">Kafka Streams, Flink</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── Unix Pipeline Philosophy ──────────────────────────────── -->
+  <section class="chapter">
+    <h2>The Unix Pipeline — Batch Processing's Ancestor</h2>
+    <p>Before MapReduce, the Unix pipeline achieved the same shape: each tool does one thing well, tools communicate via stdin/stdout (the "uniform interface"), and pipelines compose them without modification.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 110" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="ua" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <text x="330" y="18" text-anchor="middle" fill="#374151" font-size="12" font-weight="bold">cat access.log | awk '{print $7}' | sort | uniq -c | sort -rn | head -5</text>
+        <rect x="10" y="28" width="80" height="30" rx="5" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="50" y="48" text-anchor="middle" fill="#92400e" font-size="11">access.log</text>
+        <line x1="90" y1="43" x2="110" y2="43" stroke="#64748b" stroke-width="1.5" marker-end="url(#ua)"/>
+        <rect x="112" y="28" width="62" height="30" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="143" y="48" text-anchor="middle" fill="#1e40af" font-size="11">awk</text>
+        <line x1="174" y1="43" x2="194" y2="43" stroke="#64748b" stroke-width="1.5" marker-end="url(#ua)"/>
+        <rect x="196" y="28" width="56" height="30" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="224" y="48" text-anchor="middle" fill="#1e40af" font-size="11">sort</text>
+        <line x1="252" y1="43" x2="272" y2="43" stroke="#64748b" stroke-width="1.5" marker-end="url(#ua)"/>
+        <rect x="274" y="28" width="68" height="30" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="308" y="48" text-anchor="middle" fill="#1e40af" font-size="11">uniq -c</text>
+        <line x1="342" y1="43" x2="362" y2="43" stroke="#64748b" stroke-width="1.5" marker-end="url(#ua)"/>
+        <rect x="364" y="28" width="72" height="30" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="400" y="48" text-anchor="middle" fill="#1e40af" font-size="11">sort -rn</text>
+        <line x1="436" y1="43" x2="456" y2="43" stroke="#64748b" stroke-width="1.5" marker-end="url(#ua)"/>
+        <rect x="458" y="28" width="64" height="30" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="490" y="48" text-anchor="middle" fill="#1e40af" font-size="11">head -5</text>
+        <line x1="522" y1="43" x2="542" y2="43" stroke="#64748b" stroke-width="1.5" marker-end="url(#ua)"/>
+        <rect x="544" y="28" width="100" height="30" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="594" y="48" text-anchor="middle" fill="#14532d" font-size="11">top 5 URLs</text>
+        <text x="330" y="90" text-anchor="middle" fill="#475569" font-size="11">Each stage reads newline-separated records, transforms, writes — exactly like a full-table-scan + GROUP BY + ORDER BY in SQL.</text>
+      </svg>
+    </div>
+
+    <p>Limitations: runs on one machine, no fault tolerance, <code>sort</code> requires data to fit on disk. MapReduce distributes this pattern across thousands of nodes.</p>
+  </section>
+
+  <!-- ── MapReduce ──────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>MapReduce on HDFS</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 290" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="ma" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Input -->
+        <text x="65" y="18" text-anchor="middle" fill="#374151" font-weight="bold" font-size="12">HDFS Input</text>
+        <rect x="10" y="26" width="110" height="24" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="65" y="43" text-anchor="middle" fill="#92400e" font-size="11">Split 1 (128 MB)</text>
+        <rect x="10" y="56" width="110" height="24" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="65" y="73" text-anchor="middle" fill="#92400e" font-size="11">Split 2 (128 MB)</text>
+        <rect x="10" y="86" width="110" height="24" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="65" y="103" text-anchor="middle" fill="#92400e" font-size="11">Split 3 (128 MB)</text>
+
+        <!-- Map -->
+        <text x="235" y="18" text-anchor="middle" fill="#1d4ed8" font-weight="bold" font-size="12">Map</text>
+        <rect x="140" y="26" width="190" height="24" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="235" y="43" text-anchor="middle" fill="#1e40af" font-size="11">emit(k, v) per input record</text>
+        <rect x="140" y="56" width="190" height="24" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="235" y="73" text-anchor="middle" fill="#1e40af" font-size="11">emit(k, v) per input record</text>
+        <rect x="140" y="86" width="190" height="24" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="235" y="103" text-anchor="middle" fill="#1e40af" font-size="11">emit(k, v) per input record</text>
+        <line x1="120" y1="38" x2="138" y2="38" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+        <line x1="120" y1="68" x2="138" y2="68" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+        <line x1="120" y1="98" x2="138" y2="98" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+
+        <!-- Shuffle/Sort -->
+        <text x="430" y="18" text-anchor="middle" fill="#b45309" font-weight="bold" font-size="12">Shuffle &amp; Sort</text>
+        <rect x="350" y="26" width="160" height="100" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="430" y="50" text-anchor="middle" fill="#92400e" font-size="11">All (k,v) sorted by k</text>
+        <text x="430" y="67" text-anchor="middle" fill="#92400e" font-size="11">across the cluster.</text>
+        <text x="430" y="84" text-anchor="middle" fill="#92400e" font-size="11">Same key → same reducer</text>
+        <text x="430" y="104" text-anchor="middle" fill="#dc2626" font-size="10">Most expensive step (network)</text>
+        <line x1="330" y1="50" x2="348" y2="70" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+        <line x1="330" y1="68" x2="348" y2="76" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+        <line x1="330" y1="98" x2="348" y2="88" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+
+        <!-- Reduce -->
+        <text x="600" y="18" text-anchor="middle" fill="#15803d" font-weight="bold" font-size="12">Reduce → HDFS out</text>
+        <rect x="525" y="26" width="140" height="34" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="595" y="47" text-anchor="middle" fill="#14532d" font-size="11">reducer(k, [v…]) → rows</text>
+        <rect x="525" y="66" width="140" height="34" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="595" y="87" text-anchor="middle" fill="#14532d" font-size="11">reducer(k, [v…]) → rows</text>
+        <line x1="510" y1="55" x2="523" y2="43" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+        <line x1="510" y1="75" x2="523" y2="83" stroke="#64748b" stroke-width="1.5" marker-end="url(#ma)"/>
+
+        <!-- Properties -->
+        <rect x="10" y="145" width="655" height="135" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="337" y="165" text-anchor="middle" font-weight="bold" fill="#374151" font-size="13">MapReduce Key Properties</text>
+        <text x="20" y="184" fill="#475569" font-size="11">• Inputs are immutable HDFS files. Outputs are new HDFS files. The job never modifies its inputs.</text>
+        <text x="20" y="200" fill="#475569" font-size="11">• Fault tolerance: if a mapper or reducer task fails, the framework re-runs it on another node — no rollback needed.</text>
+        <text x="20" y="216" fill="#475569" font-size="11">• Data locality: tasks are preferentially scheduled on nodes that hold the input HDFS block (avoid network transfer).</text>
+        <text x="20" y="232" fill="#475569" font-size="11">• Combiner: a mini-reducer that runs locally after each mapper to reduce shuffle size (e.g., partial sums before the network hop).</text>
+        <text x="20" y="252" fill="#dc2626" font-size="11">• Downside: two fixed stages only. Complex jobs chain many MR jobs; intermediate results always materialised to HDFS.</text>
+        <text x="20" y="270" fill="#dc2626" font-size="11">  This materialisation is expensive (write to disk, replicate 3×, read back on next stage). Spark eliminates this.</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── Joins ──────────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Joins in Batch Processing</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 190" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="ja" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Sort-merge join (reduce-side) -->
+        <rect x="10" y="10" width="290" height="170" rx="8" fill="#eff6ff" stroke="#93c5fd"/>
+        <text x="155" y="30" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="12">Sort-Merge Join (Reduce-Side)</text>
+        <text x="20" y="50" fill="#1e40af" font-size="11">1. Mappers tag each record with its source.</text>
+        <text x="20" y="66" fill="#1e40af" font-size="11">2. Shuffle groups all records by join key.</text>
+        <text x="20" y="82" fill="#1e40af" font-size="11">3. Reducer receives both sides for each key:</text>
+        <rect x="25" y="90" width="120" height="22" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="85" y="105" text-anchor="middle" fill="#1e40af" font-size="10">user 42: {name="Alice"}</text>
+        <rect x="155" y="90" width="130" height="22" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="220" y="105" text-anchor="middle" fill="#1e40af" font-size="10">orders: [{amt=50},{amt=12}]</text>
+        <text x="20" y="128" fill="#16a34a" font-size="11">✔ Works for any size on both sides</text>
+        <text x="20" y="144" fill="#dc2626" font-size="11">✗ Hot key → one reducer overloaded</text>
+        <text x="20" y="160" fill="#dc2626" font-size="11">✗ Requires full shuffle (expensive)</text>
+
+        <!-- Broadcast hash join -->
+        <rect x="320" y="10" width="330" height="170" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+        <text x="485" y="30" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="12">Broadcast Hash Join (Map-Side)</text>
+        <text x="330" y="50" fill="#166634" font-size="11">One side small enough to fit in RAM.</text>
+        <text x="330" y="66" fill="#166634" font-size="11">Load small table into hash map in every mapper.</text>
+        <text x="330" y="82" fill="#166634" font-size="11">Mapper probes hash map per large-table record.</text>
+        <rect x="330" y="92" width="310" height="42" rx="5" fill="#dcfce7" stroke="#86efac"/>
+        <text x="485" y="110" text-anchor="middle" fill="#15803d" font-size="11">for each order_row: userName = hashmap[userId]</text>
+        <text x="485" y="126" text-anchor="middle" fill="#15803d" font-size="11">emit joined row — no shuffle needed!</text>
+        <text x="330" y="154" fill="#16a34a" font-size="11">✔ Fastest — no network shuffle at all</text>
+        <text x="330" y="170" fill="#dc2626" font-size="11">✗ Small side must fit in mapper RAM (~100 MB–1 GB)</text>
+      </svg>
+    </div>
+
+    <div class="insight">
+      <strong>Handling Hot Keys</strong> — If a small number of keys (e.g., a celebrity userId) appear millions of times, a single reducer gets all of them. Solution: <em>salting</em> — randomly append a suffix (0–9) to hot keys when writing, then query with all suffixes and union the results. Or replicate the small-side table many times and use a broadcast join.
+    </div>
+  </section>
+
+  <!-- ── Beyond MapReduce ────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Beyond MapReduce: Dataflow Engines</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 190" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="da" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- MR chain -->
+        <text x="10" y="18" font-weight="bold" fill="#dc2626" font-size="12">MapReduce (chained jobs — lots of HDFS writes)</text>
+        <rect x="10" y="28" width="64" height="26" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="42" y="46" text-anchor="middle" fill="#92400e" font-size="10">HDFS in</text>
+        <line x1="74" y1="41" x2="88" y2="41" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="90" y="28" width="46" height="26" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="113" y="46" text-anchor="middle" fill="#1e40af" font-size="10">Map</text>
+        <line x1="136" y1="41" x2="150" y2="41" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="152" y="28" width="70" height="26" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-dasharray="4,2"/>
+        <text x="187" y="46" text-anchor="middle" fill="#854d0e" font-size="10">HDFS write</text>
+        <line x1="222" y1="41" x2="236" y2="41" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="238" y="28" width="56" height="26" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="266" y="46" text-anchor="middle" fill="#14532d" font-size="10">Reduce</text>
+        <line x1="294" y1="41" x2="308" y2="41" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="310" y="28" width="70" height="26" rx="4" fill="#fef9c3" stroke="#ca8a04" stroke-dasharray="4,2"/>
+        <text x="345" y="46" text-anchor="middle" fill="#854d0e" font-size="10">HDFS write</text>
+        <line x1="380" y1="41" x2="394" y2="41" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="396" y="28" width="46" height="26" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="419" y="46" text-anchor="middle" fill="#1e40af" font-size="10">Map</text>
+        <line x1="442" y1="41" x2="456" y2="41" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="458" y="28" width="56" height="26" rx="4" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="486" y="46" text-anchor="middle" fill="#14532d" font-size="10">Reduce</text>
+        <line x1="514" y1="41" x2="528" y2="41" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="530" y="28" width="70" height="26" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="565" y="46" text-anchor="middle" fill="#92400e" font-size="10">HDFS out</text>
+
+        <!-- Spark DAG -->
+        <text x="10" y="90" font-weight="bold" fill="#16a34a" font-size="12">Spark / Dataflow Engine (lazy DAG — in-memory pipelining)</text>
+        <rect x="10" y="100" width="64" height="26" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="42" y="118" text-anchor="middle" fill="#92400e" font-size="10">HDFS in</text>
+        <line x1="74" y1="113" x2="88" y2="113" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="90" y="100" width="510" height="26" rx="4" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+        <text x="345" y="118" text-anchor="middle" fill="#14532d" font-size="11">Lazy evaluation DAG — filter → map → join → agg pipelined in RAM (RDD / DataFrame)</text>
+        <line x1="600" y1="113" x2="614" y2="113" stroke="#64748b" stroke-width="1.5" marker-end="url(#da)"/>
+        <rect x="616" y="100" width="38" height="26" rx="4" fill="#fef3c7" stroke="#f59e0b"/>
+        <text x="635" y="118" text-anchor="middle" fill="#92400e" font-size="10">out</text>
+
+        <text x="330" y="152" text-anchor="middle" fill="#16a34a" font-size="11">No intermediate HDFS writes. Shuffle only when necessary. 10–100× faster than MR for iterative algorithms.</text>
+        <rect x="10" y="162" width="640" height="26" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="330" y="178" text-anchor="middle" fill="#374151" font-size="11">Fault tolerance via RDD lineage — lost partitions are recomputed from the original input, not checkpointed state.</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead><tr><th>System</th><th>Model</th><th>Strength</th></tr></thead>
+      <tbody>
+        <tr><td>Hadoop MapReduce</td><td>Map + Reduce + HDFS materialise</td><td class="b">Simple, battle-tested; slow for iterative</td></tr>
+        <tr><td>Apache Spark</td><td>DAG of stages (RDD / DataFrame)</td><td class="g">Fast in-memory; MLlib; Structured Streaming</td></tr>
+        <tr><td>Apache Flink</td><td>Dataflow (unified batch + streaming)</td><td class="g">Low-latency; true streaming with exactly-once</td></tr>
+        <tr><td>Apache Hive</td><td>SQL on Tez or Spark</td><td class="b">Ad-hoc analytics on HDFS; familiar SQL</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── Output of Batch Jobs ───────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Output of Batch Jobs</h2>
+    <p>Batch jobs produce <em>derived data</em> — datasets derived from raw inputs. Common uses:</p>
+    <dl class="defs">
+      <dt>Search indexes</dt>
+      <dd>Full-text search index files built over a corpus. Lucene segment files written by reducers, then loaded into search servers. Incremental updates are new batch runs.</dd>
+      <dt>Key-value store snapshots</dt>
+      <dd>Produce a static key-value store (e.g., HBase bulk-load, LevelDB SST files) from a batch job. Servers swap to the new version atomically.</dd>
+      <dt>Recommendation models</dt>
+      <dd>Train a collaborative-filtering or ML model. Write model parameters to distributed store. Serving layer reads parameters for real-time inference.</dd>
+      <dt>Aggregated metrics</dt>
+      <dd>Daily/hourly counts written to a time-series database or data warehouse for dashboards.</dd>
+    </dl>
+    <div class="key-concept">
+      <strong>Outputs as Immutable Files</strong> — Batch job outputs are usually written to new files/directories, never modifying input data. This makes jobs easy to re-run (idempotent), rollback, A/B test, and audit.
+    </div>
+  </section>
+
+  <!-- ── Key Takeaways ──────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Key Takeaways</h2>
+    <dl class="defs">
+      <dt>Batch vs. OLTP</dt>
+      <dd>Batch reads immutable inputs, writes new outputs. No user-facing latency. Key metric is throughput, not response time.</dd>
+      <dt>MapReduce</dt>
+      <dd>Two-stage (map + shuffle/sort + reduce) over HDFS. Fault-tolerant by re-running tasks. Intermediate results materialised to HDFS — flexible but slow.</dd>
+      <dt>Joins</dt>
+      <dd>Sort-merge join for large inputs (shuffle by key); broadcast hash join when one side fits in RAM (no shuffle). Hot keys need salting or replication.</dd>
+      <dt>Dataflow engines</dt>
+      <dd>Spark/Flink/Tez eliminate unnecessary materialisation by pipelining stages in memory. Dramatic speedups for iterative ML/graph algorithms.</dd>
+      <dt>Derived data philosophy</dt>
+      <dd>Separating storage (immutable raw data) from computation (batch transforms) enables reprocessing the entire history when business logic changes — a powerful audit and evolution capability.</dd>
+    </dl>
+  </section>
+
+  <div class="ch-nav">
+    <a href="../part2/ch09.html">← Ch09 · Consistency &amp; Consensus</a>
+    <a href="../part3/ch11.html">Ch11 · Stream Processing →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

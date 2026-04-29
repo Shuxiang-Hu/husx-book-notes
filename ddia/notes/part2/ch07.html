@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch07 · Transactions — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage &amp; Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding &amp; Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency &amp; Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+
+<main id="main">
+  <span class="part-badge p2">Part II — Distributed Data</span>
+  <h1>Chapter 7 · Transactions</h1>
+  <p class="lead">A transaction groups multiple reads and writes into a single logical unit: either the whole thing succeeds (commit) or the whole thing fails (abort/rollback). Transactions are the primary tool databases provide for tolerating faults — but they come with real costs and many systems now offer weaker guarantees.</p>
+
+  <!-- ── ACID ────────────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>ACID — The Classic Safety Properties</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 220" font-family="inherit" font-size="13">
+        <!-- A -->
+        <rect x="10" y="10" width="150" height="190" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+        <text x="85" y="38" text-anchor="middle" font-size="22" font-weight="bold" fill="#b45309">A</text>
+        <text x="85" y="60" text-anchor="middle" font-size="14" font-weight="bold" fill="#92400e">Atomicity</text>
+        <text x="20" y="85" fill="#78350f" font-size="11">All or nothing.</text>
+        <text x="20" y="101" fill="#78350f" font-size="11">If a tx writes 5 rows</text>
+        <text x="20" y="117" fill="#78350f" font-size="11">and crashes after 3,</text>
+        <text x="20" y="133" fill="#78350f" font-size="11">the whole tx is rolled</text>
+        <text x="20" y="149" fill="#78350f" font-size="11">back — not half-written.</text>
+        <text x="20" y="173" fill="#b45309" font-weight="bold" font-size="11">Abortability</text>
+        <text x="20" y="189" fill="#78350f" font-size="11">is the key benefit.</text>
+        <!-- C -->
+        <rect x="175" y="10" width="150" height="190" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+        <text x="250" y="38" text-anchor="middle" font-size="22" font-weight="bold" fill="#15803d">C</text>
+        <text x="250" y="60" text-anchor="middle" font-size="14" font-weight="bold" fill="#14532d">Consistency</text>
+        <text x="185" y="85" fill="#166534" font-size="11">App invariants are</text>
+        <text x="185" y="101" fill="#166534" font-size="11">preserved (debits =</text>
+        <text x="185" y="117" fill="#166534" font-size="11">credits). This is an</text>
+        <text x="185" y="133" fill="#166634" font-size="11">application concern,</text>
+        <text x="185" y="149" fill="#166634" font-size="11">not enforced by DB.</text>
+        <text x="185" y="173" fill="#15803d" font-weight="bold" font-size="11">The "C" is a misfit</text>
+        <text x="185" y="189" fill="#166634" font-size="11">— added for acronym.</text>
+        <!-- I -->
+        <rect x="340" y="10" width="150" height="190" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+        <text x="415" y="38" text-anchor="middle" font-size="22" font-weight="bold" fill="#1d4ed8">I</text>
+        <text x="415" y="60" text-anchor="middle" font-size="14" font-weight="bold" fill="#1e3a8a">Isolation</text>
+        <text x="350" y="85" fill="#1e40af" font-size="11">Concurrently executing</text>
+        <text x="350" y="101" fill="#1e40af" font-size="11">transactions don't see</text>
+        <text x="350" y="117" fill="#1e40af" font-size="11">each other's partial</text>
+        <text x="350" y="133" fill="#1e40af" font-size="11">results. Serializability</text>
+        <text x="350" y="149" fill="#1e40af" font-size="11">is the ideal: txs run</text>
+        <text x="350" y="165" fill="#1e40af" font-size="11">as if one at a time.</text>
+        <text x="350" y="189" fill="#1d4ed8" font-weight="bold" font-size="11">Hard to implement.</text>
+        <!-- D -->
+        <rect x="505" y="10" width="165" height="190" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="2"/>
+        <text x="587" y="38" text-anchor="middle" font-size="22" font-weight="bold" fill="#be185d">D</text>
+        <text x="587" y="60" text-anchor="middle" font-size="14" font-weight="bold" fill="#9d174d">Durability</text>
+        <text x="515" y="85" fill="#9d174d" font-size="11">Committed data will</text>
+        <text x="515" y="101" fill="#9d174d" font-size="11">not be lost even if DB</text>
+        <text x="515" y="117" fill="#9d174d" font-size="11">crashes. Typically via</text>
+        <text x="515" y="133" fill="#9d174d" font-size="11">WAL on disk or SSDs.</text>
+        <text x="515" y="153" fill="#9d174d" font-size="11">In distributed DBs:</text>
+        <text x="515" y="169" fill="#9d174d" font-size="11">wait for W replicas</text>
+        <text x="515" y="185" fill="#9d174d" font-size="11">to acknowledge write.</text>
+      </svg>
+    </div>
+
+    <div class="insight">
+      <strong>BASE ≠ ACID</strong> — NoSQL vendors coined "BASE" (Basically Available, Soft state, Eventually consistent) partly as a marketing counter to ACID. The comparison is misleading: the two terms don't sit on a spectrum; they describe different design priorities. ACID's weakest link is <em>Isolation</em> — most systems default to weaker isolation than full serializability.
+    </div>
+  </section>
+
+  <!-- ── Isolation Levels ──────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Isolation Levels &amp; Race Conditions</h2>
+    <p>Full isolation (serializability) is expensive. In practice, databases offer a spectrum of isolation levels, each tolerating different concurrency bugs:</p>
+
+    <div class="diagram-wrap">
+      <!-- Isolation levels ladder -->
+      <svg viewBox="0 0 680 380" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="up" markerWidth="8" markerHeight="8" refX="3" refY="6" orient="auto">
+            <path d="M0,8 L4,0 L8,8 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Performance axis (down=better) -->
+        <line x1="30" y1="20" x2="30" y2="360" stroke="#94a3b8" stroke-width="2" marker-end="url(#up)"/>
+        <text x="14" y="200" fill="#475569" font-size="11" transform="rotate(-90,14,200)">Safety ↑</text>
+        <text x="14" y="120" fill="#475569" font-size="11" transform="rotate(-90,14,120)">Perf ↓</text>
+
+        <!-- Level 4: Serializable -->
+        <rect x="50" y="20" width="615" height="65" rx="6" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+        <text x="62" y="42" font-weight="bold" fill="#1e3a8a" font-size="13">Serializable</text>
+        <text x="62" y="58" fill="#1e40af" font-size="11">Strongest. Transactions execute as if serial. No anomalies possible.</text>
+        <text x="62" y="73" fill="#1e40af" font-size="11">Implemented via: actual serial execution, 2PL, or SSI (optimistic). Often slowest.</text>
+
+        <!-- Level 3: Repeatable Read / Snapshot Isolation -->
+        <rect x="50" y="98" width="615" height="65" rx="6" fill="#dcfce7" stroke="#22c55e" stroke-width="1.5"/>
+        <text x="62" y="120" font-weight="bold" fill="#14532d" font-size="13">Snapshot Isolation (Repeatable Read)</text>
+        <text x="62" y="136" fill="#166634" font-size="11">Each tx reads from a consistent snapshot taken at tx start. No dirty reads, no non-repeatable reads.</text>
+        <text x="62" y="151" fill="#166634" font-size="11">MVCC-based. Prevents most anomalies but NOT write skew. PostgreSQL, MySQL InnoDB default.</text>
+
+        <!-- Level 2: Read Committed -->
+        <rect x="50" y="176" width="615" height="65" rx="6" fill="#fef3c7" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="62" y="198" font-weight="bold" fill="#92400e" font-size="13">Read Committed</text>
+        <text x="62" y="214" fill="#78350f" font-size="11">No dirty reads (only see committed data). No dirty writes (don't overwrite uncommitted data).</text>
+        <text x="62" y="229" fill="#78350f" font-size="11">Allows: non-repeatable reads, phantoms, read skew. Most common default (Oracle, SQL Server, Postgres).</text>
+
+        <!-- Level 1: Read Uncommitted -->
+        <rect x="50" y="254" width="615" height="55" rx="6" fill="#fee2e2" stroke="#ef4444" stroke-width="1.5"/>
+        <text x="62" y="275" font-weight="bold" fill="#991b1b" font-size="13">Read Uncommitted</text>
+        <text x="62" y="291" fill="#7f1d1d" font-size="11">Allows dirty reads: a transaction sees uncommitted changes from another in-flight transaction.</text>
+        <text x="62" y="307" fill="#7f1d1d" font-size="11">Almost never safe. Only occasionally justified for approximate analytics queries.</text>
+
+        <!-- Anomaly legend -->
+        <rect x="50" y="322" width="615" height="48" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="62" y="340" fill="#dc2626" font-size="11">✗ Dirty read/write</text>
+        <text x="200" y="340" fill="#b45309" font-size="11">✗ Non-repeatable read</text>
+        <text x="370" y="340" fill="#7c3aed" font-size="11">✗ Phantom read</text>
+        <text x="62" y="360" fill="#475569" font-size="11">✗ Read skew</text>
+        <text x="200" y="360" fill="#475569" font-size="11">✗ Write skew</text>
+        <text x="370" y="360" fill="#475569" font-size="11">✗ Lost update</text>
+      </svg>
+    </div>
+
+    <h3>Race Condition Taxonomy</h3>
+    <table class="comparison-table">
+      <thead><tr><th>Race Condition</th><th>Description</th><th>Prevented by</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Dirty Read</strong></td><td>Read uncommitted data from another tx</td><td class="g">Read Committed +</td></tr>
+        <tr><td><strong>Dirty Write</strong></td><td>Overwrite uncommitted data from another tx</td><td class="g">Read Committed +</td></tr>
+        <tr><td><strong>Read Skew</strong></td><td>Non-repeatable read: re-reading returns different value</td><td class="b">Snapshot Isolation +</td></tr>
+        <tr><td><strong>Lost Update</strong></td><td>Two concurrent read-modify-write; one overwrites the other</td><td class="b">Atomic ops / SELECT FOR UPDATE</td></tr>
+        <tr><td><strong>Write Skew</strong></td><td>Two txs read overlapping data, each updates based on stale view; both commit, invariant broken</td><td class="n">Serializable only</td></tr>
+        <tr><td><strong>Phantom</strong></td><td>tx1 queries set S; tx2 inserts into S; tx1 re-queries sees phantoms</td><td class="n">Serializable only</td></tr>
+      </tbody>
+    </table>
+
+    <div class="key-concept">
+      <strong>Write Skew Pattern</strong> — Two doctors each check if at least one other is on call, find yes, and both go off-call. Neither update conflicts at the row level, yet the invariant (≥1 doctor on call) is violated. This pattern — read a set, make a decision, write based on that decision — is not prevented by snapshot isolation. It requires <em>materialising conflicts</em> or serializable isolation.
+    </div>
+  </section>
+
+  <!-- ── MVCC ────────────────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Multi-Version Concurrency Control (MVCC)</h2>
+    <p>MVCC is the standard implementation of snapshot isolation. Instead of locking, the database keeps <em>multiple versions</em> of each row — each transaction sees the version that existed at its start time.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 660 260" font-family="inherit" font-size="13">
+        <defs>
+          <marker id="mv" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 Z" fill="#64748b"/>
+          </marker>
+        </defs>
+        <!-- Time axis -->
+        <line x1="20" y1="30" x2="640" y2="30" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="20" y="22" fill="#475569" font-size="11">t=1</text>
+        <text x="160" y="22" fill="#475569" font-size="11">t=2</text>
+        <text x="300" y="22" fill="#475569" font-size="11">t=3</text>
+        <text x="440" y="22" fill="#475569" font-size="11">t=4</text>
+        <text x="580" y="22" fill="#475569" font-size="11">t=5</text>
+        <!-- tick marks -->
+        <line x1="20" y1="25" x2="20" y2="35" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="160" y1="25" x2="160" y2="35" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="300" y1="25" x2="300" y2="35" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="440" y1="25" x2="440" y2="35" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="580" y1="25" x2="580" y2="35" stroke="#94a3b8" stroke-width="1.5"/>
+
+        <!-- Tx 1: long read tx, started at t=1 -->
+        <rect x="20" y="50" width="560" height="30" rx="5" fill="#dbeafe" stroke="#3b82f6"/>
+        <text x="25" y="70" fill="#1e40af" font-size="11">Tx1 (read, snapshot at t=1)  ───────────────────────────────── reads throughout →</text>
+
+        <!-- Tx 2: write at t=2 -->
+        <rect x="160" y="95" width="140" height="30" rx="5" fill="#fce7f3" stroke="#ec4899"/>
+        <text x="165" y="115" fill="#9d174d" font-size="11">Tx2: UPDATE accounts SET bal=900 WHERE id=1</text>
+
+        <!-- Version rows in DB -->
+        <text x="20" y="155" fill="#475569" font-size="12" font-weight="bold">Row versions stored in DB:</text>
+
+        <!-- v1 row -->
+        <rect x="20" y="165" width="280" height="34" rx="5" fill="#dcfce7" stroke="#22c55e"/>
+        <text x="30" y="183" fill="#14532d" font-size="11">id=1, bal=1000, created_by=tx0, deleted_by=NULL</text>
+        <text x="30" y="197" fill="#14532d" font-size="11">(visible to Tx1 — snapshot ≥ tx0, Tx2 not yet committed)</text>
+
+        <!-- v2 row -->
+        <rect x="320" y="165" width="320" height="34" rx="5" fill="#ede9fe" stroke="#8b5cf6"/>
+        <text x="330" y="183" fill="#5b21b6" font-size="11">id=1, bal=900, created_by=tx2, deleted_by=NULL</text>
+        <text x="330" y="197" fill="#5b21b6" font-size="11">(visible to txs that start AFTER Tx2 commits)</text>
+
+        <!-- Tx1 arrow to old version -->
+        <line x1="100" y1="80" x2="100" y2="165" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mv)"/>
+        <text x="105" y="130" fill="#3b82f6" font-size="10">reads v1</text>
+
+        <!-- Tx2 arrow to new version -->
+        <line x1="370" y1="125" x2="430" y2="165" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#mv)"/>
+        <text x="390" y="152" fill="#8b5cf6" font-size="10">writes v2</text>
+
+        <!-- GC note -->
+        <rect x="20" y="215" width="620" height="36" rx="6" fill="#fffbeb" stroke="#fcd34d"/>
+        <text x="30" y="230" fill="#92400e" font-size="11">Garbage collection: once no active tx needs an old version, the DB can reclaim it.</text>
+        <text x="30" y="244" fill="#92400e" font-size="11">Long-running transactions delay GC and cause table bloat (PostgreSQL: pg_stat_activity for old xmin).</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── Implementing Serializability ───────────────────────────── -->
+  <section class="chapter">
+    <h2>Implementing Serializability</h2>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 680 310" font-family="inherit" font-size="13">
+
+        <!-- Approach 1: Actual serial execution -->
+        <rect x="10" y="10" width="195" height="280" rx="8" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
+        <text x="107" y="32" text-anchor="middle" font-weight="bold" fill="#14532d" font-size="13">1. Actual Serial</text>
+        <text x="107" y="50" text-anchor="middle" fill="#166634" font-size="11">Single-threaded loop</text>
+        <text x="20" y="72" fill="#166634" font-size="11">• One tx at a time</text>
+        <text x="20" y="90" fill="#166634" font-size="11">• Fast if tx fits in RAM</text>
+        <text x="20" y="108" fill="#166634" font-size="11">• Stored procedures</text>
+        <text x="20" y="124" fill="#166634" font-size="11">  (no network round trips)</text>
+        <text x="20" y="148" fill="#dc2626" font-size="11">Limits:</text>
+        <text x="20" y="164" fill="#7f1d1d" font-size="11">• Single CPU core</text>
+        <text x="20" y="180" fill="#7f1d1d" font-size="11">• Dataset must fit RAM</text>
+        <text x="20" y="196" fill="#7f1d1d" font-size="11">• Long txs block all others</text>
+        <text x="107" y="250" text-anchor="middle" fill="#15803d" font-size="11" font-weight="bold">VoltDB, Redis, Datomic</text>
+
+        <!-- Approach 2: 2PL -->
+        <rect x="220" y="10" width="210" height="280" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+        <text x="325" y="32" text-anchor="middle" font-weight="bold" fill="#1e3a8a" font-size="13">2. Two-Phase Locking</text>
+        <text x="325" y="50" text-anchor="middle" fill="#1e40af" font-size="11">(2PL — traditional)</text>
+        <text x="230" y="72" fill="#1e40af" font-size="11">Phase 1 — Growing:</text>
+        <text x="230" y="88" fill="#1e40af" font-size="11">  Acquire locks as needed</text>
+        <text x="230" y="104" fill="#1e40af" font-size="11">Phase 2 — Shrinking:</text>
+        <text x="230" y="120" fill="#1e40af" font-size="11">  Release only at commit</text>
+        <text x="230" y="140" fill="#1e40af" font-size="11">Shared lock: readers</text>
+        <text x="230" y="156" fill="#1e40af" font-size="11">Exclusive lock: writers</text>
+        <text x="230" y="174" fill="#1e40af" font-size="11">Predicate locks / index</text>
+        <text x="230" y="190" fill="#1e40af" font-size="11">range locks for phantoms</text>
+        <text x="230" y="210" fill="#dc2626" font-size="11">Deadlocks possible →</text>
+        <text x="230" y="226" fill="#7f1d1d" font-size="11">DB detects &amp; aborts one tx</text>
+        <text x="325" y="260" text-anchor="middle" fill="#1d4ed8" font-size="11" font-weight="bold">MySQL InnoDB, SQL Server</text>
+        <text x="325" y="276" text-anchor="middle" fill="#1d4ed8" font-size="11" font-weight="bold">(with SERIALIZABLE)</text>
+
+        <!-- Approach 3: SSI -->
+        <rect x="445" y="10" width="225" height="280" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="2"/>
+        <text x="557" y="32" text-anchor="middle" font-weight="bold" fill="#9d174d" font-size="13">3. SSI</text>
+        <text x="557" y="50" text-anchor="middle" fill="#be185d" font-size="11">Serializable Snapshot Isolation</text>
+        <text x="455" y="72" fill="#9d174d" font-size="11">Based on snapshot isolation</text>
+        <text x="455" y="88" fill="#9d174d" font-size="11">+ optimistic concurrency</text>
+        <text x="455" y="108" fill="#9d174d" font-size="11">Txs proceed without locks</text>
+        <text x="455" y="124" fill="#9d174d" font-size="11">DB tracks read set</text>
+        <text x="455" y="140" fill="#9d174d" font-size="11">At commit: check if any</text>
+        <text x="455" y="156" fill="#9d174d" font-size="11">premises were invalidated</text>
+        <text x="455" y="172" fill="#9d174d" font-size="11">by concurrent writes.</text>
+        <text x="455" y="188" fill="#9d174d" font-size="11">If yes → abort &amp; retry.</text>
+        <text x="455" y="208" fill="#16a34a" font-size="11">High throughput; no locks</text>
+        <text x="455" y="224" fill="#16a34a" font-size="11">Excellent for read-heavy</text>
+        <text x="455" y="244" fill="#dc2626" font-size="11">Abort rate ↑ under contention</text>
+        <text x="557" y="268" text-anchor="middle" fill="#be185d" font-size="11" font-weight="bold">PostgreSQL 9.1+, FoundationDB</text>
+        <text x="557" y="284" text-anchor="middle" fill="#be185d" font-size="11" font-weight="bold">CockroachDB</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── Lost Update Prevention ──────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Preventing Lost Updates</h2>
+    <p>The lost-update problem arises from read-modify-write cycles. Several solutions exist, depending on the level of the stack:</p>
+
+    <dl class="defs">
+      <dt>Atomic operations</dt>
+      <dd><code>UPDATE counters SET value = value + 1 WHERE key = 'x'</code> — the DB handles the RMW atomically. No application-level read needed. Best solution when sufficient.</dd>
+      <dt>Explicit locking</dt>
+      <dd><code>SELECT ... FOR UPDATE</code> — locks the rows for the duration of the transaction. Other txs block. Application controls the logic.</dd>
+      <dt>Automatic detection</dt>
+      <dd>DB detects lost updates and aborts the offending transaction. Requires snapshot isolation (MVCC). PostgreSQL does this automatically.</dd>
+      <dt>Compare-and-set (CAS)</dt>
+      <dd><code>UPDATE t SET value = new WHERE value = old</code> — only update if value hasn't changed. Fails safely if it has; application must retry. Check the DB doesn't apply CAS from an old snapshot.</dd>
+    </dl>
+  </section>
+
+  <!-- ── Key Takeaways ──────────────────────────────────────────── -->
+  <section class="chapter">
+    <h2>Key Takeaways</h2>
+    <dl class="defs">
+      <dt>ACID</dt>
+      <dd>Atomicity (abortability) and Durability are DB guarantees. Isolation is expensive and often weakened. Consistency is an application concern.</dd>
+      <dt>Isolation levels</dt>
+      <dd>Read Committed → Snapshot Isolation → Serializable. Most defaults are Read Committed or Snapshot; full serializability is rare due to performance cost.</dd>
+      <dt>MVCC</dt>
+      <dd>Standard implementation of snapshot isolation. Multiple row versions; readers never block writers; GC removes old versions when no longer needed.</dd>
+      <dt>Write skew</dt>
+      <dd>The hardest anomaly: two concurrent txs each read a shared condition, make a decision, and write — each correct in isolation but together violate the invariant. Only serializability prevents it.</dd>
+      <dt>Serializability options</dt>
+      <dd>Actual serial (single-threaded, RAM datasets), 2PL (locks, deadlocks), SSI (optimistic, MVCC-based, high throughput). 2PL is the historical default; SSI is the modern preferred approach.</dd>
+    </dl>
+  </section>
+
+  <div class="ch-nav">
+    <a href="../part2/ch06.html">← Ch06 · Partitioning</a>
+    <a href="../part2/ch08.html">Ch08 · Trouble with Distributed Systems →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

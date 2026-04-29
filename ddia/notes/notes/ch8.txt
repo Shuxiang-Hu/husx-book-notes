@@ -1,0 +1,1700 @@
+• If you look at your application code, it’s difficult to tell whether it is safe to run at
+a particular isolation level—especially in a large application, where you might not
+be aware of all the things that may be happening concurrently.
+• There are no good tools to help us detect race conditions. In principle, static
+analysis may help [26], but research techniques have not yet found their way into
+practical use. Testing for concurrency issues is hard, because they are usually
+nondeterministic—problems only occur if you get unlucky with the timing.
+This is not a new problem—it has been like this since the 1970s, when weak isolation
+levels were first introduced [ 2]. All along, the answer from researchers has been sim‐
+ple: use serializable isolation!
+Serializable isolation is usually regarded as the strongest isolation level. It guarantees
+that even though transactions may execute in parallel, the end result is the same as if
+they had executed one at a time, serially, without any concurrency. Thus, the database
+guarantees that if the transactions behave correctly when run individually, they con‐
+tinue to be correct when run concurrently—in other words, the database prevents all
+possible race conditions.
+But if serializable isolation is so much better than the mess of weak isolation levels,
+then why isn’t everyone using it? To answer this question, we need to look at the
+options for implementing serializability, and how they perform. Most databases that
+provide serializability today use one of three techniques, which we will explore in the
+rest of this chapter:
+• Literally executing transactions in a serial order (see “Actual Serial Execution” on
+page 252)
+• Two-phase locking (see “Two-Phase Locking (2PL)” on page 257 ), which for sev‐
+eral decades was the only viable option
+• Optimistic concurrency control techniques such as serializable snapshot isolation
+(see “Serializable Snapshot Isolation (SSI)” on page 261 )
+For now, we will discuss these techniques primarily in the context of single-node
+databases; in Chapter 9 we will examine how they can be generalized to transactions
+that involve multiple nodes in a distributed system.
+Actual Serial Execution
+The simplest way of avoiding concurrency problems is to remove the concurrency
+entirely: to execute only one transaction at a time, in serial order, on a single thread.
+By doing so, we completely sidestep the problem of detecting and preventing con‐
+flicts between transactions: the resulting isolation is by definition serializable.
+252 | Chapter 7: Transactions
+
+Even though this seems like an obvious idea, database designers only fairly recently—
+around 2007—decided that a single-threaded loop for executing transactions was fea‐
+sible [ 45]. If multi-threaded concurrency was considered essential for getting good
+performance during the previous 30 years, what changed to make single-threaded
+execution possible?
+Two developments caused this rethink:
+• RAM became cheap enough that for many use cases is now feasible to keep the
+entire active dataset in memory (see “Keeping everything in memory” on page
+88). When all data that a transaction needs to access is in memory, transactions
+can execute much faster than if they have to wait for data to be loaded from disk.
+• Database designers realized that OLTP transactions are usually short and only
+make a small number of reads and writes (see “Transaction Processing or Ana‐
+lytics?” on page 90 ). By contrast, long-running analytic queries are typically read-
+only, so they can be run on a consistent snapshot (using snapshot isolation)
+outside of the serial execution loop.
+The approach of executing transactions serially is implemented in VoltDB/H-Store,
+Redis, and Datomic [46, 47, 48]. A system designed for single-threaded execution can
+sometimes perform better than a system that supports concurrency, because it can
+avoid the coordination overhead of locking. However, its throughput is limited to
+that of a single CPU core. In order to make the most of that single thread, transac‐
+tions need to be structured differently from their traditional form.
+Encapsulating transactions in stored procedures
+In the early days of databases, the intention was that a database transaction could
+encompass an entire flow of user activity. For example, booking an airline ticket is a
+multi-stage process (searching for routes, fares, and available seats; deciding on an
+itinerary; booking seats on each of the flights of the itinerary; entering passenger
+details; making payment). Database designers thought that it would be neat if that
+entire process was one transaction so that it could be committed atomically.
+Unfortunately, humans are very slow to make up their minds and respond. If a data‐
+base transaction needs to wait for input from a user, the database needs to support a
+potentially huge number of concurrent transactions, most of them idle. Most data‐
+bases cannot do that efficiently, and so almost all OLTP applications keep transac‐
+tions short by avoiding interactively waiting for a user within a transaction. On the
+web, this means that a transaction is committed within the same HTTP request—a
+transaction does not span multiple requests. A new HTTP request starts a new trans‐
+action.
+Even though the human has been taken out of the critical path, transactions have
+continued to be executed in an interactive client/server style, one statement at a time.
+Serializability | 253
+
+An application makes a query, reads the result, perhaps makes another query
+depending on the result of the first query, and so on. The queries and results are sent
+back and forth between the application code (running on one machine) and the data‐
+base server (on another machine).
+In this interactive style of transaction, a lot of time is spent in network communica‐
+tion between the application and the database. If you were to disallow concurrency in
+the database and only process one transaction at a time, the throughput would be
+dreadful because the database would spend most of its time waiting for the applica‐
+tion to issue the next query for the current transaction. In this kind of database, it’s
+necessary to process multiple transactions concurrently in order to get reasonable
+performance.
+For this reason, systems with single-threaded serial transaction processing don’t
+allow interactive multi-statement transactions. Instead, the application must submit
+the entire transaction code to the database ahead of time, as a stored procedure. The
+differences between these approaches is illustrated in Figure 7-9 . Provided that all
+data required by a transaction is in memory, the stored procedure can execute very
+fast, without waiting for any network or disk I/O.
+Figure 7-9. The difference between an interactive transaction and a stored procedure
+(using the example transaction of Figure 7-8).
+254 | Chapter 7: Transactions
+
+Pros and cons of stored procedures
+Stored procedures have existed for some time in relational databases, and they have
+been part of the SQL standard (SQL/PSM) since 1999. They have gained a somewhat
+bad reputation, for various reasons:
+• Each database vendor has its own language for stored procedures (Oracle has PL/
+SQL, SQL Server has T-SQL, PostgreSQL has PL/pgSQL, etc.). These languages
+haven’t kept up with developments in general-purpose programming languages,
+so they look quite ugly and archaic from today’s point of view, and they lack the
+ecosystem of libraries that you find with most programming languages.
+• Code running in a database is difficult to manage: compared to an application
+server, it’s harder to debug, more awkward to keep in version control and deploy,
+trickier to test, and difficult to integrate with a metrics collection system for
+monitoring.
+• A database is often much more performance-sensitive than an application server,
+because a single database instance is often shared by many application servers. A
+badly written stored procedure (e.g., using a lot of memory or CPU time) in a
+database can cause much more trouble than equivalent badly written code in an
+application server.
+However, those issues can be overcome. Modern implementations of stored proce‐
+dures have abandoned PL/SQL and use existing general-purpose programming lan‐
+guages instead: VoltDB uses Java or Groovy, Datomic uses Java or Clojure, and Redis
+uses Lua.
+With stored procedures and in-memory data, executing all transactions on a single
+thread becomes feasible. As they don’t need to wait for I/O and they avoid the over‐
+head of other concurrency control mechanisms, they can achieve quite good
+throughput on a single thread.
+VoltDB also uses stored procedures for replication: instead of copying a transaction’s
+writes from one node to another, it executes the same stored procedure on each rep‐
+lica. VoltDB therefore requires that stored procedures are deterministic (when run on
+different nodes, they must produce the same result). If a transaction needs to use the
+current date and time, for example, it must do so through special deterministic APIs. 
+Partitioning
+Executing all transactions serially makes concurrency control much simpler, but lim‐
+its the transaction throughput of the database to the speed of a single CPU core on a
+single machine. Read-only transactions may execute elsewhere, using snapshot isola‐
+tion, but for applications with high write throughput, the single-threaded transaction
+processor can become a serious bottleneck.
+Serializability | 255
+
+x. If a transaction needs to access data that’s not in memory, the best solution may be to abort the transac‐
+tion, asynchronously fetch the data into memory while continuing to process other transactions, and then
+restart the transaction when the data has been loaded. This approach is known as anti-caching, as previously
+mentioned in “Keeping everything in memory” on page 88 .
+In order to scale to multiple CPU cores, and multiple nodes, you can potentially par‐
+tition your data (see Chapter 6), which is supported in VoltDB. If you can find a way
+of partitioning your dataset so that each transaction only needs to read and write data
+within a single partition, then each partition can have its own transaction processing
+thread running independently from the others. In this case, you can give each CPU
+core its own partition, which allows your transaction throughput to scale linearly
+with the number of CPU cores [47].
+However, for any transaction that needs to access multiple partitions, the database
+must coordinate the transaction across all the partitions that it touches. The stored
+procedure needs to be performed in lock-step across all partitions to ensure serializa‐
+bility across the whole system.
+Since cross-partition transactions have additional coordination overhead, they are
+vastly slower than single-partition transactions. VoltDB reports a throughput of
+about 1,000 cross-partition writes per second, which is orders of magnitude below its
+single-partition throughput and cannot be increased by adding more machines [49].
+Whether transactions can be single-partition depends very much on the structure of
+the data used by the application. Simple key-value data can often be partitioned very
+easily, but data with multiple secondary indexes is likely to require a lot of cross-
+partition coordination (see “Partitioning and Secondary Indexes” on page 206 ).
+Summary of serial execution
+Serial execution of transactions has become a viable way of achieving serializable iso‐
+lation within certain constraints:
+• Every transaction must be small and fast, because it takes only one slow transac‐
+tion to stall all transaction processing.
+• It is limited to use cases where the active dataset can fit in memory. Rarely
+accessed data could potentially be moved to disk, but if it needed to be accessed
+in a single-threaded transaction, the system would get very slow.x
+• Write throughput must be low enough to be handled on a single CPU core, or
+else transactions need to be partitioned without requiring cross-partition coordi‐
+nation.
+• Cross-partition transactions are possible, but there is a hard limit to the extent to
+which they can be used. 
+256 | Chapter 7: Transactions
+
+xi. Sometimes called strong strict two-phase locking (SS2PL) to distinguish it from other variants of 2PL.
+Two-Phase Locking (2PL)
+For around 30 years, there was only one widely used algorithm for serializability in
+databases: two-phase locking (2PL).xi
+2PL is not 2PC
+Note that while two-phase locking (2PL) sounds very similar to
+two-phase commit (2PC), they are completely different things. We
+will discuss 2PC in Chapter 9.
+We saw previously that locks are often used to prevent dirty writes (see “No dirty
+writes” on page 235): if two transactions concurrently try to write to the same object,
+the lock ensures that the second writer must wait until the first one has finished its
+transaction (aborted or committed) before it may continue.
+Two-phase locking is similar, but makes the lock requirements much stronger. Sev‐
+eral transactions are allowed to concurrently read the same object as long as nobody
+is writing to it. But as soon as anyone wants to write (modify or delete) an object,
+exclusive access is required:
+• If transaction A has read an object and transaction B wants to write to that
+object, B must wait until A commits or aborts before it can continue. (This
+ensures that B can’t change the object unexpectedly behind A’s back.)
+• If transaction A has written an object and transaction B wants to read that object,
+B must wait until A commits or aborts before it can continue. (Reading an old
+version of the object, like in Figure 7-1, is not acceptable under 2PL.)
+In 2PL, writers don’t just block other writers; they also block readers and vice versa.
+Snapshot isolation has the mantra readers never block writers, and writers never block
+readers (see “Implementing snapshot isolation” on page 239 ), which captures this key
+difference between snapshot isolation and two-phase locking. On the other hand,
+because 2PL provides serializability, it protects against all the race conditions dis‐
+cussed earlier, including lost updates and write skew.
+Implementation of two-phase locking
+2PL is used by the serializable isolation level in MySQL (InnoDB) and SQL Server,
+and the repeatable read isolation level in DB2 [23, 36].
+Serializability | 257
+
+The blocking of readers and writers is implemented by a having a lock on each object
+in the database. The lock can either be in shared mode or in exclusive mode. The lock
+is used as follows:
+• If a transaction wants to read an object, it must first acquire the lock in shared
+mode. Several transactions are allowed to hold the lock in shared mode simulta‐
+neously, but if another transaction already has an exclusive lock on the object,
+these transactions must wait.
+• If a transaction wants to write to an object, it must first acquire the lock in exclu‐
+sive mode. No other transaction may hold the lock at the same time (either in
+shared or in exclusive mode), so if there is any existing lock on the object, the
+transaction must wait.
+• If a transaction first reads and then writes an object, it may upgrade its shared
+lock to an exclusive lock. The upgrade works the same as getting an exclusive
+lock directly.
+• After a transaction has acquired the lock, it must continue to hold the lock until
+the end of the transaction (commit or abort). This is where the name “two-
+phase” comes from: the first phase (while the transaction is executing) is when
+the locks are acquired, and the second phase (at the end of the transaction) is
+when all the locks are released.
+Since so many locks are in use, it can happen quite easily that transaction A is stuck
+waiting for transaction B to release its lock, and vice versa. This situation is called
+deadlock. The database automatically detects deadlocks between transactions and
+aborts one of them so that the others can make progress. The aborted transaction
+needs to be retried by the application.
+Performance of two-phase locking
+The big downside of two-phase locking, and the reason why it hasn’t been used by
+everybody since the 1970s, is performance: transaction throughput and response
+times of queries are significantly worse under two-phase locking than under weak
+isolation.
+This is partly due to the overhead of acquiring and releasing all those locks, but more
+importantly due to reduced concurrency. By design, if two concurrent transactions
+try to do anything that may in any way result in a race condition, one has to wait for
+the other to complete.
+Traditional relational databases don’t limit the duration of a transaction, because
+they are designed for interactive applications that wait for human input. Conse‐
+quently, when one transaction has to wait on another, there is no limit on how long it
+may have to wait. Even if you make sure that you keep all your transactions short, a
+258 | Chapter 7: Transactions
+
+queue may form if several transactions want to access the same object, so a transac‐
+tion may have to wait for several others to complete before it can do anything.
+For this reason, databases running 2PL can have quite unstable latencies, and they
+can be very slow at high percentiles (see “Describing Performance” on page 13) if
+there is contention in the workload. It may take just one slow transaction, or one
+transaction that accesses a lot of data and acquires many locks, to cause the rest of the
+system to grind to a halt. This instability is problematic when robust operation is
+required.
+Although deadlocks can happen with the lock-based read committed isolation level,
+they occur much more frequently under 2PL serializable isolation (depending on the
+access patterns of your transaction). This can be an additional performance problem:
+when a transaction is aborted due to deadlock and is retried, it needs to do its work
+all over again. If deadlocks are frequent, this can mean significant wasted effort.
+Predicate locks
+In the preceding description of locks, we glossed over a subtle but important detail.
+In “Phantoms causing write skew” on page 250 we discussed the problem of phan‐
+toms—that is, one transaction changing the results of another transaction’s search
+query. A database with serializable isolation must prevent phantoms.
+In the meeting room booking example this means that if one transaction has
+searched for existing bookings for a room within a certain time window (see
+Example 7-2 ), another transaction is not allowed to concurrently insert or update
+another booking for the same room and time range. (It’s okay to concurrently insert
+bookings for other rooms, or for the same room at a different time that doesn’t affect
+the proposed booking.)
+How do we implement this? Conceptually, we need a predicate lock [3]. It works sim‐
+ilarly to the shared/exclusive lock described earlier, but rather than belonging to a
+particular object (e.g., one row in a table), it belongs to all objects that match some
+search condition, such as:
+SELECT * FROM bookings
+  WHERE room_id = 123 AND
+    end_time   > '2018-01-01 12:00'  AND
+    start_time < '2018-01-01 13:00' ;
+A predicate lock restricts access as follows:
+• If transaction A wants to read objects matching some condition, like in that
+SELECT query, it must acquire a shared-mode predicate lock on the conditions of
+the query. If another transaction B currently has an exclusive lock on any object
+matching those conditions, A must wait until B releases its lock before it is
+allowed to make its query.
+Serializability | 259
+
+• If transaction A wants to insert, update, or delete any object, it must first check
+whether either the old or the new value matches any existing predicate lock. If
+there is a matching predicate lock held by transaction B, then A must wait until B
+has committed or aborted before it can continue.
+The key idea here is that a predicate lock applies even to objects that do not yet exist
+in the database, but which might be added in the future (phantoms). If two-phase
+locking includes predicate locks, the database prevents all forms of write skew and
+other race conditions, and so its isolation becomes serializable.
+Index-range locks
+Unfortunately, predicate locks do not perform well: if there are many locks by active
+transactions, checking for matching locks becomes time-consuming. For that reason,
+most databases with 2PL actually implement index-range locking (also known as next-
+key locking), which is a simplified approximation of predicate locking [41, 50].
+It’s safe to simplify a predicate by making it match a greater set of objects. For exam‐
+ple, if you have a predicate lock for bookings of room 123 between noon and 1 p.m.,
+you can approximate it by locking bookings for room 123 at any time, or you can
+approximate it by locking all rooms (not just room 123) between noon and 1 p.m.
+This is safe, because any write that matches the original predicate will definitely also
+match the approximations.
+In the room bookings database you would probably have an index on the room_id
+column, and/or indexes on start_time and end_time (otherwise the preceding query
+would be very slow on a large database):
+• Say your index is on room_id, and the database uses this index to find existing
+bookings for room 123. Now the database can simply attach a shared lock to this
+index entry, indicating that a transaction has searched for bookings of room 123.
+• Alternatively, if the database uses a time-based index to find existing bookings, it
+can attach a shared lock to a range of values in that index, indicating that a trans‐
+action has searched for bookings that overlap with the time period of noon to 1
+p.m. on January 1, 2018.
+Either way, an approximation of the search condition is attached to one of the
+indexes. Now, if another transaction wants to insert, update, or delete a booking for
+the same room and/or an overlapping time period, it will have to update the same
+part of the index. In the process of doing so, it will encounter the shared lock, and it
+will be forced to wait until the lock is released.
+This provides effective protection against phantoms and write skew. Index-range
+locks are not as precise as predicate locks would be (they may lock a bigger range of
+260 | Chapter 7: Transactions
+
+objects than is strictly necessary to maintain serializability), but since they have much
+lower overheads, they are a good compromise.
+If there is no suitable index where a range lock can be attached, the database can fall
+back to a shared lock on the entire table. This will not be good for performance, since
+it will stop all other transactions writing to the table, but it’s a safe fallback position. 
+Serializable Snapshot Isolation (SSI)
+This chapter has painted a bleak picture of concurrency control in databases. On the
+one hand, we have implementations of serializability that don’t perform well (two-
+phase locking) or don’t scale well (serial execution). On the other hand, we have weak
+isolation levels that have good performance, but are prone to various race conditions
+(lost updates, write skew, phantoms, etc.). Are serializable isolation and good perfor‐
+mance fundamentally at odds with each other?
+Perhaps not: an algorithm called serializable snapshot isolation  (SSI) is very promis‐
+ing. It provides full serializability, but has only a small performance penalty com‐
+pared to snapshot isolation. SSI is fairly new: it was first described in 2008 [ 40] and is
+the subject of Michael Cahill’s PhD thesis [ 51].
+Today SSI is used both in single-node databases (the serializable isolation level in
+PostgreSQL since version 9.1 [ 41]) and distributed databases (FoundationDB uses a
+similar algorithm). As SSI is so young compared to other concurrency control mech‐
+anisms, it is still proving its performance in practice, but it has the possibility of being
+fast enough to become the new default in the future.
+Pessimistic versus optimistic concurrency control
+Two-phase locking is a so-called pessimistic concurrency control mechanism: it is
+based on the principle that if anything might possibly go wrong (as indicated by a
+lock held by another transaction), it’s better to wait until the situation is safe again
+before doing anything. It is like mutual exclusion, which is used to protect data struc‐
+tures in multi-threaded programming.
+Serial execution is, in a sense, pessimistic to the extreme: it is essentially equivalent to
+each transaction having an exclusive lock on the entire database (or one partition of
+the database) for the duration of the transaction. We compensate for the pessimism
+by making each transaction very fast to execute, so it only needs to hold the “lock” for
+a short time.
+By contrast, serializable snapshot isolation is an optimistic concurrency control tech‐
+nique. Optimistic in this context means that instead of blocking if something poten‐
+tially dangerous happens, transactions continue anyway, in the hope that everything
+will turn out all right. When a transaction wants to commit, the database checks
+whether anything bad happened (i.e., whether isolation was violated); if so, the trans‐
+Serializability | 261
+
+action is aborted and has to be retried. Only transactions that executed serializably
+are allowed to commit.
+Optimistic concurrency control is an old idea [ 52], and its advantages and disadvan‐
+tages have been debated for a long time [ 53]. It performs badly if there is high con‐
+tention (many transactions trying to access the same objects), as this leads to a high
+proportion of transactions needing to abort. If the system is already close to its maxi‐
+mum throughput, the additional transaction load from retried transactions can make
+performance worse.
+However, if there is enough spare capacity, and if contention between transactions is
+not too high, optimistic concurrency control techniques tend to perform better than
+pessimistic ones. Contention can be reduced with commutative atomic operations:
+for example, if several transactions concurrently want to increment a counter, it
+doesn’t matter in which order the increments are applied (as long as the counter isn’t
+read in the same transaction), so the concurrent increments can all be applied
+without conflicting.
+As the name suggests, SSI is based on snapshot isolation—that is, all reads within a
+transaction are made from a consistent snapshot of the database (see “Snapshot Isola‐
+tion and Repeatable Read” on page 237 ). This is the main difference compared to ear‐
+lier optimistic concurrency control techniques. On top of snapshot isolation, SSI adds
+an algorithm for detecting serialization conflicts among writes and determining
+which transactions to abort.
+Decisions based on an outdated premise
+When we previously discussed write skew in snapshot isolation (see “Write Skew and
+Phantoms”  on page 246), we observed a recurring pattern: a transaction reads some
+data from the database, examines the result of the query, and decides to take some
+action (write to the database) based on the result that it saw. However, under snap‐
+shot isolation, the result from the original query may no longer be up-to-date by the
+time the transaction commits, because the data may have been modified in the mean‐
+time.
+Put another way, the transaction is taking an action based on a premise (a fact that
+was true at the beginning of the transaction, e.g., “There are currently two doctors on
+call”). Later, when the transaction wants to commit, the original data may have
+changed—the premise may no longer be true.
+When the application makes a query (e.g., “How many doctors are currently on
+call?”), the database doesn’t know how the application logic uses the result of that
+query. To be safe, the database needs to assume that any change in the query result
+(the premise) means that writes in that transaction may be invalid. In other words,
+there may be a causal dependency between the queries and the writes in the transac‐
+tion. In order to provide serializable isolation, the database must detect situations in
+262 | Chapter 7: Transactions
+
+which a transaction may have acted on an outdated premise and abort the transac‐
+tion in that case.
+How does the database know if a query result might have changed? There are two
+cases to consider:
+• Detecting reads of a stale MVCC object version (uncommitted write occurred
+before the read)
+• Detecting writes that affect prior reads (the write occurs after the read)
+Detecting stale MVCC reads
+Recall that snapshot isolation is usually implemented by multi-version concurrency
+control (MVCC; see Figure 7-10). When a transaction reads from a consistent snap‐
+shot in an MVCC database, it ignores writes that were made by any other transac‐
+tions that hadn’t yet committed at the time when the snapshot was taken. In
+Figure 7-10, transaction 43 sees Alice as having on_call = true, because transaction
+42 (which modified Alice’s on-call status) is uncommitted. However, by the time
+transaction 43 wants to commit, transaction 42 has already committed. This means
+that the write that was ignored when reading from the consistent snapshot has now
+taken effect, and transaction 43’s premise is no longer true.
+Figure 7-10. Detecting when a transaction reads outdated values from an MVCC
+snapshot.
+Serializability | 263
+
+In order to prevent this anomaly, the database needs to track when a transaction
+ignores another transaction’s writes due to MVCC visibility rules. When the transac‐
+tion wants to commit, the database checks whether any of the ignored writes have
+now been committed. If so, the transaction must be aborted.
+Why wait until committing? Why not abort transaction 43 immediately when the
+stale read is detected? Well, if transaction 43 was a read-only transaction, it wouldn’t
+need to be aborted, because there is no risk of write skew. At the time when transac‐
+tion 43 makes its read, the database doesn’t yet know whether that transaction is
+going to later perform a write. Moreover, transaction 42 may yet abort or may still be
+uncommitted at the time when transaction 43 is committed, and so the read may
+turn out not to have been stale after all. By avoiding unnecessary aborts, SSI preserves
+snapshot isolation’s support for long-running reads from a consistent snapshot.
+Detecting writes that affect prior reads
+The second case to consider is when another transaction modifies data after it has
+been read. This case is illustrated in Figure 7-11.
+Figure 7-11. In serializable snapshot isolation, detecting when one transaction modifies
+another transaction’s reads.
+In the context of two-phase locking we discussed index-range locks (see “Index-range
+locks”  on page 260), which allow the database to lock access to all rows matching
+some search query, such as WHERE shift_id = 1234. We can use a similar technique
+here, except that SSI locks don’t block other transactions.
+264 | Chapter 7: Transactions
+
+In Figure 7-11 , transactions 42 and 43 both search for on-call doctors during shift
+1234. If there is an index on shift_id, the database can use the index entry 1234 to
+record the fact that transactions 42 and 43 read this data. (If there is no index, this
+information can be tracked at the table level.) This information only needs to be kept
+for a while: after a transaction has finished (committed or aborted), and all concur‐
+rent transactions have finished, the database can forget what data it read.
+When a transaction writes to the database, it must look in the indexes for any other
+transactions that have recently read the affected data. This process is similar to
+acquiring a write lock on the affected key range, but rather than blocking until the
+readers have committed, the lock acts as a tripwire: it simply notifies the transactions
+that the data they read may no longer be up to date.
+In Figure 7-11, transaction 43 notifies transaction 42 that its prior read is outdated,
+and vice versa. Transaction 42 is first to commit, and it is successful: although trans‐
+action 43’s write affected 42, 43 hasn’t yet committed, so the write has not yet taken
+effect. However, when transaction 43 wants to commit, the conflicting write from 42
+has already been committed, so 43 must abort. 
+Performance of serializable snapshot isolation
+As always, many engineering details affect how well an algorithm works in practice.
+For example, one trade-off is the granularity at which transactions’ reads and writes
+are tracked. If the database keeps track of each transaction’s activity in great detail, it
+can be precise about which transactions need to abort, but the bookkeeping overhead
+can become significant. Less detailed tracking is faster, but may lead to more transac‐
+tions being aborted than strictly necessary.
+In some cases, it’s okay for a transaction to read information that was overwritten by
+another transaction: depending on what else happened, it’s sometimes possible to
+prove that the result of the execution is nevertheless serializable. PostgreSQL uses this
+theory to reduce the number of unnecessary aborts [11, 41].
+Compared to two-phase locking, the big advantage of serializable snapshot isolation
+is that one transaction doesn’t need to block waiting for locks held by another trans‐
+action. Like under snapshot isolation, writers don’t block readers, and vice versa. This
+design principle makes query latency much more predictable and less variable. In
+particular, read-only queries can run on a consistent snapshot without requiring any
+locks, which is very appealing for read-heavy workloads.
+Compared to serial execution, serializable snapshot isolation is not limited to the
+throughput of a single CPU core: FoundationDB distributes the detection of seriali‐
+zation conflicts across multiple machines, allowing it to scale to very high through‐
+put. Even though data may be partitioned across multiple machines, transactions can
+read and write data in multiple partitions while ensuring serializable isolation [54].
+Serializability | 265
+
+The rate of aborts significantly affects the overall performance of SSI. For example, a
+transaction that reads and writes data over a long period of time is likely to run into
+conflicts and abort, so SSI requires that read-write transactions be fairly short (long-
+running read-only transactions may be okay). However, SSI is probably less sensitive
+to slow transactions than two-phase locking or serial execution. 
+Summary
+Transactions are an abstraction layer that allows an application to pretend that cer‐
+tain concurrency problems and certain kinds of hardware and software faults don’t
+exist. A large class of errors is reduced down to a simple transaction abort, and the
+application just needs to try again.
+In this chapter we saw many examples of problems that transactions help prevent.
+Not all applications are susceptible to all those problems: an application with very
+simple access patterns, such as reading and writing only a single record, can probably
+manage without transactions. However, for more complex access patterns, transac‐
+tions can hugely reduce the number of potential error cases you need to think about.
+Without transactions, various error scenarios (processes crashing, network interrup‐
+tions, power outages, disk full, unexpected concurrency, etc.) mean that data can
+become inconsistent in various ways. For example, denormalized data can easily go
+out of sync with the source data. Without transactions, it becomes very difficult to
+reason about the effects that complex interacting accesses can have on the database.
+In this chapter, we went particularly deep into the topic of concurrency control. We
+discussed several widely used isolation levels, in particular read committed, snapshot
+isolation (sometimes called repeatable read), and serializable. We characterized those
+isolation levels by discussing various examples of race conditions:
+Dirty reads
+One client reads another client’s writes before they have been committed. The
+read committed isolation level and stronger levels prevent dirty reads.
+Dirty writes
+One client overwrites data that another client has written, but not yet committed.
+Almost all transaction implementations prevent dirty writes.
+Read skew (nonrepeatable reads)
+A client sees different parts of the database at different points in time. This issue
+is most commonly prevented with snapshot isolation, which allows a transaction
+to read from a consistent snapshot at one point in time. It is usually implemented
+with multi-version concurrency control (MVCC).
+266 | Chapter 7: Transactions
+
+Lost updates
+Two clients concurrently perform a read-modify-write cycle. One overwrites the
+other’s write without incorporating its changes, so data is lost. Some implemen‐
+tations of snapshot isolation prevent this anomaly automatically, while others
+require a manual lock (SELECT FOR UPDATE).
+Write skew
+A transaction reads something, makes a decision based on the value it saw, and
+writes the decision to the database. However, by the time the write is made, the
+premise of the decision is no longer true. Only serializable isolation prevents this
+anomaly.
+Phantom reads
+A transaction reads objects that match some search condition. Another client
+makes a write that affects the results of that search. Snapshot isolation prevents
+straightforward phantom reads, but phantoms in the context of write skew
+require special treatment, such as index-range locks.
+Weak isolation levels protect against some of those anomalies but leave you, the
+application developer, to handle others manually (e.g., using explicit locking). Only
+serializable isolation protects against all of these issues. We discussed three different
+approaches to implementing serializable transactions:
+Literally executing transactions in a serial order
+If you can make each transaction very fast to execute, and the transaction
+throughput is low enough to process on a single CPU core, this is a simple and
+effective option.
+Two-phase locking
+For decades this has been the standard way of implementing serializability, but
+many applications avoid using it because of its performance characteristics.
+Serializable snapshot isolation (SSI)
+A fairly new algorithm that avoids most of the downsides of the previous
+approaches. It uses an optimistic approach, allowing transactions to proceed
+without blocking. When a transaction wants to commit, it is checked, and it is
+aborted if the execution was not serializable.
+The examples in this chapter used a relational data model. However, as discussed in
+“The need for multi-object transactions” on page 231, transactions are a valuable
+database feature, no matter which data model is used.
+In this chapter, we explored ideas and algorithms mostly in the context of a database
+running on a single machine. Transactions in distributed databases open a new set of
+difficult challenges, which we’ll discuss in the next two chapters. 
+Summary | 267
+
+References
+[1] Donald D. Chamberlin, Morton M. Astrahan, Michael W. Blasgen, et al.: “ A His‐
+tory and Evaluation of System R ,” Communications of the ACM , volume 24, number
+10, pages 632–646, October 1981. doi:10.1145/358769.358784
+[2] Jim N. Gray, Raymond A. Lorie, Gianfranco R. Putzolu, and Irving L. Traiger:
+“ Granularity of Locks and Degrees of Consistency in a Shared Data Base ,” in Model‐
+ling in Data Base Management Systems: Proceedings of the IFIP Working Conference
+on Modelling in Data Base Management Systems , edited by G. M. Nijssen, pages 364–
+394, Elsevier/North Holland Publishing, 1976. Also in Readings in Database Systems ,
+4th edition, edited by Joseph M. Hellerstein and Michael Stonebraker, MIT Press,
+2005. ISBN: 978-0-262-69314-1
+[3] Kapali P. Eswaran, Jim N. Gray, Raymond A. Lorie, and Irving L. Traiger: “ The
+Notions of Consistency and Predicate Locks in a Database System ,” Communications
+of the ACM, volume 19, number 11, pages 624–633, November 1976.
+[4] “ ACID Transactions Are Incredibly Helpful,” FoundationDB, LLC, 2013.
+[5] John D. Cook: “ ACID Versus BASE for Database Transactions ,” johndcook.com,
+July 6, 2009.
+[6] Gavin Clarke: “ NoSQL’s CAP Theorem Busters: We Don’t Drop ACID ,” theregis‐
+ter.co.uk, November 22, 2012.
+[7] Theo Härder and Andreas Reuter: “ Principles of Transaction-Oriented Database
+Recovery,” ACM Computing Surveys , volume 15, number 4, pages 287–317, Decem‐
+ber 1983. doi:10.1145/289.291
+[8] Peter Bailis, Alan Fekete, Ali Ghodsi, et al.: “ HAT, not CAP: Towards Highly
+Available Transactions,” at 14th USENIX Workshop on Hot Topics in Operating Sys‐
+tems (HotOS), May 2013.
+[9] Armando Fox, Steven D. Gribble, Yatin Chawathe, et al.: “ Cluster-Based Scalable
+Network Services,” at 16th ACM Symposium on Operating Systems Principles  (SOSP),
+October 1997.
+[10] Philip A. Bernstein, Vassos Hadzilacos, and Nathan Goodman: Concurrency
+Control and Recovery in Database Systems . Addison-Wesley, 1987. ISBN:
+978-0-201-10715-9, available online at research.microsoft.com.
+[11] Alan Fekete, Dimitrios Liarokapis, Elizabeth O’Neil, et al.: “ Making Snapshot
+Isolation Serializable,” ACM Transactions on Database Systems , volume 30, number
+2, pages 492–528, June 2005. doi:10.1145/1071610.1071615
+268 | Chapter 7: Transactions
+
+[12] Mai Zheng, Joseph Tucek, Feng Qin, and Mark Lillibridge: “ Understanding the
+Robustness of SSDs Under Power Fault ,” at 11th USENIX Conference on File and
+Storage Technologies (FAST), February 2013.
+[13] Laurie Denness: “ SSDs: A Gift and a Curse,” laur.ie, June 2, 2015.
+[14] Adam Surak: “ When Solid State Drives Are Not That Solid ,” blog.algolia.com,
+June 15, 2015.
+[15] Thanumalayan Sankaranarayana Pillai, Vijay Chidambaram, Ramnatthan Ala‐
+gappan, et al.: “ All File Systems Are Not Created Equal: On the Complexity of Craft‐
+ing Crash-Consistent Applications ,” at 11th USENIX Symposium on Operating
+Systems Design and Implementation (OSDI), October 2014.
+[16] Chris Siebenmann: “ Unix’s File Durability Problem ,” utcc.utoronto.ca, April 14,
+2016.
+[17] Lakshmi N. Bairavasundaram, Garth R. Goodson, Bianca Schroeder, et al.: “ An
+Analysis of Data Corruption in the Storage Stack ,” at 6th USENIX Conference on File
+and Storage Technologies (FAST), February 2008.
+[18] Bianca Schroeder, Raghav Lagisetty, and Arif Merchant: “ Flash Reliability in
+Production: The Expected and the Unexpected ,” at 14th USENIX Conference on File
+and Storage Technologies (FAST), February 2016.
+[19] Don Allison: “ SSD Storage – Ignorance of Technology Is No Excuse ,” blog.kore‐
+logic.com, March 24, 2015.
+[20] Dave Scherer: “ Those Are Not Transactions (Cassandra 2.0) ,” blog.founda‐
+tiondb.com, September 6, 2013.
+[21] Kyle Kingsbury: “ Call Me Maybe: Cassandra,” aphyr.com, September 24, 2013.
+[22] “ ACID Support in Aerospike,” Aerospike, Inc., June 2014.
+[23] Martin Kleppmann: “ Hermitage: Testing the ‘I’ in ACID ,” martin.klepp‐
+mann.com, November 25, 2014.
+[24] Tristan D’Agosta: “ BTC Stolen from Poloniex,” bitcointalk.org, March 4, 2014.
+[25] bitcointhief2: “ How I Stole Roughly 100 BTC from an Exchange and How I
+Could Have Stolen More!,” reddit.com, February 2, 2014.
+[26] Sudhir Jorwekar, Alan Fekete, Krithi Ramamritham, and S. Sudarshan: “ Auto‐
+mating the Detection of Snapshot Isolation Anomalies,” at 33rd International Confer‐
+ence on Very Large Data Bases (VLDB), September 2007.
+[27] Michael Melanson: “ Transactions: The Limits of Isolation ,” michaelmelan‐
+son.net, March 20, 2014.
+Summary | 269
+
+[28] Hal Berenson, Philip A. Bernstein, Jim N. Gray, et al.: “ A Critique of ANSI SQL
+Isolation Levels ,” at ACM International Conference on Management of Data  (SIG‐
+MOD), May 1995.
+[29] Atul Adya: “ Weak Consistency: A Generalized Theory and Optimistic Imple‐
+mentations for Distributed Transactions ,” PhD Thesis, Massachusetts Institute of
+Technology, March 1999.
+[30] Peter Bailis, Aaron Davidson, Alan Fekete, et al.: “ Highly Available Transactions:
+Virtues and Limitations (Extended Version) ,” at 40th International Conference on
+Very Large Data Bases (VLDB), September 2014.
+[31] Bruce Momjian: “ MVCC Unmasked,” momjian.us, July 2014.
+[32] Annamalai Gurusami: “ Repeatable Read Isolation Level in InnoDB – How Con‐
+sistent Read View Works,” blogs.oracle.com, January 15, 2013.
+[33] Nikita Prokopov: “ Unofficial Guide to Datomic Internals ,” tonsky.me, May 6,
+2014.
+[34] Baron Schwartz: “ Immutability, MVCC, and Garbage Collection ,” xaprb.com,
+December 28, 2013.
+[35] J. Chris Anderson, Jan Lehnardt, and Noah Slater: CouchDB: The Definitive
+Guide. O’Reilly Media, 2010. ISBN: 978-0-596-15589-6
+[36] Rikdeb Mukherjee: “ Isolation in DB2 (Repeatable Read, Read Stability, Cursor
+Stability, Uncommitted Read) with Examples,” mframes.blogspot.co.uk, July 4, 2013.
+[37] Steve Hilker: “ Cursor Stability (CS) – IBM DB2 Community ,” toadworld.com,
+March 14, 2013.
+[38] Nate Wiger: “ An Atomic Rant,” nateware.com, February 18, 2010.
+[39] Joel Jacobson: “ Riak 2.0: Data Types,” blog.joeljacobson.com, March 23, 2014.
+[40] Michael J. Cahill, Uwe Röhm, and Alan Fekete: “ Serializable Isolation for Snap‐
+shot Databases ,” at ACM International Conference on Management of Data  (SIG‐
+MOD), June 2008. doi:10.1145/1376616.1376690
+[41] Dan R. K. Ports and Kevin Grittner: “ Serializable Snapshot Isolation in Post‐
+greSQL,” at 38th International Conference on Very Large Databases  (VLDB), August
+2012.
+[42] Tony Andrews: “ Enforcing Complex Constraints in Oracle ,” tonyandrews.blog‐
+spot.co.uk, October 15, 2004.
+[43] Douglas B. Terry, Marvin M. Theimer, Karin Petersen, et al.: “ Managing Update
+Conflicts in Bayou, a Weakly Connected Replicated Storage System ,” at 15th ACM
+270 | Chapter 7: Transactions
+
+Symposium on Operating Systems Principles  (SOSP), December 1995. doi:
+10.1145/224056.224070
+[44] Gary Fredericks: “ Postgres Serializability Bug,” github.com, September 2015.
+[45] Michael Stonebraker, Samuel Madden, Daniel J. Abadi, et al.: “ The End of an
+Architectural Era (It’s Time for a Complete Rewrite) ,” at 33rd International Confer‐
+ence on Very Large Data Bases (VLDB), September 2007.
+[46] John Hugg: “ H-Store/VoltDB Architecture vs. CEP Systems and Newer Stream‐
+ing Architectures,” at Data @Scale Boston, November 2014.
+[47] Robert Kallman, Hideaki Kimura, Jonathan Natkins, et al.: “ H-Store: A High-
+Performance, Distributed Main Memory Transaction Processing System ,” Proceed‐
+ings of the VLDB Endowment, volume 1, number 2, pages 1496–1499, August 2008.
+[48] Rich Hickey: “ The Architecture of Datomic,” infoq.com, November 2, 2012.
+[49] John Hugg: “ Debunking Myths About the VoltDB In-Memory Database ,”
+voltdb.com, May 12, 2014.
+[50] Joseph M. Hellerstein, Michael Stonebraker, and James Hamilton: “ Architecture
+of a Database System ,” Foundations and Trends in Databases , volume 1, number 2,
+pages 141–259, November 2007. doi:10.1561/1900000002
+[51] Michael J. Cahill: “ Serializable Isolation for Snapshot Databases ,” PhD Thesis,
+University of Sydney, July 2009.
+[52] D. Z. Badal: “ Correctness of Concurrency Control and Implications in Dis‐
+tributed Databases ,” at 3rd International IEEE Computer Software and Applications
+Conference (COMPSAC), November 1979.
+[53] Rakesh Agrawal, Michael J. Carey, and Miron Livny: “ Concurrency Control Per‐
+formance Modeling: Alternatives and Implications ,” ACM Transactions on Database
+Systems (TODS), volume 12, number 4, pages 609–654, December 1987. doi:
+10.1145/32204.32220
+[54] Dave Rosenthal: “ Databases at 14.4MHz,” blog.foundationdb.com, December 10,
+2014.
+Summary | 271
+
+i. With one exception: we will assume that faults are non-Byzantine (see “Byzantine Faults” on page 304 ).
+CHAPTER 8
+The Trouble with Distributed Systems
+Hey I just met you
+The network’s laggy
+But here’s my data
+So store it maybe
+—Kyle Kingsbury, Carly Rae Jepsen and the Perils of Network Partitions (2013)
+A recurring theme in the last few chapters has been how systems handle things going
+wrong. For example, we discussed replica failover ( “Handling Node Outages” on
+page 156), replication lag ( “Problems with Replication Lag” on page 161), and con‐
+currency control for transactions (“Weak Isolation Levels”  on page 233). As we come
+to understand various edge cases that can occur in real systems, we get better at han‐
+dling them.
+However, even though we have talked a lot about faults, the last few chapters have
+still been too optimistic. The reality is even darker. We will now turn our pessimism
+to the maximum and assume that anything that can go wrong will go wrong.i (Expe‐
+rienced systems operators will tell you that is a reasonable assumption. If you ask
+nicely, they might tell you some frightening stories while nursing their scars of past
+battles.)
+Working with distributed systems is fundamentally different from writing software
+on a single computer—and the main difference is that there are lots of new and excit‐
+ing ways for things to go wrong [ 1, 2]. In this chapter, we will get a taste of the prob‐
+lems that arise in practice, and an understanding of the things we can and cannot rely
+on.
+273
+
+In the end, our task as engineers is to build systems that do their job (i.e., meet the
+guarantees that users are expecting), in spite of everything going wrong. In Chapter 9,
+we will look at some examples of algorithms that can provide such guarantees in a
+distributed system. But first, in this chapter, we must understand what challenges we
+are up against.
+This chapter is a thoroughly pessimistic and depressing overview of things that may
+go wrong in a distributed system. We will look into problems with networks ( “Unre‐
+liable Networks” on page 277); clocks and timing issues (“Unreliable Clocks” on page
+287); and we’ll discuss to what degree they are avoidable. The consequences of all
+these issues are disorienting, so we’ll explore how to think about the state of a dis‐
+tributed system and how to reason about things that have happened ( “Knowledge,
+Truth, and Lies” on page 300 ).
+Faults and Partial Failures
+When you are writing a program on a single computer, it normally behaves in a fairly
+predictable way: either it works or it doesn’t. Buggy software may give the appearance
+that the computer is sometimes “having a bad day” (a problem that is often fixed by a
+reboot), but that is mostly just a consequence of badly written software.
+There is no fundamental reason why software on a single computer should be flaky:
+when the hardware is working correctly, the same operation always produces the
+same result (it is deterministic). If there is a hardware problem (e.g., memory corrup‐
+tion or a loose connector), the consequence is usually a total system failure (e.g., ker‐
+nel panic, “blue screen of death,” failure to start up). An individual computer with
+good software is usually either fully functional or entirely broken, but not something
+in between.
+This is a deliberate choice in the design of computers: if an internal fault occurs, we
+prefer a computer to crash completely rather than returning a wrong result, because
+wrong results are difficult and confusing to deal with. Thus, computers hide the fuzzy
+physical reality on which they are implemented and present an idealized system
+model that operates with mathematical perfection. A CPU instruction always does
+the same thing; if you write some data to memory or disk, that data remains intact
+and doesn’t get randomly corrupted. This design goal of always-correct computation
+goes all the way back to the very first digital computer [3].
+When you are writing software that runs on several computers, connected by a net‐
+work, the situation is fundamentally different. In distributed systems, we are no
+longer operating in an idealized system model—we have no choice but to confront
+the messy reality of the physical world. And in the physical world, a remarkably wide
+range of things can go wrong, as illustrated by this anecdote [4]:
+274 | Chapter 8: The Trouble with Distributed Systems
+
+In my limited experience I’ve dealt with long-lived network partitions in a single data
+center (DC), PDU [power distribution unit] failures, switch failures, accidental power
+cycles of whole racks, whole-DC backbone failures, whole-DC power failures, and a
+hypoglycemic driver smashing his Ford pickup truck into a DC’s HVAC [heating, ven‐
+tilation, and air conditioning] system. And I’m not even an ops guy.
+—Coda Hale
+In a distributed system, there may well be some parts of the system that are broken in
+some unpredictable way, even though other parts of the system are working fine. This
+is known as a partial failure. The difficulty is that partial failures are nondeterministic:
+if you try to do anything involving multiple nodes and the network, it may sometimes
+work and sometimes unpredictably fail. As we shall see, you may not even know
+whether something succeeded or not, as the time it takes for a message to travel
+across a network is also nondeterministic!
+This nondeterminism and possibility of partial failures is what makes distributed sys‐
+tems hard to work with [5].
+Cloud Computing and Supercomputing
+There is a spectrum of philosophies on how to build large-scale computing systems:
+• At one end of the scale is the field of high-performance computing (HPC). Super‐
+computers with thousands of CPUs are typically used for computationally inten‐
+sive scientific computing tasks, such as weather forecasting or molecular
+dynamics (simulating the movement of atoms and molecules).
+• At the other extreme is cloud computing, which is not very well defined [ 6] but is
+often associated with multi-tenant datacenters, commodity computers connected
+with an IP network (often Ethernet), elastic/on-demand resource allocation, and
+metered billing.
+• Traditional enterprise datacenters lie somewhere between these extremes.
+With these philosophies come very different approaches to handling faults. In a
+supercomputer, a job typically checkpoints the state of its computation to durable
+storage from time to time. If one node fails, a common solution is to simply stop the
+entire cluster workload. After the faulty node is repaired, the computation is restarted
+from the last checkpoint [ 7, 8]. Thus, a supercomputer is more like a single-node
+computer than a distributed system: it deals with partial failure by letting it escalate
+into total failure—if any part of the system fails, just let everything crash (like a kernel
+panic on a single machine).
+In this book we focus on systems for implementing internet services, which usually
+look very different from supercomputers:
+Faults and Partial Failures | 275
+
+• Many internet-related applications are online, in the sense that they need to be
+able to serve users with low latency at any time. Making the service unavailable—
+for example, stopping the cluster for repair—is not acceptable. In contrast, off‐
+line (batch) jobs like weather simulations can be stopped and restarted with fairly
+low impact.
+• Supercomputers are typically built from specialized hardware, where each node
+is quite reliable, and nodes communicate through shared memory and remote
+direct memory access (RDMA). On the other hand, nodes in cloud services are
+built from commodity machines, which can provide equivalent performance at
+lower cost due to economies of scale, but also have higher failure rates.
+• Large datacenter networks are often based on IP and Ethernet, arranged in Clos
+topologies to provide high bisection bandwidth [ 9]. Supercomputers often use
+specialized network topologies, such as multi-dimensional meshes and toruses
+[10], which yield better performance for HPC workloads with known communi‐
+cation patterns.
+• The bigger a system gets, the more likely it is that one of its components is bro‐
+ken. Over time, broken things get fixed and new things break, but in a system
+with thousands of nodes, it is reasonable to assume that something is always bro‐
+ken [7]. When the error handling strategy consists of simply giving up, a large
+system can end up spending a lot of its time recovering from faults rather than
+doing useful work [8].
+• If the system can tolerate failed nodes and still keep working as a whole, that is a
+very useful feature for operations and maintenance: for example, you can per‐
+form a rolling upgrade (see Chapter 4), restarting one node at a time, while the
+service continues serving users without interruption. In cloud environments, if
+one virtual machine is not performing well, you can just kill it and request a new
+one (hoping that the new one will be faster).
+• In a geographically distributed deployment (keeping data geographically close to
+your users to reduce access latency), communication most likely goes over the
+internet, which is slow and unreliable compared to local networks. Supercom‐
+puters generally assume that all of their nodes are close together.
+If we want to make distributed systems work, we must accept the possibility of partial
+failure and build fault-tolerance mechanisms into the software. In other words, we
+need to build a reliable system from unreliable components. (As discussed in “Relia‐
+bility”  on page 6, there is no such thing as perfect reliability, so we’ll need to under‐
+stand the limits of what we can realistically promise.)
+Even in smaller systems consisting of only a few nodes, it’s important to think about
+partial failure. In a small system, it’s quite likely that most of the components are
+working correctly most of the time. However, sooner or later, some part of the system
+276 | Chapter 8: The Trouble with Distributed Systems
+
+will become faulty, and the software will have to somehow handle it. The fault han‐
+dling must be part of the software design, and you (as operator of the software) need
+to know what behavior to expect from the software in the case of a fault.
+It would be unwise to assume that faults are rare and simply hope for the best. It is
+important to consider a wide range of possible faults—even fairly unlikely ones—and
+to artificially create such situations in your testing environment to see what happens.
+In distributed systems, suspicion, pessimism, and paranoia pay off.
+Building a Reliable System from Unreliable Components
+You may wonder whether this makes any sense—intuitively it may seem like a system
+can only be as reliable as its least reliable component (its weakest link). This is not the
+case: in fact, it is an old idea in computing to construct a more reliable system from a
+less reliable underlying base [11]. For example:
+• Error-correcting codes allow digital data to be transmitted accurately across a
+communication channel that occasionally gets some bits wrong, for example due
+to radio interference on a wireless network [12].
+• IP (the Internet Protocol) is unreliable: it may drop, delay, duplicate, or reorder
+packets. TCP (the Transmission Control Protocol) provides a more reliable
+transport layer on top of IP: it ensures that missing packets are retransmitted,
+duplicates are eliminated, and packets are reassembled into the order in which
+they were sent.
+Although the system can be more reliable than its underlying parts, there is always a
+limit to how much more reliable it can be. For example, error-correcting codes can
+deal with a small number of single-bit errors, but if your signal is swamped by inter‐
+ference, there is a fundamental limit to how much data you can get through your
+communication channel [ 13]. TCP can hide packet loss, duplication, and reordering
+from you, but it cannot magically remove delays in the network.
+Although the more reliable higher-level system is not perfect, it’s still useful because it
+takes care of some of the tricky low-level faults, and so the remaining faults are usu‐
+ally easier to reason about and deal with. We will explore this matter further in “The
+end-to-end argument” on page 519 . 
+Unreliable Networks
+As discussed in the introduction to Part II, the distributed systems we focus on in this
+book are shared-nothing systems: i.e., a bunch of machines connected by a network.
+The network is the only way those machines can communicate—we assume that each
+Unreliable Networks | 277
+
+machine has its own memory and disk, and one machine cannot access another
+machine’s memory or disk (except by making requests to a service over the network).
+Shared-nothing is not the only way of building systems, but it has become the domi‐
+nant approach for building internet services, for several reasons: it’s comparatively
+cheap because it requires no special hardware, it can make use of commoditized
+cloud computing services, and it can achieve high reliability through redundancy
+across multiple geographically distributed datacenters.
+The internet and most internal networks in datacenters (often Ethernet) are asyn‐
+chronous packet networks . In this kind of network, one node can send a message (a
+packet) to another node, but the network gives no guarantees as to when it will arrive,
+or whether it will arrive at all. If you send a request and expect a response, many
+things could go wrong (some of which are illustrated in Figure 8-1):
+1. Your request may have been lost (perhaps someone unplugged a network cable).
+2. Your request may be waiting in a queue and will be delivered later (perhaps the
+network or the recipient is overloaded).
+3. The remote node may have failed (perhaps it crashed or it was powered down).
+4. The remote node may have temporarily stopped responding (perhaps it is expe‐
+riencing a long garbage collection pause; see “Process Pauses” on page 295 ), but it
+will start responding again later.
+5. The remote node may have processed your request, but the response has been
+lost on the network (perhaps a network switch has been misconfigured).
+6. The remote node may have processed your request, but the response has been
+delayed and will be delivered later (perhaps the network or your own machine is
+overloaded).
+Figure 8-1. If you send a request and don’t get a response, it’s not possible to distinguish
+whether (a) the request was lost, (b) the remote node is down, or (c) the response was
+lost.
+278 | Chapter 8: The Trouble with Distributed Systems
+
+The sender can’t even tell whether the packet was delivered: the only option is for the
+recipient to send a response message, which may in turn be lost or delayed. These
+issues are indistinguishable in an asynchronous network: the only information you
+have is that you haven’t received a response yet. If you send a request to another node
+and don’t receive a response, it is impossible to tell why.
+The usual way of handling this issue is a timeout: after some time you give up waiting
+and assume that the response is not going to arrive. However, when a timeout occurs,
+you still don’t know whether the remote node got your request or not (and if the
+request is still queued somewhere, it may still be delivered to the recipient, even if the
+sender has given up on it).
+Network Faults in Practice
+We have been building computer networks for decades—one might hope that by now
+we would have figured out how to make them reliable. However, it seems that we
+have not yet succeeded.
+There are some systematic studies, and plenty of anecdotal evidence, showing that
+network problems can be surprisingly common, even in controlled environments like
+a datacenter operated by one company [14]. One study in a medium-sized datacenter
+found about 12 network faults per month, of which half disconnected a single
+machine, and half disconnected an entire rack [ 15]. Another study measured the fail‐
+ure rates of components like top-of-rack switches, aggregation switches, and load bal‐
+ancers [16]. It found that adding redundant networking gear doesn’t reduce faults as
+much as you might hope, since it doesn’t guard against human error (e.g., misconfig‐
+ured switches), which is a major cause of outages.
+Public cloud services such as EC2 are notorious for having frequent transient net‐
+work glitches [ 14], and well-managed private datacenter networks can be stabler
+environments. Nevertheless, nobody is immune from network problems: for exam‐
+ple, a problem during a software upgrade for a switch could trigger a network topol‐
+ogy reconfiguration, during which network packets could be delayed for more than a
+minute [17]. Sharks might bite undersea cables and damage them [18]. Other surpris‐
+ing faults include a network interface that sometimes drops all inbound packets but
+sends outbound packets successfully [ 19]: just because a network link works in one
+direction doesn’t guarantee it’s also working in the opposite direction.
+Network partitions
+When one part of the network is cut off from the rest due to a net‐
+work fault, that is sometimes called a network partition or netsplit.
+In this book we’ll generally stick with the more general term net‐
+work fault, to avoid confusion with partitions (shards) of a storage
+system, as discussed in Chapter 6.
+Unreliable Networks | 279
+
+Even if network faults are rare in your environment, the fact that faults can occur
+means that your software needs to be able to handle them. Whenever any communi‐
+cation happens over a network, it may fail—there is no way around it.
+If the error handling of network faults is not defined and tested, arbitrarily bad things
+could happen: for example, the cluster could become deadlocked and permanently
+unable to serve requests, even when the network recovers [ 20], or it could even delete
+all of your data [ 21]. If software is put in an unanticipated situation, it may do arbi‐
+trary unexpected things.
+Handling network faults doesn’t necessarily mean tolerating them: if your network is
+normally fairly reliable, a valid approach may be to simply show an error message to
+users while your network is experiencing problems. However, you do need to know
+how your software reacts to network problems and ensure that the system can
+recover from them. It may make sense to deliberately trigger network problems and
+test the system’s response (this is the idea behind Chaos Monkey; see “Reliability” on
+page 6).
+Detecting Faults
+Many systems need to automatically detect faulty nodes. For example:
+• A load balancer needs to stop sending requests to a node that is dead (i.e., take it
+out of rotation).
+• In a distributed database with single-leader replication, if the leader fails, one of
+the followers needs to be promoted to be the new leader (see “Handling Node
+Outages” on page 156 ).
+Unfortunately, the uncertainty about the network makes it difficult to tell whether a
+node is working or not. In some specific circumstances you might get some feedback
+to explicitly tell you that something is not working:
+• If you can reach the machine on which the node should be running, but no pro‐
+cess is listening on the destination port (e.g., because the process crashed), the
+operating system will helpfully close or refuse TCP connections by sending a RST
+or FIN packet in reply. However, if the node crashed while it was handling your
+request, you have no way of knowing how much data was actually processed by
+the remote node [22].
+• If a node process crashed (or was killed by an administrator) but the node’s oper‐
+ating system is still running, a script can notify other nodes about the crash so
+that another node can take over quickly without having to wait for a timeout to
+expire. For example, HBase does this [23].
+280 | Chapter 8: The Trouble with Distributed Systems
+
+• If you have access to the management interface of the network switches in your
+datacenter, you can query them to detect link failures at a hardware level (e.g., if
+the remote machine is powered down). This option is ruled out if you’re con‐
+necting via the internet, or if you’re in a shared datacenter with no access to the
+switches themselves, or if you can’t reach the management interface due to a net‐
+work problem.
+• If a router is sure that the IP address you’re trying to connect to is unreachable, it
+may reply to you with an ICMP Destination Unreachable packet. However, the
+router doesn’t have a magic failure detection capability either—it is subject to the
+same limitations as other participants of the network.
+Rapid feedback about a remote node being down is useful, but you can’t count on it.
+Even if TCP acknowledges that a packet was delivered, the application may have
+crashed before handling it. If you want to be sure that a request was successful, you
+need a positive response from the application itself [24].
+Conversely, if something has gone wrong, you may get an error response at some
+level of the stack, but in general you have to assume that you will get no response at
+all. You can retry a few times (TCP retries transparently, but you may also retry at the
+application level), wait for a timeout to elapse, and eventually declare the node dead if
+you don’t hear back within the timeout. 
+Timeouts and Unbounded Delays
+If a timeout is the only sure way of detecting a fault, then how long should the time‐
+out be? There is unfortunately no simple answer.
+A long timeout means a long wait until a node is declared dead (and during this time,
+users may have to wait or see error messages). A short timeout detects faults faster,
+but carries a higher risk of incorrectly declaring a node dead when in fact it has only
+suffered a temporary slowdown (e.g., due to a load spike on the node or the network).
+Prematurely declaring a node dead is problematic: if the node is actually alive and in
+the middle of performing some action (for example, sending an email), and another
+node takes over, the action may end up being performed twice. We will discuss this
+issue in more detail in “Knowledge, Truth, and Lies” on page 300, and in Chapters 9
+and 11.
+When a node is declared dead, its responsibilities need to be transferred to other
+nodes, which places additional load on other nodes and the network. If the system is
+already struggling with high load, declaring nodes dead prematurely can make the
+problem worse. In particular, it could happen that the node actually wasn’t dead but
+only slow to respond due to overload; transferring its load to other nodes can cause a
+cascading failure (in the extreme case, all nodes declare each other dead, and every‐
+thing stops working).
+Unreliable Networks | 281
+
+Imagine a fictitious system with a network that guaranteed a maximum delay for
+packets—every packet is either delivered within some time d, or it is lost, but delivery
+never takes longer than d. Furthermore, assume that you can guarantee that a non-
+failed node always handles a request within some time r. In this case, you could guar‐
+antee that every successful request receives a response within time 2 d + r—and if you
+don’t receive a response within that time, you know that either the network or the
+remote node is not working. If this was true, 2 d + r would be a reasonable timeout to
+use.
+Unfortunately, most systems we work with have neither of those guarantees: asyn‐
+chronous networks have unbounded delays  (that is, they try to deliver packets as
+quickly as possible, but there is no upper limit on the time it may take for a packet to
+arrive), and most server implementations cannot guarantee that they can handle
+requests within some maximum time (see “Response time guarantees”  on page 298).
+For failure detection, it’s not sufficient for the system to be fast most of the time: if
+your timeout is low, it only takes a transient spike in round-trip times to throw the
+system off-balance.
+Network congestion and queueing
+When driving a car, travel times on road networks often vary most due to traffic con‐
+gestion. Similarly, the variability of packet delays on computer networks is most often
+due to queueing [25]:
+• If several different nodes simultaneously try to send packets to the same destina‐
+tion, the network switch must queue them up and feed them into the destination
+network link one by one (as illustrated in Figure 8-2). On a busy network link, a
+packet may have to wait a while until it can get a slot (this is called network con‐
+gestion). If there is so much incoming data that the switch queue fills up, the
+packet is dropped, so it needs to be resent—even though the network is function‐
+ing fine.
+• When a packet reaches the destination machine, if all CPU cores are currently
+busy, the incoming request from the network is queued by the operating system
+until the application is ready to handle it. Depending on the load on the machine,
+this may take an arbitrary length of time.
+• In virtualized environments, a running operating system is often paused for tens
+of milliseconds while another virtual machine uses a CPU core. During this time,
+the VM cannot consume any data from the network, so the incoming data is
+queued (buffered) by the virtual machine monitor [ 26], further increasing the
+variability of network delays.
+• TCP performs flow control (also known as congestion avoidance or backpressure),
+in which a node limits its own rate of sending in order to avoid overloading a
+282 | Chapter 8: The Trouble with Distributed Systems
+
+network link or the receiving node [ 27]. This means additional queueing at the
+sender before the data even enters the network.
+Figure 8-2. If several machines send network traffic to the same destination, its switch
+queue can fill up. Here, ports 1, 2, and 4 are all trying to send packets to port 3.
+Moreover, TCP considers a packet to be lost if it is not acknowledged within some
+timeout (which is calculated from observed round-trip times), and lost packets are
+automatically retransmitted. Although the application does not see the packet loss
+and retransmission, it does see the resulting delay (waiting for the timeout to expire,
+and then waiting for the retransmitted packet to be acknowledged).
+TCP Versus UDP
+Some latency-sensitive applications, such as videoconferencing and Voice over IP
+(VoIP), use UDP rather than TCP. It’s a trade-off between reliability and variability
+of delays: as UDP does not perform flow control and does not retransmit lost packets,
+it avoids some of the reasons for variable network delays (although it is still suscepti‐
+ble to switch queues and scheduling delays).
+UDP is a good choice in situations where delayed data is worthless. For example, in a
+VoIP phone call, there probably isn’t enough time to retransmit a lost packet before
+its data is due to be played over the loudspeakers. In this case, there’s no point in
+retransmitting the packet—the application must instead fill the missing packet’s time
+slot with silence (causing a brief interruption in the sound) and move on in the
+stream. The retry happens at the human layer instead. (“Could you repeat that please?
+The sound just cut out for a moment.”)
+All of these factors contribute to the variability of network delays. Queueing delays
+have an especially wide range when a system is close to its maximum capacity: a sys‐
+Unreliable Networks | 283
+
+tem with plenty of spare capacity can easily drain queues, whereas in a highly utilized
+system, long queues can build up very quickly.
+In public clouds and multi-tenant datacenters, resources are shared among many
+customers: the network links and switches, and even each machine’s network inter‐
+face and CPUs (when running on virtual machines), are shared. Batch workloads
+such as MapReduce (see Chapter 10) can easily saturate network links. As you have
+no control over or insight into other customers’ usage of the shared resources, net‐
+work delays can be highly variable if someone near you (a noisy neighbor) is using a
+lot of resources [28, 29].
+In such environments, you can only choose timeouts experimentally: measure the
+distribution of network round-trip times over an extended period, and over many
+machines, to determine the expected variability of delays. Then, taking into account
+your application’s characteristics, you can determine an appropriate trade-off
+between failure detection delay and risk of premature timeouts.
+Even better, rather than using configured constant timeouts, systems can continually
+measure response times and their variability ( jitter), and automatically adjust time‐
+outs according to the observed response time distribution. This can be done with a
+Phi Accrual failure detector [ 30], which is used for example in Akka and Cassandra
+[31]. TCP retransmission timeouts also work similarly [27].
+Synchronous Versus Asynchronous Networks
+Distributed systems would be a lot simpler if we could rely on the network to deliver
+packets with some fixed maximum delay, and not to drop packets. Why can’t we
+solve this at the hardware level and make the network reliable so that the software
+doesn’t need to worry about it?
+To answer this question, it’s interesting to compare datacenter networks to the tradi‐
+tional fixed-line telephone network (non-cellular, non-VoIP), which is extremely
+reliable: delayed audio frames and dropped calls are very rare. A phone call requires a
+constantly low end-to-end latency and enough bandwidth to transfer the audio sam‐
+ples of your voice. Wouldn’t it be nice to have similar reliability and predictability in
+computer networks?
+When you make a call over the telephone network, it establishes a circuit: a fixed,
+guaranteed amount of bandwidth is allocated for the call, along the entire route
+between the two callers. This circuit remains in place until the call ends [ 32]. For
+example, an ISDN network runs at a fixed rate of 4,000 frames per second. When a
+call is established, it is allocated 16 bits of space within each frame (in each direction).
+Thus, for the duration of the call, each side is guaranteed to be able to send exactly 16
+bits of audio data every 250 microseconds [33, 34].
+284 | Chapter 8: The Trouble with Distributed Systems
+
+ii. Except perhaps for an occasional keepalive packet, if TCP keepalive is enabled.
+iii. Asynchronous Transfer Mode (ATM) was a competitor to Ethernet in the 1980s [32], but it didn’t gain
+much adoption outside of telephone network core switches. It has nothing to do with automatic teller
+machines (also known as cash machines), despite sharing an acronym. Perhaps, in some parallel universe, the
+internet is based on something like ATM—in that universe, internet video calls are probably a lot more relia‐
+ble than they are in ours, because they don’t suffer from dropped and delayed packets.
+This kind of network is synchronous: even as data passes through several routers, it
+does not suffer from queueing, because the 16 bits of space for the call have already
+been reserved in the next hop of the network. And because there is no queueing, the
+maximum end-to-end latency of the network is fixed. We call this a bounded delay.
+Can we not simply make network delays predictable?
+Note that a circuit in a telephone network is very different from a TCP connection: a
+circuit is a fixed amount of reserved bandwidth which nobody else can use while the
+circuit is established, whereas the packets of a TCP connection opportunistically use
+whatever network bandwidth is available. You can give TCP a variable-sized block of
+data (e.g., an email or a web page), and it will try to transfer it in the shortest time
+possible. While a TCP connection is idle, it doesn’t use any bandwidth. ii
+If datacenter networks and the internet were circuit-switched networks, it would be
+possible to establish a guaranteed maximum round-trip time when a circuit was set
+up. However, they are not: Ethernet and IP are packet-switched protocols, which suf‐
+fer from queueing and thus unbounded delays in the network. These protocols do
+not have the concept of a circuit.
+Why do datacenter networks and the internet use packet switching? The answer is
+that they are optimized for bursty traffic. A circuit is good for an audio or video call,
+which needs to transfer a fairly constant number of bits per second for the duration
+of the call. On the other hand, requesting a web page, sending an email, or transfer‐
+ring a file doesn’t have any particular bandwidth requirement—we just want it to
+complete as quickly as possible.
+If you wanted to transfer a file over a circuit, you would have to guess a bandwidth
+allocation. If you guess too low, the transfer is unnecessarily slow, leaving network
+capacity unused. If you guess too high, the circuit cannot be set up (because the net‐
+work cannot allow a circuit to be created if its bandwidth allocation cannot be guar‐
+anteed). Thus, using circuits for bursty data transfers wastes network capacity and
+makes transfers unnecessarily slow. By contrast, TCP dynamically adapts the rate of
+data transfer to the available network capacity.
+There have been some attempts to build hybrid networks that support both circuit
+switching and packet switching, such as ATM.iii InfiniBand has some similarities [35]:
+it implements end-to-end flow control at the link layer, which reduces the need for
+Unreliable Networks | 285
+
+queueing in the network, although it can still suffer from delays due to link conges‐
+tion [36]. With careful use of quality of service (QoS, prioritization and scheduling of
+packets) and admission control (rate-limiting senders), it is possible to emulate circuit
+switching on packet networks, or provide statistically bounded delay [25, 32].
+Latency and Resource Utilization
+More generally, you can think of variable delays as a consequence of dynamic
+resource partitioning.
+Say you have a wire between two telephone switches that can carry up to 10,000
+simultaneous calls. Each circuit that is switched over this wire occupies one of those
+call slots. Thus, you can think of the wire as a resource that can be shared by up to
+10,000 simultaneous users. The resource is divided up in a static way: even if you’re
+the only call on the wire right now, and all other 9,999 slots are unused, your circuit is
+still allocated the same fixed amount of bandwidth as when the wire is fully utilized.
+By contrast, the internet shares network bandwidth dynamically. Senders push and
+jostle with each other to get their packets over the wire as quickly as possible, and the
+network switches decide which packet to send (i.e., the bandwidth allocation) from
+one moment to the next. This approach has the downside of queueing, but the advan‐
+tage is that it maximizes utilization of the wire. The wire has a fixed cost, so if you
+utilize it better, each byte you send over the wire is cheaper.
+A similar situation arises with CPUs: if you share each CPU core dynamically
+between several threads, one thread sometimes has to wait in the operating system’s
+run queue while another thread is running, so a thread can be paused for varying
+lengths of time. However, this utilizes the hardware better than if you allocated a
+static number of CPU cycles to each thread (see “Response time guarantees” on page
+298). Better hardware utilization is also a significant motivation for using virtual
+machines.
+Latency guarantees are achievable in certain environments, if resources are statically
+partitioned (e.g., dedicated hardware and exclusive bandwidth allocations). However,
+it comes at the cost of reduced utilization—in other words, it is more expensive. On
+the other hand, multi-tenancy with dynamic resource partitioning provides better
+utilization, so it is cheaper, but it has the downside of variable delays.
+Variable delays in networks are not a law of nature, but simply the result of a cost/
+benefit trade-off. 
+286 | Chapter 8: The Trouble with Distributed Systems
+
+iv. Peering agreements between internet service providers and the establishment of routes through the Bor‐
+der Gateway Protocol (BGP), bear closer resemblance to circuit switching than IP itself. At this level, it is pos‐
+sible to buy dedicated bandwidth. However, internet routing operates at the level of networks, not individual
+connections between hosts, and at a much longer timescale.
+However, such quality of service is currently not enabled in multi-tenant datacenters
+and public clouds, or when communicating via the internet. iv Currently deployed
+technology does not allow us to make any guarantees about delays or reliability of the
+network: we have to assume that network congestion, queueing, and unbounded
+delays will happen. Consequently, there’s no “correct” value for timeouts—they need
+to be determined experimentally.
+Unreliable Clocks
+Clocks and time are important. Applications depend on clocks in various ways to
+answer questions like the following:
+1. Has this request timed out yet?
+2. What’s the 99th percentile response time of this service?
+3. How many queries per second did this service handle on average in the last five
+minutes?
+4. How long did the user spend on our site?
+5. When was this article published?
+6. At what date and time should the reminder email be sent?
+7. When does this cache entry expire?
+8. What is the timestamp on this error message in the log file?
+Examples 1–4 measure durations (e.g., the time interval between a request being sent
+and a response being received), whereas examples 5–8 describe points in time (events
+that occur on a particular date, at a particular time).
+In a distributed system, time is a tricky business, because communication is not
+instantaneous: it takes time for a message to travel across the network from one
+machine to another. The time when a message is received is always later than the
+time when it is sent, but due to variable delays in the network, we don’t know how
+much later. This fact sometimes makes it difficult to determine the order in which
+things happened when multiple machines are involved.
+Moreover, each machine on the network has its own clock, which is an actual hard‐
+ware device: usually a quartz crystal oscillator. These devices are not perfectly accu‐
+rate, so each machine has its own notion of time, which may be slightly faster or
+Unreliable Clocks | 287
+
+v. Although the clock is called real-time, it has nothing to do with real-time operating systems, as discussed
+in “Response time guarantees” on page 298 .
+slower than on other machines. It is possible to synchronize clocks to some degree:
+the most commonly used mechanism is the Network Time Protocol (NTP), which
+allows the computer clock to be adjusted according to the time reported by a group of
+servers [ 37]. The servers in turn get their time from a more accurate time source,
+such as a GPS receiver.
+Monotonic Versus Time-of-Day Clocks
+Modern computers have at least two different kinds of clocks: a time-of-day clock and
+a monotonic clock. Although they both measure time, it is important to distinguish
+the two, since they serve different purposes.
+Time-of-day clocks
+A time-of-day clock does what you intuitively expect of a clock: it returns the current
+date and time according to some calendar (also known as wall-clock time). For exam‐
+ple, clock_gettime(CLOCK_REALTIME) on Linux v and System.currentTimeMillis()
+in Java return the number of seconds (or milliseconds) since the epoch: midnight
+UTC on January 1, 1970, according to the Gregorian calendar, not counting leap sec‐
+onds. Some systems use other dates as their reference point.
+Time-of-day clocks are usually synchronized with NTP, which means that a time‐
+stamp from one machine (ideally) means the same as a timestamp on another
+machine. However, time-of-day clocks also have various oddities, as described in the
+next section. In particular, if the local clock is too far ahead of the NTP server, it may
+be forcibly reset and appear to jump back to a previous point in time. These jumps, as
+well as the fact that they often ignore leap seconds, make time-of-day clocks unsuita‐
+ble for measuring elapsed time [38].
+Time-of-day clocks have also historically had quite a coarse-grained resolution, e.g.,
+moving forward in steps of 10 ms on older Windows systems [ 39]. On recent sys‐
+tems, this is less of a problem.
+Monotonic clocks
+A monotonic clock is suitable for measuring a duration (time interval), such as a
+timeout or a service’s response time: clock_gettime(CLOCK_MONOTONIC) on Linux
+and System.nanoTime() in Java are monotonic clocks, for example. The name comes
+from the fact that they are guaranteed to always move forward (whereas a time-of-
+day clock may jump back in time).
+288 | Chapter 8: The Trouble with Distributed Systems
+
+You can check the value of the monotonic clock at one point in time, do something,
+and then check the clock again at a later time. The difference between the two values
+tells you how much time elapsed between the two checks. However, the absolute
+value of the clock is meaningless: it might be the number of nanoseconds since the
+computer was started, or something similarly arbitrary. In particular, it makes no
+sense to compare monotonic clock values from two different computers, because they
+don’t mean the same thing.
+On a server with multiple CPU sockets, there may be a separate timer per CPU,
+which is not necessarily synchronized with other CPUs. Operating systems compen‐
+sate for any discrepancy and try to present a monotonic view of the clock to applica‐
+tion threads, even as they are scheduled across different CPUs. However, it is wise to
+take this guarantee of monotonicity with a pinch of salt [40].
+NTP may adjust the frequency at which the monotonic clock moves forward (this is
+known as slewing the clock) if it detects that the computer’s local quartz is moving
+faster or slower than the NTP server. By default, NTP allows the clock rate to be spee‐
+ded up or slowed down by up to 0.05%, but NTP cannot cause the monotonic clock
+to jump forward or backward. The resolution of monotonic clocks is usually quite
+good: on most systems they can measure time intervals in microseconds or less.
+In a distributed system, using a monotonic clock for measuring elapsed time (e.g.,
+timeouts) is usually fine, because it doesn’t assume any synchronization between dif‐
+ferent nodes’ clocks and is not sensitive to slight inaccuracies of measurement.
+Clock Synchronization and Accuracy
+Monotonic clocks don’t need synchronization, but time-of-day clocks need to be set
+according to an NTP server or other external time source in order to be useful.
+Unfortunately, our methods for getting a clock to tell the correct time aren’t nearly as
+reliable or accurate as you might hope—hardware clocks and NTP can be fickle
+beasts. To give just a few examples:
+• The quartz clock in a computer is not very accurate: it drifts (runs faster or
+slower than it should). Clock drift varies depending on the temperature of the
+machine. Google assumes a clock drift of 200 ppm (parts per million) for its
+servers [41], which is equivalent to 6 ms drift for a clock that is resynchronized
+with a server every 30 seconds, or 17 seconds drift for a clock that is resynchron‐
+ized once a day. This drift limits the best possible accuracy you can achieve, even
+if everything is working correctly.
+• If a computer’s clock differs too much from an NTP server, it may refuse to syn‐
+chronize, or the local clock will be forcibly reset [ 37]. Any applications observing
+the time before and after this reset may see time go backward or suddenly jump
+forward.
+Unreliable Clocks | 289
+
+• If a node is accidentally firewalled off from NTP servers, the misconfiguration
+may go unnoticed for some time. Anecdotal evidence suggests that this does hap‐
+pen in practice.
+• NTP synchronization can only be as good as the network delay, so there is a limit
+to its accuracy when you’re on a congested network with variable packet delays.
+One experiment showed that a minimum error of 35 ms is achievable when syn‐
+chronizing over the internet [42], though occasional spikes in network delay lead
+to errors of around a second. Depending on the configuration, large network
+delays can cause the NTP client to give up entirely.
+• Some NTP servers are wrong or misconfigured, reporting time that is off by
+hours [43, 44]. NTP clients are quite robust, because they query several servers
+and ignore outliers. Nevertheless, it’s somewhat worrying to bet the correctness
+of your systems on the time that you were told by a stranger on the internet.
+• Leap seconds result in a minute that is 59 seconds or 61 seconds long, which
+messes up timing assumptions in systems that are not designed with leap seconds
+in mind [ 45]. The fact that leap seconds have crashed many large systems [ 38,
+46] shows how easy it is for incorrect assumptions about clocks to sneak into a
+system. The best way of handling leap seconds may be to make NTP servers “lie,”
+by performing the leap second adjustment gradually over the course of a day
+(this is known as smearing) [47, 48], although actual NTP server behavior varies
+in practice [49].
+• In virtual machines, the hardware clock is virtualized, which raises additional
+challenges for applications that need accurate timekeeping [ 50]. When a CPU
+core is shared between virtual machines, each VM is paused for tens of milli‐
+seconds while another VM is running. From an application’s point of view, this
+pause manifests itself as the clock suddenly jumping forward [26].
+• If you run software on devices that you don’t fully control (e.g., mobile or
+embedded devices), you probably cannot trust the device’s hardware clock at all.
+Some users deliberately set their hardware clock to an incorrect date and time,
+for example to circumvent timing limitations in games. As a result, the clock
+might be set to a time wildly in the past or the future.
+It is possible to achieve very good clock accuracy if you care about it sufficiently to
+invest significant resources. For example, the MiFID II draft European regulation for
+financial institutions requires all high-frequency trading funds to synchronize their
+clocks to within 100 microseconds of UTC, in order to help debug market anomalies
+such as “flash crashes” and to help detect market manipulation [ 51].
+Such accuracy can be achieved using GPS receivers, the Precision Time Protocol
+(PTP) [52], and careful deployment and monitoring. However, it requires significant
+effort and expertise, and there are plenty of ways clock synchronization can go
+290 | Chapter 8: The Trouble with Distributed Systems
+
+wrong. If your NTP daemon is misconfigured, or a firewall is blocking NTP traffic,
+the clock error due to drift can quickly become large. 
+Relying on Synchronized Clocks
+The problem with clocks is that while they seem simple and easy to use, they have a
+surprising number of pitfalls: a day may not have exactly 86,400 seconds, time-of-day
+clocks may move backward in time, and the time on one node may be quite different
+from the time on another node.
+Earlier in this chapter we discussed networks dropping and arbitrarily delaying pack‐
+ets. Even though networks are well behaved most of the time, software must be
+designed on the assumption that the network will occasionally be faulty, and the soft‐
+ware must handle such faults gracefully. The same is true with clocks: although they
+work quite well most of the time, robust software needs to be prepared to deal with
+incorrect clocks.
+Part of the problem is that incorrect clocks easily go unnoticed. If a machine’s CPU is
+defective or its network is misconfigured, it most likely won’t work at all, so it will
+quickly be noticed and fixed. On the other hand, if its quartz clock is defective or its
+NTP client is misconfigured, most things will seem to work fine, even though its
+clock gradually drifts further and further away from reality. If some piece of software
+is relying on an accurately synchronized clock, the result is more likely to be silent
+and subtle data loss than a dramatic crash [53, 54].
+Thus, if you use software that requires synchronized clocks, it is essential that you
+also carefully monitor the clock offsets between all the machines. Any node whose
+clock drifts too far from the others should be declared dead and removed from the
+cluster. Such monitoring ensures that you notice the broken clocks before they can
+cause too much damage.
+Timestamps for ordering events
+Let’s consider one particular situation in which it is tempting, but dangerous, to rely
+on clocks: ordering of events across multiple nodes. For example, if two clients write
+to a distributed database, who got there first? Which write is the more recent one?
+Figure 8-3 illustrates a dangerous use of time-of-day clocks in a database with multi-
+leader replication (the example is similar to Figure 5-9). Client A writes x = 1 on node
+1; the write is replicated to node 3; client B increments x on node 3 (we now have
+x = 2); and finally, both writes are replicated to node 2.
+Unreliable Clocks | 291
+
+Figure 8-3. The write by client B is causally later than the write by client A, but B’s
+write has an earlier timestamp.
+In Figure 8-3, when a write is replicated to other nodes, it is tagged with a timestamp
+according to the time-of-day clock on the node where the write originated. The clock
+synchronization is very good in this example: the skew between node 1 and node 3 is
+less than 3 ms, which is probably better than you can expect in practice.
+Nevertheless, the timestamps in Figure 8-3 fail to order the events correctly: the write
+x = 1 has a timestamp of 42.004 seconds, but the write x = 2 has a timestamp of
+42.003 seconds, even though x = 2 occurred unambiguously later. When node 2
+receives these two events, it will incorrectly conclude that x = 1 is the more recent
+value and drop the write x = 2. In effect, client B’s increment operation will be lost.
+This conflict resolution strategy is called last write wins (LWW), and it is widely used
+in both multi-leader replication and leaderless databases such as Cassandra [ 53] and
+Riak [54] (see “Last write wins (discarding concurrent writes)”  on page 186). Some
+implementations generate timestamps on the client rather than the server, but this
+doesn’t change the fundamental problems with LWW:
+• Database writes can mysteriously disappear: a node with a lagging clock is unable
+to overwrite values previously written by a node with a fast clock until the clock
+skew between the nodes has elapsed [ 54, 55]. This scenario can cause arbitrary
+amounts of data to be silently dropped without any error being reported to the
+application.
+• LWW cannot distinguish between writes that occurred sequentially in quick suc‐
+cession (in Figure 8-3 , client B’s increment definitely occurs after client A’s
+write) and writes that were truly concurrent (neither writer was aware of the
+other). Additional causality tracking mechanisms, such as version vectors, are
+292 | Chapter 8: The Trouble with Distributed Systems
+
+needed in order to prevent violations of causality (see “Detecting Concurrent
+Writes” on page 184 ).
+• It is possible for two nodes to independently generate writes with the same time‐
+stamp, especially when the clock only has millisecond resolution. An additional
+tiebreaker value (which can simply be a large random number) is required to
+resolve such conflicts, but this approach can also lead to violations of causality
+[53].
+Thus, even though it is tempting to resolve conflicts by keeping the most “recent”
+value and discarding others, it’s important to be aware that the definition of “recent”
+depends on a local time-of-day clock, which may well be incorrect. Even with tightly
+NTP-synchronized clocks, you could send a packet at timestamp 100 ms (according
+to the sender’s clock) and have it arrive at timestamp 99 ms (according to the recipi‐
+ent’s clock)—so it appears as though the packet arrived before it was sent, which is
+impossible.
+Could NTP synchronization be made accurate enough that such incorrect orderings
+cannot occur? Probably not, because NTP’s synchronization accuracy is itself limited
+by the network round-trip time, in addition to other sources of error such as quartz
+drift. For correct ordering, you would need the clock source to be significantly more
+accurate than the thing you are measuring (namely network delay).
+So-called logical clocks  [56, 57], which are based on incrementing counters rather
+than an oscillating quartz crystal, are a safer alternative for ordering events (see
+“Detecting Concurrent Writes”  on page 184). Logical clocks do not measure the time
+of day or the number of seconds elapsed, only the relative ordering of events
+(whether one event happened before or after another). In contrast, time-of-day and
+monotonic clocks, which measure actual elapsed time, are also known as physical
+clocks. We’ll look at ordering a bit more in “Ordering Guarantees” on page 339 .
+Clock readings have a confidence interval
+You may be able to read a machine’s time-of-day clock with microsecond or even
+nanosecond resolution. But even if you can get such a fine-grained measurement,
+that doesn’t mean the value is actually accurate to such precision. In fact, it most
+likely is not—as mentioned previously, the drift in an imprecise quartz clock can
+easily be several milliseconds, even if you synchronize with an NTP server on the
+local network every minute. With an NTP server on the public internet, the best pos‐
+sible accuracy is probably to the tens of milliseconds, and the error may easily spike
+to over 100 ms when there is network congestion [57].
+Thus, it doesn’t make sense to think of a clock reading as a point in time—it is more
+like a range of times, within a confidence interval: for example, a system may be 95%
+confident that the time now is between 10.3 and 10.5 seconds past the minute, but it
+Unreliable Clocks | 293
+
+doesn’t know any more precisely than that [ 58]. If we only know the time +/– 100 ms,
+the microsecond digits in the timestamp are essentially meaningless.
+The uncertainty bound can be calculated based on your time source. If you have a
+GPS receiver or atomic (caesium) clock directly attached to your computer, the
+expected error range is reported by the manufacturer. If you’re getting the time from
+a server, the uncertainty is based on the expected quartz drift since your last sync
+with the server, plus the NTP server’s uncertainty, plus the network round-trip time
+to the server (to a first approximation, and assuming you trust the server).
+Unfortunately, most systems don’t expose this uncertainty: for example, when you
+call clock_gettime(), the return value doesn’t tell you the expected error of the
+timestamp, so you don’t know if its confidence interval is five milliseconds or five
+years.
+An interesting exception is Google’s TrueTime API in Spanner [ 41], which explicitly
+reports the confidence interval on the local clock. When you ask it for the current
+time, you get back two values: [earliest, latest], which are the earliest possible
+and the latest possible  timestamp. Based on its uncertainty calculations, the clock
+knows that the actual current time is somewhere within that interval. The width of
+the interval depends, among other things, on how long it has been since the local
+quartz clock was last synchronized with a more accurate clock source. 
+Synchronized clocks for global snapshots
+In “Snapshot Isolation and Repeatable Read” on page 237 we discussed snapshot iso‐
+lation, which is a very useful feature in databases that need to support both small, fast
+read-write transactions and large, long-running read-only transactions (e.g., for
+backups or analytics). It allows read-only transactions to see the database in a consis‐
+tent state at a particular point in time, without locking and interfering with read-
+write transactions.
+The most common implementation of snapshot isolation requires a monotonically
+increasing transaction ID. If a write happened later than the snapshot (i.e., the write
+has a greater transaction ID than the snapshot), that write is invisible to the snapshot
+transaction. On a single-node database, a simple counter is sufficient for generating
+transaction IDs.
+However, when a database is distributed across many machines, potentially in multi‐
+ple datacenters, a global, monotonically increasing transaction ID (across all parti‐
+tions) is difficult to generate, because it requires coordination. The transaction ID
+must reflect causality: if transaction B reads a value that was written by transaction A,
+then B must have a higher transaction ID than A—otherwise, the snapshot would not
+294 | Chapter 8: The Trouble with Distributed Systems
+
+vi. There are distributed sequence number generators, such as Twitter’s Snowflake, that generate approxi‐
+mately monotonically increasing unique IDs in a scalable way (e.g., by allocating blocks of the ID space to
+different nodes). However, they typically cannot guarantee an ordering that is consistent with causality,
+because the timescale at which blocks of IDs are assigned is longer than the timescale of database reads and
+writes. See also “Ordering Guarantees” on page 339 .
+be consistent. With lots of small, rapid transactions, creating transaction IDs in a dis‐
+tributed system becomes an untenable bottleneck.vi
+Can we use the timestamps from synchronized time-of-day clocks as transaction IDs?
+If we could get the synchronization good enough, they would have the right proper‐
+ties: later transactions have a higher timestamp. The problem, of course, is the uncer‐
+tainty about clock accuracy.
+Spanner implements snapshot isolation across datacenters in this way [59, 60]. It uses
+the clock’s confidence interval as reported by the TrueTime API, and is based on the
+following observation: if you have two confidence intervals, each consisting of an ear‐
+liest and latest possible timestamp ( A = [ Aearliest, Alatest] and B = [ Bearliest, Blatest]), and
+those two intervals do not overlap (i.e., Aearliest < Alatest < Bearliest < Blatest), then B defi‐
+nitely happened after A—there can be no doubt. Only if the intervals overlap are we
+unsure in which order A and B happened.
+In order to ensure that transaction timestamps reflect causality, Spanner deliberately
+waits for the length of the confidence interval before committing a read-write trans‐
+action. By doing so, it ensures that any transaction that may read the data is at a suffi‐
+ciently later time, so their confidence intervals do not overlap. In order to keep the
+wait time as short as possible, Spanner needs to keep the clock uncertainty as small as
+possible; for this purpose, Google deploys a GPS receiver or atomic clock in each
+datacenter, allowing clocks to be synchronized to within about 7 ms [41].
+Using clock synchronization for distributed transaction semantics is an area of active
+research [57, 61, 62]. These ideas are interesting, but they have not yet been imple‐
+mented in mainstream databases outside of Google. 
+Process Pauses
+Let’s consider another example of dangerous clock use in a distributed system. Say
+you have a database with a single leader per partition. Only the leader is allowed to
+accept writes. How does a node know that it is still leader (that it hasn’t been declared
+dead by the others), and that it may safely accept writes?
+One option is for the leader to obtain a lease from the other nodes, which is similar to
+a lock with a timeout [ 63]. Only one node can hold the lease at any one time—thus,
+when a node obtains a lease, it knows that it is the leader for some amount of time,
+until the lease expires. In order to remain leader, the node must periodically renew
+Unreliable Clocks | 295
+
+the lease before it expires. If the node fails, it stops renewing the lease, so another
+node can take over when it expires.
+You can imagine the request-handling loop looking something like this:
+while (true) {
+    request = getIncomingRequest();
+    // Ensure that the lease always has at least 10 seconds remaining
+    if (lease.expiryTimeMillis - System.currentTimeMillis() < 10000) {
+        lease = lease.renew();
+    }
+    if (lease.isValid()) {
+        process(request);
+    }
+}
+What’s wrong with this code? Firstly, it’s relying on synchronized clocks: the expiry
+time on the lease is set by a different machine (where the expiry may be calculated as
+the current time plus 30 seconds, for example), and it’s being compared to the local
+system clock. If the clocks are out of sync by more than a few seconds, this code will
+start doing strange things.
+Secondly, even if we change the protocol to only use the local monotonic clock, there
+is another problem: the code assumes that very little time passes between the point
+that it checks the time ( System.currentTimeMillis()) and the time when the
+request is processed ( process(request)). Normally this code runs very quickly, so
+the 10 second buffer is more than enough to ensure that the lease doesn’t expire in
+the middle of processing a request.
+However, what if there is an unexpected pause in the execution of the program? For
+example, imagine the thread stops for 15 seconds around the line lease.isValid()
+before finally continuing. In that case, it’s likely that the lease will have expired by the
+time the request is processed, and another node has already taken over as leader.
+However, there is nothing to tell this thread that it was paused for so long, so this
+code won’t notice that the lease has expired until the next iteration of the loop—by
+which time it may have already done something unsafe by processing the request.
+Is it crazy to assume that a thread might be paused for so long? Unfortunately not.
+There are various reasons why this could happen:
+• Many programming language runtimes (such as the Java Virtual Machine) have
+a garbage collector  (GC) that occasionally needs to stop all running threads.
+These “stop-the-world” GC pauses  have sometimes been known to last for several
+minutes [ 64]! Even so-called “concurrent” garbage collectors like the HotSpot
+JVM’s CMS cannot fully run in parallel with the application code—even they
+need to stop the world from time to time [ 65]. Although the pauses can often be
+296 | Chapter 8: The Trouble with Distributed Systems
+
+reduced by changing allocation patterns or tuning GC settings [ 66], we must
+assume the worst if we want to offer robust guarantees.
+• In virtualized environments, a virtual machine can be suspended (pausing the
+execution of all processes and saving the contents of memory to disk) and
+resumed (restoring the contents of memory and continuing execution). This
+pause can occur at any time in a process’s execution and can last for an arbitrary
+length of time. This feature is sometimes used for live migration  of virtual
+machines from one host to another without a reboot, in which case the length of
+the pause depends on the rate at which processes are writing to memory [67].
+• On end-user devices such as laptops, execution may also be suspended and
+resumed arbitrarily, e.g., when the user closes the lid of their laptop.
+• When the operating system context-switches to another thread, or when the
+hypervisor switches to a different virtual machine (when running in a virtual
+machine), the currently running thread can be paused at any arbitrary point in
+the code. In the case of a virtual machine, the CPU time spent in other virtual
+machines is known as steal time. If the machine is under heavy load—i.e., if there
+is a long queue of threads waiting to run—it may take some time before the
+paused thread gets to run again.
+• If the application performs synchronous disk access, a thread may be paused
+waiting for a slow disk I/O operation to complete [ 68]. In many languages, disk
+access can happen surprisingly, even if the code doesn’t explicitly mention file
+access—for example, the Java classloader lazily loads class files when they are first
+used, which could happen at any time in the program execution. I/O pauses and
+GC pauses may even conspire to combine their delays [ 69]. If the disk is actually
+a network filesystem or network block device (such as Amazon’s EBS), the I/O
+latency is further subject to the variability of network delays [29].
+• If the operating system is configured to allow swapping to disk (paging), a simple
+memory access may result in a page fault that requires a page from disk to be
+loaded into memory. The thread is paused while this slow I/O operation takes
+place. If memory pressure is high, this may in turn require a different page to be
+swapped out to disk. In extreme circumstances, the operating system may spend
+most of its time swapping pages in and out of memory and getting little actual
+work done (this is known as thrashing). To avoid this problem, paging is often
+disabled on server machines (if you would rather kill a process to free up mem‐
+ory than risk thrashing).
+• A Unix process can be paused by sending it the SIGSTOP signal, for example by
+pressing Ctrl-Z in a shell. This signal immediately stops the process from getting
+any more CPU cycles until it is resumed with SIGCONT, at which point it contin‐
+ues running where it left off. Even if your environment does not normally use
+SIGSTOP, it might be sent accidentally by an operations engineer.
+Unreliable Clocks | 297
+
+All of these occurrences can preempt the running thread at any point and resume it at
+some later time, without the thread even noticing. The problem is similar to making
+multi-threaded code on a single machine thread-safe: you can’t assume anything
+about timing, because arbitrary context switches and parallelism may occur.
+When writing multi-threaded code on a single machine, we have fairly good tools for
+making it thread-safe: mutexes, semaphores, atomic counters, lock-free data struc‐
+tures, blocking queues, and so on. Unfortunately, these tools don’t directly translate
+to distributed systems, because a distributed system has no shared memory—only
+messages sent over an unreliable network.
+A node in a distributed system must assume that its execution can be paused for a
+significant length of time at any point, even in the middle of a function. During the
+pause, the rest of the world keeps moving and may even declare the paused node
+dead because it’s not responding. Eventually, the paused node may continue running,
+without even noticing that it was asleep until it checks its clock sometime later. 
+Response time guarantees
+In many programming languages and operating systems, threads and processes may
+pause for an unbounded amount of time, as discussed. Those reasons for pausing can
+be eliminated if you try hard enough.
+Some software runs in environments where a failure to respond within a specified
+time can cause serious damage: computers that control aircraft, rockets, robots, cars,
+and other physical objects must respond quickly and predictably to their sensor
+inputs. In these systems, there is a specified deadline by which the software must
+respond; if it doesn’t meet the deadline, that may cause a failure of the entire system.
+These are so-called hard real-time systems.
+Is real-time really real?
+In embedded systems, real-time means that a system is carefully
+designed and tested to meet specified timing guarantees in all cir‐
+cumstances. This meaning is in contrast to the more vague use of
+the term real-time on the web, where it describes servers pushing
+data to clients and stream processing without hard response time
+constraints (see Chapter 11).
+For example, if your car’s onboard sensors detect that you are currently experiencing
+a crash, you wouldn’t want the release of the airbag to be delayed due to an inoppor‐
+tune GC pause in the airbag release system.
+Providing real-time guarantees in a system requires support from all levels of the
+software stack: a real-time operating system (RTOS) that allows processes to be sched‐
+uled with a guaranteed allocation of CPU time in specified intervals is needed; library
+298 | Chapter 8: The Trouble with Distributed Systems
+
+functions must document their worst-case execution times; dynamic memory alloca‐
+tion may be restricted or disallowed entirely (real-time garbage collectors exist, but
+the application must still ensure that it doesn’t give the GC too much work to do);
+and an enormous amount of testing and measurement must be done to ensure that
+guarantees are being met.
+All of this requires a large amount of additional work and severely restricts the range
+of programming languages, libraries, and tools that can be used (since most lan‐
+guages and tools do not provide real-time guarantees). For these reasons, developing
+real-time systems is very expensive, and they are most commonly used in safety-
+critical embedded devices. Moreover, “real-time” is not the same as “high-
+performance”—in fact, real-time systems may have lower throughput, since they
+have to prioritize timely responses above all else (see also “Latency and Resource Uti‐
+lization” on page 286 ).
+For most server-side data processing systems, real-time guarantees are simply not
+economical or appropriate. Consequently, these systems must suffer the pauses and
+clock instability that come from operating in a non-real-time environment.
+Limiting the impact of garbage collection
+The negative effects of process pauses can be mitigated without resorting to expen‐
+sive real-time scheduling guarantees. Language runtimes have some flexibility
+around when they schedule garbage collections, because they can track the rate of
+object allocation and the remaining free memory over time.
+An emerging idea is to treat GC pauses like brief planned outages of a node, and to
+let other nodes handle requests from clients while one node is collecting its garbage.
+If the runtime can warn the application that a node soon requires a GC pause, the
+application can stop sending new requests to that node, wait for it to finish process‐
+ing outstanding requests, and then perform the GC while no requests are in progress.
+This trick hides GC pauses from clients and reduces the high percentiles of response
+time [70, 71]. Some latency-sensitive financial trading systems [72] use this approach.
+A variant of this idea is to use the garbage collector only for short-lived objects
+(which are fast to collect) and to restart processes periodically, before they accumu‐
+late enough long-lived objects to require a full GC of long-lived objects [ 65, 73]. One
+node can be restarted at a time, and traffic can be shifted away from the node before
+the planned restart, like in a rolling upgrade (see Chapter 4).
+These measures cannot fully prevent garbage collection pauses, but they can usefully
+reduce their impact on the application. 
+Unreliable Clocks | 299

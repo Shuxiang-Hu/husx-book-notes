@@ -1,0 +1,10 @@
+# Original book files (kept locally only)
+*/book/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor
+.vscode/
+.idea/

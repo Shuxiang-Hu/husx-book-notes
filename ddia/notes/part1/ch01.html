@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch 01: Reliable, Scalable & Maintainable — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage and Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding and Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency and Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+<main id="main">
+  <div class="pg-head">
+    <span class="part-badge p1">Part I — Foundations</span>
+    <h1>Chapter 1: Reliable, Scalable, and Maintainable Applications</h1>
+    <p class="sub">The three non-functional pillars every data system must satisfy — and the trade-offs between them.</p>
+  </div>
+
+  <!-- Three Pillars Overview -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 760 160" width="100%">
+      <defs><marker id="a" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#71717a"/></marker></defs>
+      <!-- Reliability -->
+      <rect x="20" y="20" width="220" height="120" rx="6" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+      <text x="130" y="50" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#1d4ed8">Reliability</text>
+      <text x="130" y="72" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#1e3a8a">Works correctly even when</text>
+      <text x="130" y="88" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#1e3a8a">things go wrong. Tolerates</text>
+      <text x="130" y="104" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#1e3a8a">hardware faults, software bugs,</text>
+      <text x="130" y="120" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#1e3a8a">and human errors.</text>
+      <!-- Scalability -->
+      <rect x="270" y="20" width="220" height="120" rx="6" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+      <text x="380" y="50" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#b45309">Scalability</text>
+      <text x="380" y="72" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#78350f">Reasonable ways to cope with</text>
+      <text x="380" y="88" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#78350f">growth in data volume, traffic,</text>
+      <text x="380" y="104" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#78350f">or complexity.</text>
+      <!-- Maintainability -->
+      <rect x="520" y="20" width="220" height="120" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+      <text x="630" y="50" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#15803d">Maintainability</text>
+      <text x="630" y="72" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#14532d">People can work productively</text>
+      <text x="630" y="88" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#14532d">on the system over time:</text>
+      <text x="630" y="104" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#14532d">operability, simplicity,</text>
+      <text x="630" y="120" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#14532d">evolvability.</text>
+    </svg>
+    <p class="diagram-caption">The three goals data systems must balance — not always simultaneously achievable.</p>
+  </div>
+
+  <section class="chapter" id="reliability">
+    <div class="ch-header"><span class="ch-num">§1.1</span><h2 class="ch-title">Reliability</h2></div>
+    <div class="ch-body">
+      <p>A system is reliable if it continues to work <em>correctly</em> even when things go wrong. "Correctly" means performing the function the user expected, tolerating user mistakes, performing well enough under expected load, and preventing unauthorised access/abuse.</p>
+
+      <dl class="defs">
+        <dt>Fault</dt><dd>A component deviating from its specification.</dd>
+        <dt>Failure</dt><dd>The whole system stops providing the required service to the user.</dd>
+      </dl>
+
+      <div class="insight">Goal: build fault-<em>tolerant</em> systems that prevent faults from causing failures. Netflix Chaos Monkey deliberately introduces faults to test tolerance.</div>
+
+      <h3>Types of Faults</h3>
+      <div class="two-col">
+        <div class="key-concept">
+          <div class="kc-label">Hardware Faults</div>
+          <p>Disk crashes, RAM errors, power outages, NIC failure. Mean time to failure for one disk: ~10–50 years. With 10,000 disks, expect ~1 failure/day. Solution: RAID, redundant power, hot-swappable CPUs. Cloud VMs fail more frequently and with less warning.</p>
+        </div>
+        <div class="key-concept">
+          <div class="kc-label">Software Errors</div>
+          <p>Systematic bugs triggered by unusual inputs, runaway processes consuming shared resources, cascading failures. Much harder to anticipate than hardware faults — correlated across nodes. No simple fix: careful thinking, testing, process isolation, monitoring, crash-and-restart.</p>
+        </div>
+      </div>
+      <div class="key-concept">
+        <div class="kc-label">Human Errors</div>
+        <p>Configuration errors by operators are the leading cause of outages. Mitigations: well-designed abstractions and APIs that minimize surface for errors; sandbox environments; thorough testing (unit through integration); quick rollback; detailed monitoring and alerting.</p>
+      </div>
+
+      <!-- Fault vs Failure diagram -->
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 720 180" width="100%">
+          <defs><marker id="a1" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#71717a"/></marker>
+          <marker id="ar" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#b91c1c"/></marker>
+          <marker id="ag" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#15803d"/></marker></defs>
+          <!-- Fault box -->
+          <rect x="20" y="70" width="130" height="50" rx="5" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+          <text x="85" y="91" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#b45309">Fault Occurs</text>
+          <text x="85" y="110" text-anchor="middle" font-family="system-ui" font-size="11" fill="#78350f">Hardware / Software / Human</text>
+          <!-- Path 1: no tolerance → failure -->
+          <line x1="150" y1="82" x2="280" y2="55" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#ar)"/>
+          <text x="200" y="55" font-family="system-ui" font-size="11" fill="#b91c1c">No fault tolerance</text>
+          <rect x="280" y="30" width="160" height="50" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="1.5"/>
+          <text x="360" y="52" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#b91c1c">Service Failure</text>
+          <text x="360" y="68" text-anchor="middle" font-family="system-ui" font-size="11" fill="#991b1b">User sees wrong results / crash</text>
+          <!-- Path 2: with tolerance → continues -->
+          <line x1="150" y1="108" x2="280" y2="125" stroke="#15803d" stroke-width="1.5" marker-end="url(#ag)"/>
+          <text x="185" y="135" font-family="system-ui" font-size="11" fill="#15803d">Fault tolerance mechanisms</text>
+          <rect x="280" y="100" width="160" height="50" rx="5" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+          <text x="360" y="122" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#15803d">Service Continues</text>
+          <text x="360" y="138" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">User unaffected</text>
+          <!-- Result boxes -->
+          <line x1="440" y1="55" x2="560" y2="55" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#ar)"/>
+          <rect x="560" y="30" width="140" height="50" rx="5" fill="#f4f4f5" stroke="#71717a" stroke-width="1"/>
+          <text x="630" y="52" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">Downtime, data loss,</text>
+          <text x="630" y="67" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">wrong outputs</text>
+          <line x1="440" y1="125" x2="560" y2="125" stroke="#15803d" stroke-width="1.5" marker-end="url(#ag)"/>
+          <rect x="560" y="100" width="140" height="50" rx="5" fill="#f4f4f5" stroke="#71717a" stroke-width="1"/>
+          <text x="630" y="122" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">Graceful degradation,</text>
+          <text x="630" y="137" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">full recovery, retry</text>
+        </svg>
+        <p class="diagram-caption">Fault tolerance converts faults into continued service rather than failures.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="chapter" id="scalability">
+    <div class="ch-header"><span class="ch-num">§1.2</span><h2 class="ch-title">Scalability</h2></div>
+    <div class="ch-body">
+      <p>Scalability is the ability to cope with increased load. It's not a one-dimensional label — a system may handle 10× users easily but struggle with 10× data volume. Always define <strong>load parameters</strong> before asking "how does performance change as load grows?"</p>
+
+      <h3>Describing Load: Twitter Fan-out Example</h3>
+      <p>Twitter's core challenge: home timeline (read ~300K req/s). Two approaches:</p>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 760 260" width="100%">
+          <defs><marker id="a2" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#71717a"/></marker></defs>
+          <!-- Approach 1 -->
+          <text x="190" y="20" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#18181b">Approach 1: Query on Read</text>
+          <rect x="20" y="35" width="100" height="40" rx="4" fill="#dbeafe" stroke="#1d4ed8"/>
+          <text x="70" y="56" text-anchor="middle" font-family="system-ui" font-size="12" fill="#1e3a8a">User posts</text>
+          <text x="70" y="70" text-anchor="middle" font-family="system-ui" font-size="12" fill="#1e3a8a">tweet</text>
+          <line x1="120" y1="55" x2="165" y2="55" stroke="#71717a" stroke-width="1.5" marker-end="url(#a2)"/>
+          <rect x="165" y="35" width="100" height="40" rx="4" fill="#f4f4f5" stroke="#71717a"/>
+          <text x="215" y="56" text-anchor="middle" font-family="system-ui" font-size="12" fill="#18181b">tweets</text>
+          <text x="215" y="70" text-anchor="middle" font-family="system-ui" font-size="12" fill="#18181b">table</text>
+          <text x="190" y="110" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">At read time: JOIN tweets WHERE</text>
+          <text x="190" y="124" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">followees → merge → sort by time</text>
+          <rect x="70" y="145" width="240" height="40" rx="4" fill="#fee2e2" stroke="#b91c1c"/>
+          <text x="190" y="162" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#b91c1c">⚠ Slow at 300K reads/s</text>
+          <text x="190" y="178" text-anchor="middle" font-family="system-ui" font-size="11" fill="#991b1b">Scans all followees on every read</text>
+          <!-- Approach 2 -->
+          <line x1="380" y1="0" x2="380" y2="260" stroke="#e4e4e7" stroke-width="1"/>
+          <text x="570" y="20" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#18181b">Approach 2: Push on Write</text>
+          <rect x="400" y="35" width="100" height="40" rx="4" fill="#dbeafe" stroke="#1d4ed8"/>
+          <text x="450" y="56" text-anchor="middle" font-family="system-ui" font-size="12" fill="#1e3a8a">User posts</text>
+          <text x="450" y="70" text-anchor="middle" font-family="system-ui" font-size="12" fill="#1e3a8a">tweet</text>
+          <line x1="500" y1="55" x2="545" y2="55" stroke="#71717a" stroke-width="1.5" marker-end="url(#a2)"/>
+          <rect x="545" y="35" width="110" height="40" rx="4" fill="#fef3c7" stroke="#b45309"/>
+          <text x="600" y="56" text-anchor="middle" font-family="system-ui" font-size="12" fill="#78350f">Fan-out to all</text>
+          <text x="600" y="70" text-anchor="middle" font-family="system-ui" font-size="12" fill="#78350f">followers' caches</text>
+          <text x="570" y="110" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">~4.6M avg followers push = 4.6M writes</text>
+          <text x="570" y="124" text-anchor="middle" font-family="system-ui" font-size="11" fill="#71717a">Celebrity: 30M writes per tweet!</text>
+          <rect x="410" y="145" width="310" height="40" rx="4" fill="#dcfce7" stroke="#15803d"/>
+          <text x="565" y="162" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#15803d">✓ Fast reads (pre-computed cache)</text>
+          <text x="565" y="178" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">Hybrid: push for normal users, query for celebrities</text>
+        </svg>
+        <p class="diagram-caption">Twitter's fan-out problem: Approach 1 is read-heavy, Approach 2 is write-heavy. Twitter uses a hybrid.</p>
+      </div>
+
+      <h3>Describing Performance</h3>
+      <p>Batch systems: care about <strong>throughput</strong> (records/second). Online systems: care about <strong>response time</strong> (from client's perspective, includes network + queueing + processing).</p>
+      <p>Use <strong>percentiles</strong>, not averages. Median (p50) = half of requests faster. p95/p99/p999 = <em>tail latency</em> — matters most for customers with most data (often premium customers). Even if only 1 in 1000 requests is slow, parallel fan-out means any request waiting for 100 calls will see the slow one. <em>Head-of-line blocking</em>: a slow request holds up all requests behind it in a queue.</p>
+
+      <!-- Percentile chart -->
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 700 240" width="100%">
+          <!-- Axes -->
+          <line x1="60" y1="20" x2="60" y2="190" stroke="#18181b" stroke-width="1.5"/>
+          <line x1="60" y1="190" x2="670" y2="190" stroke="#18181b" stroke-width="1.5"/>
+          <!-- Y axis label -->
+          <text x="15" y="110" text-anchor="middle" font-family="system-ui" font-size="11" fill="#52525b" transform="rotate(-90,15,110)">Response time (ms)</text>
+          <!-- X axis label -->
+          <text x="365" y="218" text-anchor="middle" font-family="system-ui" font-size="11" fill="#52525b">Requests (sorted by response time)</text>
+          <!-- Bars representing the distribution -->
+          <rect x="70"  y="165" width="50" height="25" fill="#dbeafe" stroke="#1d4ed8"/>
+          <rect x="130" y="158" width="50" height="32" fill="#dbeafe" stroke="#1d4ed8"/>
+          <rect x="190" y="150" width="50" height="40" fill="#dbeafe" stroke="#1d4ed8"/>
+          <rect x="250" y="140" width="50" height="50" fill="#dbeafe" stroke="#1d4ed8"/>
+          <rect x="310" y="128" width="50" height="62" fill="#fef3c7" stroke="#b45309"/>
+          <rect x="370" y="108" width="50" height="82" fill="#fef3c7" stroke="#b45309"/>
+          <rect x="430" y="80"  width="50" height="110" fill="#fee2e2" stroke="#b91c1c"/>
+          <rect x="490" y="30"  width="50" height="160" fill="#fee2e2" stroke="#b91c1c"/>
+          <!-- Percentile lines -->
+          <line x1="60" y1="152" x2="310" y2="152" stroke="#1d4ed8" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="65" y="149" font-family="system-ui" font-size="11" fill="#1d4ed8">p50 ~38ms</text>
+          <line x1="60" y1="109" x2="430" y2="109" stroke="#b45309" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="65" y="106" font-family="system-ui" font-size="11" fill="#b45309">p95 ~200ms</text>
+          <line x1="60" y1="81"  x2="490" y2="81"  stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="65" y="78"  font-family="system-ui" font-size="11" fill="#b91c1c">p99 ~480ms</text>
+          <line x1="60" y1="31"  x2="550" y2="31"  stroke="#7c3aed" stroke-width="1" stroke-dasharray="4,3"/>
+          <text x="555" y="34" font-family="system-ui" font-size="11" fill="#7c3aed">p999 1500ms</text>
+          <text x="340" y="50" font-family="system-ui" font-size="11" font-weight="700" fill="#52525b">← Tail latency</text>
+        </svg>
+        <p class="diagram-caption">Response time distribution. The long tail (p99/p999) hurts the most-engaged users and amplifies in fan-out scenarios.</p>
+      </div>
+
+      <h3>Approaches to Scaling</h3>
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 700 200" width="100%">
+          <defs><marker id="a3" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#1d4ed8"/></marker></defs>
+          <!-- Vertical -->
+          <text x="175" y="22" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#18181b">Vertical Scaling (Scale Up)</text>
+          <rect x="130" y="100" width="90" height="70" rx="4" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+          <text x="175" y="128" text-anchor="middle" font-family="system-ui" font-size="12" fill="#1e3a8a">Server</text>
+          <text x="175" y="145" text-anchor="middle" font-family="system-ui" font-size="11" fill="#1e3a8a">64 CPU / 1TB</text>
+          <line x1="175" y1="98" x2="175" y2="42" stroke="#1d4ed8" stroke-width="2" marker-end="url(#a3)"/>
+          <text x="175" y="38" text-anchor="middle" font-family="system-ui" font-size="11" fill="#1d4ed8">Add more RAM/CPU</text>
+          <text x="175" y="185" text-anchor="middle" font-family="system-ui" font-size="11" fill="#52525b">Simpler, but costly at high end</text>
+          <!-- Divider -->
+          <line x1="350" y1="10" x2="350" y2="195" stroke="#e4e4e7" stroke-width="1"/>
+          <!-- Horizontal -->
+          <text x="530" y="22" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#18181b">Horizontal Scaling (Scale Out)</text>
+          <rect x="380" y="60" width="70" height="45" rx="4" fill="#dcfce7" stroke="#15803d"/>
+          <text x="415" y="82" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">Node 1</text>
+          <text x="415" y="96" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">8 CPU</text>
+          <rect x="460" y="60" width="70" height="45" rx="4" fill="#dcfce7" stroke="#15803d"/>
+          <text x="495" y="82" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">Node 2</text>
+          <text x="495" y="96" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">8 CPU</text>
+          <rect x="540" y="60" width="70" height="45" rx="4" fill="#dcfce7" stroke="#15803d"/>
+          <text x="575" y="82" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">Node 3</text>
+          <text x="575" y="96" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">8 CPU</text>
+          <rect x="420" y="130" width="140" height="35" rx="4" fill="#fef3c7" stroke="#b45309"/>
+          <text x="490" y="152" text-anchor="middle" font-family="system-ui" font-size="12" fill="#78350f">Load Balancer</text>
+          <line x1="415" y1="130" x2="460" y2="165" stroke="#71717a" stroke-width="1" marker-end="url(#a2)"/>
+          <line x1="490" y1="130" x2="490" y2="165" stroke="#71717a" stroke-width="1" marker-end="url(#a2)"/>
+          <line x1="575" y1="130" x2="530" y2="165" stroke="#71717a" stroke-width="1" marker-end="url(#a2)"/>
+          <text x="530" y="192" text-anchor="middle" font-family="system-ui" font-size="11" fill="#52525b">Commodity hardware, add nodes to grow</text>
+        </svg>
+        <p class="diagram-caption">Vertical scaling is simpler but hits physical/cost limits. Horizontal scaling (shared-nothing architecture) is more flexible.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="chapter" id="maintainability">
+    <div class="ch-header"><span class="ch-num">§1.3</span><h2 class="ch-title">Maintainability</h2></div>
+    <div class="ch-body">
+      <p>The majority of the cost of software is in ongoing maintenance — fixing bugs, adapting to new platforms, adding features. Three design principles:</p>
+      <table class="comparison-table">
+        <thead><tr><th>Principle</th><th>Definition</th><th>How to achieve</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Operability</strong></td><td>Make it easy for operations teams to keep the system running smoothly.</td><td>Good monitoring/observability; avoid single points of human knowledge; good default behavior; self-healing; predictable behavior.</td></tr>
+          <tr><td><strong>Simplicity</strong></td><td>Remove <em>accidental complexity</em> (complexity not inherent to the problem). Make it easy for new engineers to understand the system.</td><td>Good abstractions; hide irrelevant details; clean interfaces. Beware: a bad abstraction can make things worse than no abstraction.</td></tr>
+          <tr><td><strong>Evolvability</strong></td><td>Make it easy to make changes: adapt to unanticipated use cases, new requirements, business changes.</td><td>Agile practices, TDD, refactoring, loosely coupled design, simple architecture.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="ch-nav">
+    <a href="../index.html">← Index</a>
+    <a href="ch02.html">Ch 02: Data Models &amp; Query Languages →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

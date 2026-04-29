@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Part I: Foundations - DDIA Notes</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="layout">
+        <!-- Left Sidebar TOC -->
+        <nav class="toc">
+            <div class="toc-header">
+                <h1>📚 DDIA Notes</h1>
+                <p class="subtitle">Designing Data-Intensive Applications</p>
+            </div>
+            <div class="toc-nav">
+                <div class="toc-section">Part I: Foundations</div>
+                <a href="part1.html" class="active"><span class="icon">📖</span> Part I Overview</a>
+                <a href="part1/ch1.html"><span class="icon">📊</span> Ch 1: Reliable...</a>
+                <a href="part1/ch2.html"><span class="icon">📋</span> Ch 2: Data Models</a>
+                <a href="part1/ch3.html"><span class="icon">💾</span> Ch 3: Storage</a>
+                <a href="part1/ch4.html"><span class="icon">🔄</span> Ch 4: Encoding</a>
+
+                <div class="toc-section">Part II: Distributed</div>
+                <a href="part2.html"><span class="icon">⚙️</span> Part II Overview</a>
+                <a href="part2/ch5.html"><span class="icon">🔁</span> Ch 5: Replication</a>
+                <a href="part2/ch6.html"><span class="icon">📦</span> Ch 6: Partitioning</a>
+                <a href="part2/ch7.html"><span class="icon">📝</span> Ch 7: Transactions</a>
+                <a href="part2/ch8.html"><span class="icon">🌐</span> Ch 8: Distributed</a>
+                <a href="part2/ch9.html"><span class="icon">🎯</span> Ch 9: Consensus</a>
+
+                <div class="toc-section">Part III: Derived Data</div>
+                <a href="part3.html"><span class="icon">⚡</span> Part III Overview</a>
+                <a href="part3/ch10.html"><span class="icon">⚙️</span> Ch 10: Batch</a>
+                <a href="part3/ch11.html"><span class="icon">🌊</span> Ch 11: Stream</a>
+                <a href="part3/ch12.html"><span class="icon">🚀</span> Ch 12: Future</a>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <header class="header">
+                <h1>📖 Part I: Foundations of Data Systems</h1>
+                <p class="subtitle">Chapters 1-4: Core Principles</p>
+            </header>
+
+            <!-- Part Overview -->
+            <section class="chapter">
+                <h2><span class="icon">🧠</span> Part I Mind Map</h2>
+                <figure class="diagram">
+                    <svg viewBox="0 0 900 400" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="450" cy="200" r="60" fill="#1a365d"/>
+                        <text x="450" y="190" text-anchor="middle" fill="white" font-size="12" font-weight="bold">Data-Intensive</text>
+                        <text x="450" y="210" text-anchor="middle" fill="white" font-size="12" font-weight="bold">App</text>
+
+                        <circle cx="150" cy="80" r="50" fill="#3182ce"/>
+                        <text x="150" y="75" text-anchor="middle" fill="white" font-size="11" font-weight="bold">Ch 1</text>
+                        <text x="150" y="92" text-anchor="middle" fill="white" font-size="10">Reliability</text>
+                        <path d="M195 110 Q320 145 390 175" stroke="#3182ce" stroke-width="3" fill="none"/>
+
+                        <circle cx="750" cy="80" r="50" fill="#38a169"/>
+                        <text x="750" y="75" text-anchor="middle" fill="white" font-size="11" font-weight="bold">Ch 2</text>
+                        <text x="750" y="92" text-anchor="middle" fill="white" font-size="10">Data Models</text>
+                        <path d="M705 110 Q580 145 510 175" stroke="#38a169" stroke-width="3" fill="none"/>
+
+                        <circle cx="150" cy="320" r="50" fill="#805ad5"/>
+                        <text x="150" y="315" text-anchor="middle" fill="white" font-size="11" font-weight="bold">Ch 3</text>
+                        <text x="150" y="332" text-anchor="middle" fill="white" font-size="10">Storage</text>
+                        <path d="M195 290 Q320 255 390 225" stroke="#805ad5" stroke-width="3" fill="none"/>
+
+                        <circle cx="750" cy="320" r="50" fill="#d69e2e"/>
+                        <text x="750" y="315" text-anchor="middle" fill="white" font-size="11" font-weight="bold">Ch 4</text>
+                        <text x="750" y="332" text-anchor="middle" fill="white" font-size="10">Encoding</text>
+                        <path d="M705 290 Q580 255 510 225" stroke="#d69e2e" stroke-width="3" fill="none"/>
+                    </svg>
+                    <figcaption class="figcaption">Mind Map P1.1: Part I - Four foundational chapters building toward modern data apps</figcaption>
+                </figure>
+            </section>
+
+            <!-- Chapters Overview -->
+            <section class="chapter">
+                <h2><span class="icon">📚</span> Chapter Overview</h2>
+                <div class="theme-grid">
+                    <div class="theme-item">
+                        <div class="icon">📊</div>
+                        <h4>Chapter 1: Reliable, Scalable, Maintainable</h4>
+                        <p>Core concerns: Reliability, Scalability, Maintainability. Key concepts: load parameters, percentiles, fault tolerance.</p>
+                    </div>
+                    <div class="theme-item">
+                        <div class="icon">📋</div>
+                        <h4>Chapter 2: Data Models</h4>
+                        <p>Relational vs Document vs Graph. Schema-on-read vs schema-on-write. Query languages.</p>
+                    </div>
+                    <div class="theme-item">
+                        <div class="icon">💾</div>
+                        <h4>Chapter 3: Storage</h4>
+                        <p>B-Trees vs LSM-Trees. OLTP vs OLAP. Columnar storage for analytics.</p>
+                    </div>
+                    <div class="theme-item">
+                        <div class="icon">🔄</div>
+                        <h4>Chapter 4: Encoding</h4>
+                        <p>Schema evolution. Binary formats (Protobuf, Avro). Forward/backward compatibility.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Chapter Links -->
+            <section class="chapter">
+                <h2><span class="icon">📖</span> Chapters</h2>
+                <div class="card-grid">
+                    <div class="card">
+                        <div class="card-icon">📊</div>
+                        <h4>Chapter 1</h4>
+                        <p>Reliable, Scalable, and Maintainable</p>
+                        <a href="part1/ch1.html" class="btn">Read →</a>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">📋</div>
+                        <h4>Chapter 2</h4>
+                        <p>Data Models and Query Languages</p>
+                        <a href="part1/ch2.html" class="btn">Read →</a>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">💾</div>
+                        <h4>Chapter 3</h4>
+                        <p>Storage and Retrieval</p>
+                        <a href="part1/ch3.html" class="btn">Read →</a>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">🔄</div>
+                        <h4>Chapter 4</h4>
+                        <p>Encoding and Evolution</p>
+                        <a href="part1/ch4.html" class="btn">Read →</a>
+                    </div>
+                </div>
+            </section>
+
+            <div class="chapter-nav">
+                <a href="index.html">← Home</a>
+                <a href="part1/ch1.html">Chapter 1: Reliable →</a>
+            </div>
+
+            <footer class="footer">
+                <p>DDIA Notes | <a href="index.html">Home</a></p>
+            </footer>
+        </main>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

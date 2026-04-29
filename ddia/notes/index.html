@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DDIA Reading Notes — Designing Data-Intensive Applications</title>
+<link rel="stylesheet" href="css/style.css">
+<style>
+.hero{background:var(--ink);color:#f4f4f5;padding:2.5rem 3rem 2rem;margin:-2.5rem -3rem 2rem;font-family:system-ui,sans-serif}
+.hero h1{font-size:1.9rem;font-weight:800;line-height:1.2}
+.hero .hero-sub{color:#a1a1aa;margin-top:.5rem;font-size:.92rem}
+.hero .meta{margin-top:1.25rem;display:flex;gap:1.5rem;font-size:.75rem;color:#71717a}
+.hero .meta span{display:flex;align-items:center;gap:.35rem}
+.quick-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-bottom:2rem}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:.9rem 1.1rem;font-family:system-ui,sans-serif;text-align:center}
+.stat .sv{font-size:1.6rem;font-weight:800;line-height:1}
+.stat .sl{font-size:.7rem;color:var(--muted);margin-top:.25rem;text-transform:uppercase;letter-spacing:.05em}
+.stat.p1 .sv{color:var(--p1)}.stat.p2 .sv{color:var(--p2)}.stat.p3 .sv{color:var(--p3)}
+</style>
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="index.html">DDIA Notes</a>
+    <div class="byline">Kleppmann — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage and Retrieval</a>
+  <a href="part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding and Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency and Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+<main id="main">
+  <div class="hero">
+    <h1>Designing Data-Intensive Applications</h1>
+    <div class="hero-sub">The Big Ideas Behind Reliable, Scalable, and Maintainable Systems — Martin Kleppmann</div>
+    <div class="meta">
+      <span>12 Chapters</span>
+      <span>3 Parts</span>
+      <span>O'Reilly, 2017</span>
+    </div>
+  </div>
+
+  <div class="quick-stats">
+    <div class="stat p1"><div class="sv">4</div><div class="sl">Part I Chapters</div></div>
+    <div class="stat p2"><div class="sv">5</div><div class="sl">Part II Chapters</div></div>
+    <div class="stat p3"><div class="sv">3</div><div class="sl">Part III Chapters</div></div>
+  </div>
+
+  <div class="part-head p1" style="color:var(--p1)">Part I — Foundations of Data Systems</div>
+  <div class="index-grid">
+    <a href="part1/ch01.html" class="idx-card p1">
+      <div class="cn">Chapter 01</div>
+      <div class="ct">Reliable, Scalable &amp; Maintainable Applications</div>
+      <div class="cd">The three non-functional goals every data system must satisfy, how to measure them, and trade-offs involved.</div>
+    </a>
+    <a href="part1/ch02.html" class="idx-card p1">
+      <div class="cn">Chapter 02</div>
+      <div class="ct">Data Models &amp; Query Languages</div>
+      <div class="cd">Relational vs document vs graph models; SQL, MapReduce, Cypher, SPARQL — when to choose each.</div>
+    </a>
+    <a href="part1/ch03.html" class="idx-card p1">
+      <div class="cn">Chapter 03</div>
+      <div class="ct">Storage and Retrieval</div>
+      <div class="cd">How databases store data internally: hash indexes, SSTables, LSM-trees, B-trees, OLAP vs OLTP, column storage.</div>
+    </a>
+    <a href="part1/ch04.html" class="idx-card p1">
+      <div class="cn">Chapter 04</div>
+      <div class="ct">Encoding and Evolution</div>
+      <div class="cd">Serialization formats (JSON, Thrift, Protobuf, Avro), backward/forward compatibility, modes of dataflow.</div>
+    </a>
+  </div>
+
+  <div class="part-head" style="color:var(--p2)">Part II — Distributed Data</div>
+  <div class="index-grid">
+    <a href="part2/ch05.html" class="idx-card p2">
+      <div class="cn">Chapter 05</div>
+      <div class="ct">Replication</div>
+      <div class="cd">Leader-follower, multi-leader, leaderless replication; replication lag problems and solutions.</div>
+    </a>
+    <a href="part2/ch06.html" class="idx-card p2">
+      <div class="cn">Chapter 06</div>
+      <div class="ct">Partitioning</div>
+      <div class="cd">Sharding strategies: key-range, hash, secondary indexes; rebalancing; request routing.</div>
+    </a>
+    <a href="part2/ch07.html" class="idx-card p2">
+      <div class="cn">Chapter 07</div>
+      <div class="ct">Transactions</div>
+      <div class="cd">ACID, isolation levels, lost updates, write skew, phantoms; 2PL vs serializable snapshot isolation.</div>
+    </a>
+    <a href="part2/ch08.html" class="idx-card p2">
+      <div class="cn">Chapter 08</div>
+      <div class="ct">Trouble with Distributed Systems</div>
+      <div class="cd">Unreliable networks, unreliable clocks, process pauses, fencing tokens, Byzantine faults.</div>
+    </a>
+    <a href="part2/ch09.html" class="idx-card p2">
+      <div class="cn">Chapter 09</div>
+      <div class="ct">Consistency and Consensus</div>
+      <div class="cd">Linearizability, ordering guarantees, 2PC, fault-tolerant consensus (Raft/Paxos), ZooKeeper.</div>
+    </a>
+  </div>
+
+  <div class="part-head" style="color:var(--p3)">Part III — Derived Data</div>
+  <div class="index-grid">
+    <a href="part3/ch10.html" class="idx-card p3">
+      <div class="cn">Chapter 10</div>
+      <div class="ct">Batch Processing</div>
+      <div class="cd">MapReduce, HDFS, join strategies, beyond MapReduce: Spark/Flink dataflow engines.</div>
+    </a>
+    <a href="part3/ch11.html" class="idx-card p3">
+      <div class="cn">Chapter 11</div>
+      <div class="ct">Stream Processing</div>
+      <div class="cd">Event streams, Kafka, CDC, event sourcing, windowing, stream joins, exactly-once semantics.</div>
+    </a>
+    <a href="part3/ch12.html" class="idx-card p3">
+      <div class="cn">Chapter 12</div>
+      <div class="ct">The Future of Data Systems</div>
+      <div class="cd">Data integration, Lambda vs Kappa, unbundling databases, end-to-end correctness, ethics.</div>
+    </a>
+  </div>
+</main>
+<script src="js/app.js"></script>
+</body>
+</html>

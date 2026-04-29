@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch 05: Replication — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage and Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding and Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency and Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+<main id="main">
+  <div class="pg-head">
+    <span class="part-badge p2">Part II — Distributed Data</span>
+    <h1>Chapter 5: Replication</h1>
+    <p class="sub">Keeping copies of data on multiple nodes for latency, availability, and read throughput — and the hard problems that arise.</p>
+  </div>
+
+  <!-- Three replication strategies overview -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 760 120" width="100%">
+      <rect x="10"  y="15" width="220" height="90" rx="5" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+      <text x="120" y="38" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#1d4ed8">Single-Leader</text>
+      <text x="120" y="56" text-anchor="middle" font-family="system-ui" font-size="11" fill="#1e3a8a">One leader accepts writes;</text>
+      <text x="120" y="72" text-anchor="middle" font-family="system-ui" font-size="11" fill="#1e3a8a">followers replicate.</text>
+      <text x="120" y="92" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">PostgreSQL, MySQL, Kafka</text>
+      <rect x="270" y="15" width="220" height="90" rx="5" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+      <text x="380" y="38" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#b45309">Multi-Leader</text>
+      <text x="380" y="56" text-anchor="middle" font-family="system-ui" font-size="11" fill="#78350f">Multiple leaders accept writes;</text>
+      <text x="380" y="72" text-anchor="middle" font-family="system-ui" font-size="11" fill="#78350f">async replication between DCs.</text>
+      <text x="380" y="92" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">CouchDB, Tungsten Replicator</text>
+      <rect x="530" y="15" width="220" height="90" rx="5" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+      <text x="640" y="38" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#15803d">Leaderless</text>
+      <text x="640" y="56" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">Client writes to multiple nodes;</text>
+      <text x="640" y="72" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">reads from multiple (quorum).</text>
+      <text x="640" y="92" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">Dynamo, Cassandra, Riak</text>
+    </svg>
+    <p class="diagram-caption">Three replication architectures, each with different consistency and availability trade-offs.</p>
+  </div>
+
+  <section class="chapter" id="single-leader">
+    <div class="ch-header"><span class="ch-num">§5.1</span><h2 class="ch-title">Single-Leader Replication</h2></div>
+    <div class="ch-body">
+      <!-- Leader-follower diagram -->
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 720 300" width="100%">
+          <defs>
+            <marker id="a" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#71717a"/></marker>
+            <marker id="ab" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#1d4ed8"/></marker>
+            <marker id="ag" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#15803d"/></marker>
+          </defs>
+
+          <!-- Write client -->
+          <rect x="10" y="120" width="80" height="40" rx="4" fill="#f4f4f5" stroke="#71717a"/>
+          <text x="50" y="145" text-anchor="middle" font-family="system-ui" font-size="11" fill="#18181b">Write Client</text>
+
+          <!-- Leader -->
+          <rect x="200" y="100" width="140" height="80" rx="5" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+          <text x="270" y="132" text-anchor="middle" font-family="system-ui" font-size="14" font-weight="700" fill="#1d4ed8">Leader</text>
+          <text x="270" y="152" text-anchor="middle" font-family="system-ui" font-size="11" fill="#1e3a8a">accepts all writes</text>
+          <text x="270" y="168" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">writes to replication log</text>
+
+          <!-- Write arrow: client → leader -->
+          <line x1="90" y1="140" x2="200" y2="140" stroke="#1d4ed8" stroke-width="2" marker-end="url(#ab)"/>
+          <text x="143" y="133" font-family="system-ui" font-size="10" fill="#1d4ed8">write</text>
+
+          <!-- Follower 1 (sync) -->
+          <rect x="460" y="40" width="140" height="80" rx="5" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
+          <text x="530" y="68" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#15803d">Follower 1</text>
+          <text x="530" y="86" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">SYNCHRONOUS</text>
+          <text x="530" y="104" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">ACK before leader confirms</text>
+
+          <!-- Follower 2 (async) -->
+          <rect x="460" y="180" width="140" height="80" rx="5" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+          <text x="530" y="208" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#b45309">Follower 2</text>
+          <text x="530" y="226" text-anchor="middle" font-family="system-ui" font-size="11" fill="#78350f">ASYNCHRONOUS</text>
+          <text x="530" y="244" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">may lag behind leader</text>
+
+          <!-- Leader → Follower 1 (sync) -->
+          <line x1="340" y1="125" x2="460" y2="80" stroke="#15803d" stroke-width="1.5" marker-end="url(#ag)"/>
+          <text x="385" y="96" font-family="system-ui" font-size="10" fill="#15803d">replication log</text>
+          <!-- ACK back -->
+          <line x1="460" y1="92" x2="340" y2="127" stroke="#15803d" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#ag)"/>
+          <text x="368" y="121" font-family="system-ui" font-size="10" fill="#15803d">ACK</text>
+
+          <!-- Leader → Follower 2 (async) -->
+          <line x1="340" y1="155" x2="460" y2="210" stroke="#b45309" stroke-width="1.5" marker-end="url(#a)"/>
+          <text x="375" y="195" font-family="system-ui" font-size="10" fill="#b45309">async replication</text>
+          <text x="375" y="208" font-family="system-ui" font-size="10" fill="#b45309">(no ACK needed)</text>
+
+          <!-- Read clients -->
+          <rect x="640" y="60" width="70" height="35" rx="4" fill="#f4f4f5" stroke="#71717a"/>
+          <text x="675" y="82" text-anchor="middle" font-family="system-ui" font-size="10" fill="#18181b">Read clients</text>
+          <line x1="600" y1="90" x2="640" y2="80" stroke="#71717a" stroke-width="1" marker-end="url(#a)"/>
+          <line x1="600" y1="210" x2="640" y2="82" stroke="#71717a" stroke-width="1" marker-end="url(#a)"/>
+
+          <!-- Confirm to write client -->
+          <line x1="200" y1="155" x2="90" y2="150" stroke="#1d4ed8" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#ab)"/>
+          <text x="130" y="165" font-family="system-ui" font-size="10" fill="#1d4ed8">OK (after sync ACK)</text>
+        </svg>
+        <p class="diagram-caption">Leader accepts all writes. Sync follower ACKs before leader confirms to client (guaranteed up-to-date). Async follower may lag (fast but can lose data on failover).</p>
+      </div>
+
+      <h3>Replication Log Implementations</h3>
+      <table class="comparison-table">
+        <thead><tr><th>Method</th><th>What's logged</th><th>Problems</th></tr></thead>
+        <tbody>
+          <tr><td>Statement-based</td><td>Every SQL INSERT/UPDATE/DELETE</td><td class="b">NOW(), RAND(), auto-increment, side effects → non-deterministic</td></tr>
+          <tr><td>WAL shipping</td><td>Physical write-ahead log (byte-level)</td><td class="b">Tightly coupled to storage format; version mismatch blocks rolling upgrades</td></tr>
+          <tr><td>Logical (row-based)</td><td>Row changes (new values per row)</td><td class="g">Decoupled from storage; good for CDC; CDC-friendly</td></tr>
+          <tr><td>Trigger-based</td><td>Custom app code on data change</td><td class="n">Most flexible; highest overhead; easy to introduce bugs</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Replication Lag Problems</h3>
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 720 320" width="100%">
+          <!-- Problem 1: Read your own writes -->
+          <text x="360" y="18" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#b91c1c">Replication Lag Anomalies</text>
+          <rect x="10" y="28" width="700" height="85" rx="5" fill="#fee2e2" stroke="#b91c1c" stroke-width="1"/>
+          <text x="20" y="48" font-family="system-ui" font-size="11" font-weight="700" fill="#b91c1c">Problem 1: Read-Your-Own-Writes</text>
+          <text x="20" y="65" font-family="system-ui" font-size="11" fill="#18181b">User writes to Leader at t=1. Then reads from async Follower still at t=0. Sees</text>
+          <text x="20" y="81" font-family="system-ui" font-size="11" fill="#18181b">their own update missing! Fix: route reads of user's own data to leader; or track write timestamp.</text>
+          <text x="20" y="97" font-family="monospace" font-size="10" fill="#52525b">Leader [t=1: comment posted] → Follower [t=0: comment missing] ← User reads here</text>
+
+          <rect x="10" y="122" width="700" height="85" rx="5" fill="#fef3c7" stroke="#b45309" stroke-width="1"/>
+          <text x="20" y="142" font-family="system-ui" font-size="11" font-weight="700" fill="#b45309">Problem 2: Monotonic Reads</text>
+          <text x="20" y="159" font-family="system-ui" font-size="11" fill="#18181b">User reads from Replica A (t=10), then reads same data from Replica B (t=8).</text>
+          <text x="20" y="175" font-family="system-ui" font-size="11" fill="#18181b">Data appears to go backward in time! Fix: each user always reads from same replica (hash user_id).</text>
+          <text x="20" y="191" font-family="monospace" font-size="10" fill="#52525b">Read 1→ Replica A [t=10: item exists]. Read 2→ Replica B [t=8: item gone!]</text>
+
+          <rect x="10" y="216" width="700" height="90" rx="5" fill="#ede9fe" stroke="#7c3aed" stroke-width="1"/>
+          <text x="20" y="236" font-family="system-ui" font-size="11" font-weight="700" fill="#7c3aed">Problem 3: Consistent Prefix Reads</text>
+          <text x="20" y="253" font-family="system-ui" font-size="11" fill="#18181b">In a sharded DB, write A then B to different shards. Observer sees B before A due to replication lag.</text>
+          <text x="20" y="269" font-family="system-ui" font-size="11" fill="#18181b">Causality violated: "What will the future hold?" arrives before "How far into the future?"</text>
+          <text x="20" y="285" font-family="system-ui" font-size="11" fill="#18181b">Fix: causally-related writes to same partition; causal ordering algorithms.</text>
+          <text x="20" y="300" font-family="monospace" font-size="10" fill="#52525b">Mr Poon→[Q: How far?]  Mrs Cake→[A: Ten years] — observer sees Answer before Question!</text>
+        </svg>
+        <p class="diagram-caption">Three replication lag anomalies and their solutions. Each requires different guarantees beyond eventual consistency.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="chapter" id="multi-leader">
+    <div class="ch-header"><span class="ch-num">§5.2</span><h2 class="ch-title">Multi-Leader Replication</h2></div>
+    <div class="ch-body">
+      <p><strong>Use cases:</strong> (1) Multi-datacenter: one leader per DC, DCs replicate asynchronously — lower write latency, DC failure tolerance. (2) Clients with offline operation (CouchDB). (3) Collaborative editing (Google Docs).</p>
+      <p><strong>The fundamental problem:</strong> the same data may be modified concurrently in two DCs. Write conflicts are inevitable and must be resolved.</p>
+
+      <h3>Conflict Resolution</h3>
+      <ul>
+        <li><strong>Conflict avoidance:</strong> route all writes for a given record through one DC-leader (fails if that DC fails).</li>
+        <li><strong>Last Write Wins (LWW):</strong> each write gets a timestamp; highest timestamp wins. Loses data. Cassandra default. Clock skew makes it unreliable.</li>
+        <li><strong>Merge values:</strong> concatenate (e.g., union of shopping carts). Works for some types.</li>
+        <li><strong>Custom conflict resolution:</strong> on write (Riak) or on read (CouchDB exposes conflicting "siblings" to application).</li>
+        <li><strong>CRDTs:</strong> data structures that automatically merge without conflicts (counters, sets, maps).</li>
+      </ul>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 720 200" width="100%">
+          <defs><marker id="at" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#71717a"/></marker></defs>
+          <text x="100" y="18" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#18181b">All-to-All</text>
+          <text x="340" y="18" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#18181b">Star</text>
+          <text x="580" y="18" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#18181b">Circular Ring</text>
+          <!-- All to all: 4 nodes, full mesh -->
+          <circle cx="70"  cy="75"  r="18" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+          <circle cx="130" cy="75"  r="18" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+          <circle cx="70"  cy="130" r="18" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+          <circle cx="130" cy="130" r="18" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+          <text x="70"  cy="75"  text-anchor="middle" font-family="system-ui" font-size="10" fill="#1d4ed8">A</text>
+          <text x="130" y="79"  text-anchor="middle" font-family="system-ui" font-size="10" fill="#1d4ed8">B</text>
+          <text x="70"  y="134" text-anchor="middle" font-family="system-ui" font-size="10" fill="#1d4ed8">C</text>
+          <text x="130" y="134" text-anchor="middle" font-family="system-ui" font-size="10" fill="#1d4ed8">D</text>
+          <line x1="88"  y1="75"  x2="112" y2="75"  stroke="#1d4ed8" stroke-width="1"/>
+          <line x1="70"  y1="93"  x2="70"  y2="112" stroke="#1d4ed8" stroke-width="1"/>
+          <line x1="130" y1="93"  x2="130" y2="112" stroke="#1d4ed8" stroke-width="1"/>
+          <line x1="88"  y1="130" x2="112" y2="130" stroke="#1d4ed8" stroke-width="1"/>
+          <line x1="88"  y1="88"  x2="112" y2="118" stroke="#1d4ed8" stroke-width="1"/>
+          <line x1="112" y1="88"  x2="88"  y2="118" stroke="#1d4ed8" stroke-width="1"/>
+          <text x="100" y="170" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">Most fault-tolerant;</text>
+          <text x="100" y="183" text-anchor="middle" font-family="system-ui" font-size="10" fill="#52525b">ordering issues</text>
+          <!-- Star -->
+          <circle cx="340" cy="100" r="22" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+          <text x="340" y="104" text-anchor="middle" font-family="system-ui" font-size="11" fill="#b45309">Hub</text>
+          <circle cx="280" cy="65"  r="15" fill="#f4f4f5" stroke="#71717a"/>
+          <circle cx="400" cy="65"  r="15" fill="#f4f4f5" stroke="#71717a"/>
+          <circle cx="280" cy="140" r="15" fill="#f4f4f5" stroke="#71717a"/>
+          <circle cx="400" cy="140" r="15" fill="#f4f4f5" stroke="#71717a"/>
+          <line x1="295" y1="75"  x2="322" y2="88"  stroke="#71717a" stroke-width="1"/>
+          <line x1="385" y1="75"  x2="358" y2="88"  stroke="#71717a" stroke-width="1"/>
+          <line x1="295" y1="130" x2="322" y2="112" stroke="#71717a" stroke-width="1"/>
+          <line x1="385" y1="130" x2="358" y2="112" stroke="#71717a" stroke-width="1"/>
+          <text x="340" y="170" text-anchor="middle" font-family="system-ui" font-size="10" fill="#b91c1c">Hub = single point of failure</text>
+          <!-- Circular -->
+          <circle cx="550" cy="75"  r="18" fill="#dcfce7" stroke="#15803d"/>
+          <circle cx="620" cy="100" r="18" fill="#dcfce7" stroke="#15803d"/>
+          <circle cx="600" cy="155" r="18" fill="#dcfce7" stroke="#15803d"/>
+          <circle cx="530" cy="155" r="18" fill="#dcfce7" stroke="#15803d"/>
+          <line x1="566" y1="83"  x2="607" y2="94"  stroke="#15803d" stroke-width="1.5" marker-end="url(#at)"/>
+          <line x1="617" y1="117" x2="606" y2="140" stroke="#15803d" stroke-width="1.5" marker-end="url(#at)"/>
+          <line x1="585" y1="158" x2="548" y2="158" stroke="#15803d" stroke-width="1.5" marker-end="url(#at)"/>
+          <line x1="533" y1="140" x2="542" y2="89"  stroke="#15803d" stroke-width="1.5" marker-end="url(#at)"/>
+          <text x="575" y="185" text-anchor="middle" font-family="system-ui" font-size="10" fill="#b91c1c">One dead node breaks chain</text>
+        </svg>
+        <p class="diagram-caption">Multi-leader replication topologies. All-to-all most resilient but has message ordering issues. Star and circular have single points of failure.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="chapter" id="leaderless">
+    <div class="ch-header"><span class="ch-num">§5.3</span><h2 class="ch-title">Leaderless Replication (Dynamo-style)</h2></div>
+    <div class="ch-body">
+      <p>Amazon Dynamo (2007), Cassandra, Riak, Voldemort. Client (or a coordinator node) sends writes to <em>multiple</em> replicas simultaneously. On read, client contacts multiple replicas and resolves conflicts using version numbers.</p>
+
+      <h3>Quorums</h3>
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 600 300" width="100%">
+          <defs><marker id="aw" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#1d4ed8"/></marker>
+          <marker id="ar" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#15803d"/></marker></defs>
+          <!-- 5 nodes in pentagon -->
+          <circle cx="300" cy="65"  r="30" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+          <text x="300" y="62" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#1d4ed8">N1</text>
+          <text x="300" y="78" text-anchor="middle" font-family="system-ui" font-size="9" fill="#1e3a8a">up-to-date</text>
+
+          <circle cx="470" cy="165" r="30" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+          <text x="470" y="162" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#1d4ed8">N2</text>
+          <text x="470" y="178" text-anchor="middle" font-family="system-ui" font-size="9" fill="#1e3a8a">up-to-date</text>
+
+          <circle cx="410" cy="265" r="30" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+          <text x="410" y="262" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#b45309">N3</text>
+          <text x="410" y="278" text-anchor="middle" font-family="system-ui" font-size="9" fill="#78350f">stale</text>
+
+          <circle cx="190" cy="265" r="30" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
+          <text x="190" y="262" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#15803d">N4</text>
+          <text x="190" y="278" text-anchor="middle" font-family="system-ui" font-size="9" fill="#14532d">up-to-date</text>
+
+          <circle cx="130" cy="165" r="30" fill="#f4f4f5" stroke="#71717a" stroke-width="2"/>
+          <text x="130" y="162" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#71717a">N5</text>
+          <text x="130" y="178" text-anchor="middle" font-family="system-ui" font-size="9" fill="#52525b">stale</text>
+
+          <!-- Write arrows: w=3, to N1, N2, N4 -->
+          <line x1="20" y1="165" x2="98" y2="165" stroke="#71717a" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="30" y="148" font-family="system-ui" font-size="11" font-weight="700" fill="#18181b">Write (w=3)</text>
+          <line x1="30" y1="155" x2="272" y2="80"  stroke="#1d4ed8" stroke-width="2" marker-end="url(#aw)"/>
+          <line x1="30" y1="165" x2="440" y2="165" stroke="#1d4ed8" stroke-width="2" marker-end="url(#aw)"/>
+          <line x1="30" y1="175" x2="162" y2="254" stroke="#1d4ed8" stroke-width="2" marker-end="url(#aw)"/>
+
+          <!-- Read arrows: r=3, from N1, N2, N4 (overlaps with write set) -->
+          <text x="30" y="210" font-family="system-ui" font-size="11" font-weight="700" fill="#18181b">Read (r=3)</text>
+          <text x="30" y="226" font-family="system-ui" font-size="11" fill="#52525b">→ at least 1 up-to-date</text>
+
+          <!-- Quorum annotation -->
+          <rect x="5" y="240" width="105" height="55" rx="4" fill="#f4f4f5" stroke="#e4e4e7"/>
+          <text x="57" y="260" text-anchor="middle" font-family="system-ui" font-size="11" font-weight="700" fill="#18181b">n=5, w=3, r=3</text>
+          <text x="57" y="276" text-anchor="middle" font-family="system-ui" font-size="11" fill="#52525b">w+r=6 &gt; n=5</text>
+          <text x="57" y="290" text-anchor="middle" font-family="system-ui" font-size="11" fill="#15803d">∴ overlap guaranteed</text>
+        </svg>
+        <p class="diagram-caption">Quorum: with n=5, w=3, r=3 — any read set must overlap with the write set by at least 1 node, guaranteeing the latest value is visible.</p>
+      </div>
+
+      <p><strong>Read repair:</strong> client reads from multiple replicas; detects stale value; writes fresh value back to stale replica. <strong>Anti-entropy:</strong> background process that reconciles differences. <strong>Sloppy quorums:</strong> during partition, accept writes to any available nodes (hinted handoff) — more availability, weaker consistency.</p>
+    </div>
+  </section>
+
+  <div class="ch-nav">
+    <a href="../part1/ch04.html">← Ch 04: Encoding and Evolution</a>
+    <a href="ch06.html">Ch 06: Partitioning →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

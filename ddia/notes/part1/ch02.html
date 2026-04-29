@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ch 02: Data Models & Query Languages — DDIA Notes</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand"><a href="../index.html">DDIA Notes</a><div class="byline">Kleppmann — Reading Notes</div></div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>Reliable, Scalable &amp; Maintainable</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Data Models &amp; Query Languages</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Storage and Retrieval</a>
+  <a href="../part1/ch04.html" class="sb-ch"><span class="n">04</span>Encoding and Evolution</a>
+  <div class="sb-part p2">Part II · Distributed Data</div>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Replication</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Partitioning</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Transactions</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Trouble with Distributed Systems</a>
+  <a href="../part2/ch09.html" class="sb-ch"><span class="n">09</span>Consistency and Consensus</a>
+  <div class="sb-part p3">Part III · Derived Data</div>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Batch Processing</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Stream Processing</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>The Future of Data Systems</a>
+</nav>
+<main id="main">
+  <div class="pg-head">
+    <span class="part-badge p1">Part I — Foundations</span>
+    <h1>Chapter 2: Data Models and Query Languages</h1>
+    <p class="sub">How we represent data — relational tables, JSON documents, property graphs — determines what queries are natural and what joins are painful.</p>
+  </div>
+
+  <!-- Model comparison overview -->
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 760 200" width="100%">
+      <defs><marker id="a" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#71717a"/></marker></defs>
+      <!-- Relational -->
+      <rect x="10" y="20" width="220" height="160" rx="6" fill="#f4f4f5" stroke="#71717a" stroke-width="1.5"/>
+      <text x="120" y="44" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#18181b">Relational (SQL)</text>
+      <line x1="20" y1="55" x2="220" y2="55" stroke="#e4e4e7"/>
+      <text x="35" y="72" font-family="system-ui" font-size="11" fill="#52525b">• Tables + rows + foreign keys</text>
+      <text x="35" y="89" font-family="system-ui" font-size="11" fill="#52525b">• Joins are first-class</text>
+      <text x="35" y="106" font-family="system-ui" font-size="11" fill="#52525b">• Schema-on-write</text>
+      <text x="35" y="123" font-family="system-ui" font-size="11" fill="#52525b">• Best: many-to-many</text>
+      <text x="35" y="140" font-family="system-ui" font-size="11" fill="#52525b">• Example: PostgreSQL,</text>
+      <text x="35" y="157" font-family="system-ui" font-size="11" fill="#52525b">  MySQL, Oracle</text>
+      <!-- Document -->
+      <rect x="270" y="20" width="220" height="160" rx="6" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1.5"/>
+      <text x="380" y="44" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#1d4ed8">Document (NoSQL)</text>
+      <line x1="280" y1="55" x2="480" y2="55" stroke="#bfdbfe"/>
+      <text x="285" y="72" font-family="system-ui" font-size="11" fill="#1e3a8a">• JSON/XML trees in records</text>
+      <text x="285" y="89" font-family="system-ui" font-size="11" fill="#1e3a8a">• Data locality (no joins)</text>
+      <text x="285" y="106" font-family="system-ui" font-size="11" fill="#1e3a8a">• Schema-on-read (flexible)</text>
+      <text x="285" y="123" font-family="system-ui" font-size="11" fill="#1e3a8a">• Best: one-to-many trees</text>
+      <text x="285" y="140" font-family="system-ui" font-size="11" fill="#1e3a8a">• Example: MongoDB,</text>
+      <text x="285" y="157" font-family="system-ui" font-size="11" fill="#1e3a8a">  CouchDB, RethinkDB</text>
+      <!-- Graph -->
+      <rect x="530" y="20" width="220" height="160" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+      <text x="640" y="44" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#15803d">Graph</text>
+      <line x1="540" y1="55" x2="740" y2="55" stroke="#bbf7d0"/>
+      <text x="545" y="72" font-family="system-ui" font-size="11" fill="#14532d">• Vertices + edges + properties</text>
+      <text x="545" y="89" font-family="system-ui" font-size="11" fill="#14532d">• Any vertex → any vertex</text>
+      <text x="545" y="106" font-family="system-ui" font-size="11" fill="#14532d">• No schema</text>
+      <text x="545" y="123" font-family="system-ui" font-size="11" fill="#14532d">• Best: many-to-many complex</text>
+      <text x="545" y="140" font-family="system-ui" font-size="11" fill="#14532d">• Example: Neo4j, JanusGraph,</text>
+      <text x="545" y="157" font-family="system-ui" font-size="11" fill="#14532d">  Dgraph</text>
+    </svg>
+    <p class="diagram-caption">The three dominant data models and their sweet spots.</p>
+  </div>
+
+  <section class="chapter" id="relational">
+    <div class="ch-header"><span class="ch-num">§2.1</span><h2 class="ch-title">Relational Model vs Document Model</h2></div>
+    <div class="ch-body">
+      <p>Edgar Codd proposed the relational model in 1970. Data is organized in <em>relations</em> (tables) and <em>tuples</em> (rows). SQL, developed in the 1970s, became the dominant query interface. For 25–30 years, relational DBs dominated — then NoSQL emerged around 2010.</p>
+
+      <h3>NoSQL Drivers</h3>
+      <ul>
+        <li>Need for greater scalability (huge write throughput, very large datasets) than relational DBs can easily achieve.</li>
+        <li>Preference for free and open source software over commercial DBs.</li>
+        <li>Specialized query operations not well-supported by SQL.</li>
+        <li>Frustration with the restrictiveness of relational schemas.</li>
+      </ul>
+
+      <h3>Object-Relational Impedance Mismatch</h3>
+      <p>Application code uses OO/functional languages with objects, lists, and nested structures. Relational DBs use tables with rows and columns. ORM frameworks (ActiveRecord, Hibernate) reduce boilerplate but can't hide the mismatch. The <strong>résumé example</strong>: a user has one record but many jobs, education entries, and contact methods — naturally a JSON tree. In SQL: either multiple tables with foreign keys (complex joins) or a JSON/XML blob column (can't query inside it easily).</p>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 760 260" width="100%">
+          <defs><marker id="ab" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#71717a"/></marker></defs>
+          <!-- Document model left -->
+          <text x="175" y="18" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#18181b">Document Model (JSON)</text>
+          <rect x="20" y="28" width="310" height="220" rx="5" fill="#dbeafe" stroke="#1d4ed8" stroke-width="1"/>
+          <text x="35" y="50" font-family="monospace" font-size="11" fill="#1e3a8a">{"user_id": 251,</text>
+          <text x="35" y="67" font-family="monospace" font-size="11" fill="#1e3a8a"> "first_name": "Bill",</text>
+          <text x="35" y="84" font-family="monospace" font-size="11" fill="#1e3a8a"> "positions": [</text>
+          <text x="35" y="101" font-family="monospace" font-size="11" fill="#1e3a8a">   {"title": "Engineer",</text>
+          <text x="35" y="118" font-family="monospace" font-size="11" fill="#1e3a8a">    "org": "Initech"},</text>
+          <text x="35" y="135" font-family="monospace" font-size="11" fill="#1e3a8a">   {"title": "CTO",</text>
+          <text x="35" y="152" font-family="monospace" font-size="11" fill="#1e3a8a">    "org": "Acme"} ],</text>
+          <text x="35" y="169" font-family="monospace" font-size="11" fill="#1e3a8a"> "education": [...]</text>
+          <text x="35" y="186" font-family="monospace" font-size="11" fill="#1e3a8a"> "contact_info": [...]}</text>
+          <rect x="30" y="205" width="290" height="30" rx="3" fill="#dcfce7" stroke="#15803d"/>
+          <text x="175" y="225" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">✓ All user data in one document (locality)</text>
+          <!-- Relational model right -->
+          <text x="585" y="18" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#18181b">Relational Model (SQL)</text>
+          <!-- users table -->
+          <rect x="430" y="28" width="300" height="60" rx="4" fill="#f4f4f5" stroke="#71717a"/>
+          <text x="445" y="47" font-family="system-ui" font-size="11" font-weight="700" fill="#52525b">users</text>
+          <text x="445" y="63" font-family="monospace" font-size="10" fill="#18181b">user_id | first_name | last_name</text>
+          <text x="445" y="78" font-family="monospace" font-size="10" fill="#52525b">251     | Bill       | Gates</text>
+          <!-- positions table -->
+          <rect x="430" y="108" width="300" height="70" rx="4" fill="#f4f4f5" stroke="#71717a"/>
+          <text x="445" y="127" font-family="system-ui" font-size="11" font-weight="700" fill="#52525b">positions</text>
+          <text x="445" y="143" font-family="monospace" font-size="10" fill="#18181b">user_id | title    | org</text>
+          <text x="445" y="158" font-family="monospace" font-size="10" fill="#52525b">251     | Engineer | Initech</text>
+          <text x="445" y="171" font-family="monospace" font-size="10" fill="#52525b">251     | CTO      | Acme</text>
+          <!-- FK arrows -->
+          <line x1="580" y1="88" x2="580" y2="108" stroke="#71717a" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#ab)"/>
+          <text x="590" y="102" font-family="system-ui" font-size="10" fill="#52525b">FK</text>
+          <!-- education table -->
+          <rect x="430" y="195" width="300" height="40" rx="4" fill="#f4f4f5" stroke="#71717a"/>
+          <text x="445" y="214" font-family="system-ui" font-size="11" font-weight="700" fill="#52525b">education (+ more tables…)</text>
+          <text x="445" y="228" font-family="monospace" font-size="10" fill="#52525b">user_id | school | degree | year</text>
+          <line x1="580" y1="178" x2="580" y2="195" stroke="#71717a" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#ab)"/>
+          <rect x="430" y="243" width="300" height="25" rx="3" fill="#fef3c7" stroke="#b45309"/>
+          <text x="580" y="259" text-anchor="middle" font-family="system-ui" font-size="11" fill="#78350f">Requires JOIN across 3+ tables</text>
+        </svg>
+        <p class="diagram-caption">Same résumé data: document model stores it as one JSON tree (good locality), relational needs multiple tables + joins.</p>
+      </div>
+
+      <h3>Document vs Relational: When to Choose</h3>
+      <table class="comparison-table">
+        <thead><tr><th>Factor</th><th>Document wins</th><th>Relational wins</th></tr></thead>
+        <tbody>
+          <tr><td>Data structure</td><td class="g">Tree-like / one-to-many</td><td class="g">Complex many-to-many relationships</td></tr>
+          <tr><td>Joins</td><td class="b">Application-side (slow, complex)</td><td class="g">Database-native, optimized</td></tr>
+          <tr><td>Schema</td><td class="g">Schema-on-read (flexible)</td><td class="n">Schema-on-write (enforced)</td></tr>
+          <tr><td>Data locality</td><td class="g">Entire document at once</td><td class="b">Must join across tables</td></tr>
+          <tr><td>Normalization</td><td class="b">Tends to denormalize (duplication)</td><td class="g">Normalize (single source of truth)</td></tr>
+        </tbody>
+      </table>
+
+      <div class="insight">Modern trend: convergence. PostgreSQL/MySQL support JSON columns. MongoDB 3.2+ supports joins. The boundary is blurring.</div>
+    </div>
+  </section>
+
+  <section class="chapter" id="graph">
+    <div class="ch-header"><span class="ch-num">§2.2</span><h2 class="ch-title">Graph-Like Data Models</h2></div>
+    <div class="ch-body">
+      <p>When many-to-many relationships are very common and complex, the relational model becomes awkward. Graph databases shine here: social networks, the web, road maps, knowledge graphs.</p>
+
+      <h3>Property Graph Model</h3>
+      <ul>
+        <li>Vertices (nodes): unique ID, set of outgoing edges, set of incoming edges, collection of key-value properties.</li>
+        <li>Edges: unique ID, tail vertex, head vertex, label (relationship type), collection of key-value properties.</li>
+        <li>Any vertex can connect to any other — no schema restriction.</li>
+      </ul>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 760 320" width="100%">
+          <defs>
+            <marker id="ag" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#15803d"/></marker>
+            <marker id="ab2" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><polygon points="0 0,8 3.5,0 7" fill="#1d4ed8"/></marker>
+          </defs>
+          <!-- Person nodes -->
+          <ellipse cx="150" cy="100" rx="70" ry="35" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+          <text x="150" y="95" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#1d4ed8">Alice</text>
+          <text x="150" y="113" text-anchor="middle" font-family="system-ui" font-size="11" fill="#1e3a8a">born: 1990, Idaho</text>
+
+          <ellipse cx="150" cy="240" rx="70" ry="35" fill="#dbeafe" stroke="#1d4ed8" stroke-width="2"/>
+          <text x="150" y="235" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#1d4ed8">Bob</text>
+          <text x="150" y="253" text-anchor="middle" font-family="system-ui" font-size="11" fill="#1e3a8a">born: 1988, Paris</text>
+
+          <!-- Location nodes -->
+          <ellipse cx="420" cy="80" rx="70" ry="32" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
+          <text x="420" y="75" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#15803d">Idaho</text>
+          <text x="420" y="93" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">State</text>
+
+          <ellipse cx="420" cy="200" rx="70" ry="32" fill="#dcfce7" stroke="#15803d" stroke-width="2"/>
+          <text x="420" y="195" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#15803d">Paris</text>
+          <text x="420" y="213" text-anchor="middle" font-family="system-ui" font-size="11" fill="#14532d">City</text>
+
+          <ellipse cx="620" cy="80" rx="70" ry="32" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+          <text x="620" y="75" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#b45309">USA</text>
+          <text x="620" y="93" text-anchor="middle" font-family="system-ui" font-size="11" fill="#78350f">Country</text>
+
+          <ellipse cx="620" cy="200" rx="70" ry="32" fill="#fef3c7" stroke="#b45309" stroke-width="2"/>
+          <text x="620" y="195" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#b45309">France</text>
+          <text x="620" y="213" text-anchor="middle" font-family="system-ui" font-size="11" fill="#78350f">Country</text>
+
+          <!-- Edges -->
+          <line x1="220" y1="90" x2="350" y2="82" stroke="#15803d" stroke-width="1.5" marker-end="url(#ag)"/>
+          <text x="280" y="78" font-family="system-ui" font-size="10" fill="#15803d">BORN_IN</text>
+
+          <line x1="220" y1="250" x2="350" y2="208" stroke="#15803d" stroke-width="1.5" marker-end="url(#ag)"/>
+          <text x="268" y="240" font-family="system-ui" font-size="10" fill="#15803d">BORN_IN</text>
+
+          <line x1="490" y1="80" x2="550" y2="80" stroke="#b45309" stroke-width="1.5" marker-end="url(#ab2)"/>
+          <text x="503" y="73" font-family="system-ui" font-size="10" fill="#b45309">WITHIN</text>
+
+          <line x1="490" y1="200" x2="550" y2="200" stroke="#b45309" stroke-width="1.5" marker-end="url(#ab2)"/>
+          <text x="503" y="193" font-family="system-ui" font-size="10" fill="#b45309">WITHIN</text>
+
+          <line x1="150" y1="135" x2="150" y2="205" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#ag)"/>
+          <text x="100" y="175" font-family="system-ui" font-size="10" fill="#7c3aed">KNOWS</text>
+          <text x="155" y="175" font-family="system-ui" font-size="10" fill="#7c3aed">since: 2015</text>
+        </svg>
+        <p class="diagram-caption">Property graph: vertices (people, places) connected by labeled, directed, property-bearing edges. Easy to express complex relationships.</p>
+      </div>
+
+      <h3>Cypher Query Language (Neo4j)</h3>
+      <p>Cypher uses ASCII-art pattern matching: <code>(a:Person {name:'Alice'})-[:BORN_IN]-&gt;(b:Location)</code>. Declarative — the query optimizer finds the best execution plan. Much more natural for graph traversal than SQL with recursive CTEs.</p>
+
+      <h3>Triple-Stores and SPARQL</h3>
+      <p>All information stored as three-part statements: <em>(subject, predicate, object)</em>. E.g., <em>(Jim, age, 33)</em> or <em>(Jim, likes, bananas)</em>. The semantic web vision: a web of linked data. SPARQL is the query language. RDF (Resource Description Framework) for data interchange. Turtle syntax for human-readable triples.</p>
+
+      <h3>Query Languages Summary</h3>
+      <table class="comparison-table">
+        <thead><tr><th>Language</th><th>Model</th><th>Style</th><th>Good for</th></tr></thead>
+        <tbody>
+          <tr><td>SQL</td><td>Relational</td><td>Declarative</td><td>Tabular data, complex aggregations</td></tr>
+          <tr><td>MapReduce</td><td>Any</td><td>Semi-declarative</td><td>Distributed batch analytics</td></tr>
+          <tr><td>Aggregation pipeline</td><td>Document</td><td>Declarative</td><td>MongoDB analytics</td></tr>
+          <tr><td>Cypher</td><td>Graph</td><td>Declarative (pattern matching)</td><td>Social/knowledge graphs</td></tr>
+          <tr><td>SPARQL</td><td>Triple-store</td><td>Declarative</td><td>Semantic web, linked data</td></tr>
+          <tr><td>Datalog</td><td>Triple/logic</td><td>Declarative (rules)</td><td>Complex recursive queries</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="ch-nav">
+    <a href="ch01.html">← Ch 01: Reliable, Scalable &amp; Maintainable</a>
+    <a href="ch03.html">Ch 03: Storage and Retrieval →</a>
+  </div>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>
