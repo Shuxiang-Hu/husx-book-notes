@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch06 · Schema Design and Management — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch06 · Schema Design and Management</h1>
+  <p class="lead">Every byte you store has a cost: right data types eliminate wasted space, prevent type-coercion bugs, and make the optimizer's job tractable long before a single index is considered.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Choosing Optimal Data Types</h2>
+
+  <p>MySQL is a statically typed storage engine. The column definition you choose at <code>CREATE TABLE</code> time influences on-disk row format, in-memory buffer-pool utilisation, sort buffer sizing, and whether a value must be converted before comparison with an indexed column. Three principles guide every decision: <strong>smallest</strong> type that can hold all real-world values, <strong>simplest</strong> type (integers beat strings for comparisons), and <strong>avoid NULL</strong> unless the absence of a value is semantically meaningful.</p>
+
+  <p>An INT column always occupies 4 bytes regardless of the numeric magnitude stored. A VARCHAR(255) column occupies only as many bytes as the actual string plus a 1- or 2-byte length prefix. TEXT and BLOB columns may spill to off-page storage, adding a pointer indirection that turns a single-row fetch into two I/O operations. DECIMAL stores digits as two 4-bit nibbles per digit — fully precise but significantly larger than FLOAT/DOUBLE for the same value range.</p>
+
+  <p>The type decision flowchart below summarises the canonical selection process. Start at the top and follow the first matching branch.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <!-- start -->
+      <rect x="270" y="10" width="160" height="36" rx="18" fill="#14532d"/>
+      <text x="350" y="33" text-anchor="middle" fill="#fff" font-weight="700">New Column?</text>
+      <!-- is it a number? -->
+      <line x1="350" y1="46" x2="350" y2="80" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="346,76 354,76 350,82" fill="#16a34a"/>
+      <rect x="250" y="82" width="200" height="34" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="104" text-anchor="middle" fill="#14532d">Is the value numeric?</text>
+      <!-- yes branch -->
+      <line x1="350" y1="116" x2="350" y2="148" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="346,144 354,144 350,150" fill="#16a34a"/>
+      <text x="357" y="134" fill="#16a34a" font-size="10">YES</text>
+      <rect x="240" y="150" width="220" height="34" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="172" text-anchor="middle" fill="#14532d">Need exact precision?</text>
+      <!-- decimal path -->
+      <line x1="460" y1="167" x2="560" y2="167" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="556,163 564,167 556,171" fill="#c2410c"/>
+      <text x="510" y="160" text-anchor="middle" fill="#c2410c" font-size="10">YES (money)</text>
+      <rect x="565" y="150" width="110" height="34" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="620" y="172" text-anchor="middle" fill="#c2410c" font-weight="700">DECIMAL</text>
+      <!-- integer path -->
+      <line x1="350" y1="184" x2="350" y2="218" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="346,214 354,214 350,220" fill="#16a34a"/>
+      <text x="357" y="203" fill="#16a34a" font-size="10">NO (approx ok)</text>
+      <rect x="240" y="220" width="220" height="34" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="242" text-anchor="middle" fill="#14532d">Fits in 4 bytes (±2B)?</text>
+      <line x1="460" y1="237" x2="560" y2="237" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="556,233 564,237 556,241" fill="#c2410c"/>
+      <text x="510" y="230" text-anchor="middle" fill="#c2410c" font-size="10">YES</text>
+      <rect x="565" y="220" width="110" height="34" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="620" y="242" text-anchor="middle" fill="#c2410c" font-weight="700">INT / UINT</text>
+      <line x1="350" y1="254" x2="350" y2="288" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="346,284 354,284 350,290" fill="#16a34a"/>
+      <text x="357" y="273" fill="#16a34a" font-size="10">NO</text>
+      <rect x="565" y="285" width="110" height="34" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="620" y="307" text-anchor="middle" fill="#c2410c" font-weight="700">BIGINT</text>
+      <line x1="460" y1="303" x2="560" y2="303" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="556,299 564,303 556,307" fill="#c2410c"/>
+      <!-- string branch from top -->
+      <line x1="250" y1="99" x2="100" y2="99" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="100,95 94,99 100,103" fill="#c2410c"/>
+      <text x="175" y="92" text-anchor="middle" fill="#c2410c" font-size="10">NO</text>
+      <rect x="20" y="82" width="80" height="34" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="60" y="99" text-anchor="middle" fill="#14532d" font-size="10">Text /</text>
+      <text x="60" y="111" text-anchor="middle" fill="#14532d" font-size="10">string?</text>
+      <line x1="60" y1="116" x2="60" y2="150" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="56,146 64,146 60,152" fill="#16a34a"/>
+      <rect x="10" y="152" width="100" height="34" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="60" y="170" text-anchor="middle" fill="#14532d" font-size="10">Short, fixed?</text>
+      <line x1="110" y1="169" x2="170" y2="169" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="166,165 174,169 166,173" fill="#c2410c"/>
+      <text x="140" y="162" text-anchor="middle" fill="#c2410c" font-size="10">YES</text>
+      <rect x="175" y="152" width="70" height="34" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="210" y="174" text-anchor="middle" fill="#c2410c" font-weight="700">CHAR</text>
+      <line x1="60" y1="186" x2="60" y2="220" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="56,216 64,216 60,222" fill="#16a34a"/>
+      <text x="67" y="205" fill="#16a34a" font-size="10">NO</text>
+      <rect x="10" y="222" width="100" height="34" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="60" y="240" text-anchor="middle" fill="#14532d" font-size="10">Under 64KB?</text>
+      <line x1="110" y1="239" x2="170" y2="239" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="166,235 174,239 166,243" fill="#c2410c"/>
+      <text x="140" y="232" text-anchor="middle" fill="#c2410c" font-size="10">YES</text>
+      <rect x="175" y="222" width="70" height="34" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="210" y="244" text-anchor="middle" fill="#c2410c" font-weight="700">VARCHAR</text>
+      <line x1="60" y1="256" x2="60" y2="290" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="56,286 64,286 60,292" fill="#16a34a"/>
+      <text x="67" y="275" fill="#16a34a" font-size="10">NO</text>
+      <rect x="175" y="292" width="70" height="34" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="210" y="314" text-anchor="middle" fill="#c2410c" font-weight="700">TEXT/BLOB</text>
+      <line x1="60" y1="292" x2="170" y2="309" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="166,305 174,309 166,313" fill="#c2410c"/>
+      <!-- legend -->
+      <rect x="245" y="330" width="14" height="14" rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="265" y="342" fill="#57534e">Decision</text>
+      <rect x="340" y="330" width="14" height="14" rx="2" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="360" y="342" fill="#57534e">Data Type</text>
+    </svg>
+  </div>
+
+  <p>A common mistake is choosing <code>VARCHAR(255)</code> by default "to be safe." Wide VARCHAR columns bloat in-memory sort buffers — MySQL must allocate the full declared width when sorting, regardless of actual content. If your business logic genuinely caps a field at 32 characters, declare it <code>VARCHAR(32)</code>.</p>
+
+  <!-- table -->
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>Storage (bytes)</th>
+        <th>Range / Precision</th>
+        <th>Best Use Case</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>TINYINT</code></td><td>1</td><td>−128 … 127 (signed)</td><td>Boolean flags, small enumerations</td></tr>
+      <tr><td><code>SMALLINT</code></td><td>2</td><td>−32 768 … 32 767</td><td>Status codes, limited ID ranges</td></tr>
+      <tr><td><code>INT</code></td><td>4</td><td>±2.1 billion</td><td>General-purpose IDs, counters</td></tr>
+      <tr><td><code>BIGINT</code></td><td>8</td><td>±9.2 × 10¹⁸</td><td>Snowflake IDs, Twitter-style IDs</td></tr>
+      <tr><td><code>DECIMAL(p,s)</code></td><td>≈ p/2 + 1–4</td><td>Exact: up to 65 digits</td><td>Currency, financial precision</td></tr>
+      <tr><td><code>FLOAT</code></td><td>4</td><td>~7 significant digits</td><td>Scientific measurements (approx ok)</td></tr>
+      <tr><td><code>DOUBLE</code></td><td>8</td><td>~15 significant digits</td><td>Coordinates, analytics aggregates</td></tr>
+      <tr><td><code>CHAR(n)</code></td><td>n × charset_maxlen</td><td>Fixed, 0–255 chars</td><td>ISO codes, hashes, UUIDs (fixed width)</td></tr>
+      <tr><td><code>VARCHAR(n)</code></td><td>actual + 1 or 2</td><td>Variable, 0–65 535</td><td>Names, emails, free-form short text</td></tr>
+      <tr><td><code>TEXT</code></td><td>actual + 2</td><td>Up to 65 535 bytes</td><td>Comments, descriptions (rarely sorted)</td></tr>
+      <tr><td><code>MEDIUMTEXT</code></td><td>actual + 3</td><td>Up to 16 MB</td><td>Document bodies, large logs</td></tr>
+      <tr><td><code>DATE`</code></td><td>3</td><td>1000-01-01 … 9999-12-31</td><td>Birthdates, calendar events</td></tr>
+      <tr><td><code>DATETIME</code></td><td>5–8</td><td>1000 … 9999, optional µs</td><td>Timestamps when TZ irrelevant</td></tr>
+      <tr><td><code>TIMESTAMP</code></td><td>4–7</td><td>1970–2038, UTC-stored</td><td>row-created / row-updated columns</td></tr>
+      <tr><td><code>JSON</code></td><td>actual + overhead</td><td>Up to 1 GB (binary BJSON)</td><td>Semi-structured, schema-flexible data</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Whole Numbers and Real Numbers</h2>
+
+  <p>MySQL offers five integer widths. Always choose the <em>smallest</em> type that will never overflow. An <code>INT UNSIGNED</code> gives you 4.29 billion — sufficient for most internal IDs. When you need Snowflake-style distributed IDs or Unix nanosecond timestamps as IDs, reach for <code>BIGINT UNSIGNED</code>. Resist the temptation to use <code>BIGINT</code> everywhere: if every table's PK is 8 bytes instead of 4 bytes, secondary indexes — which embed the clustered index key as a bookmark — double that overhead per row, per secondary index.</p>
+
+  <p>For monetary values, FLOAT and DOUBLE are categorically wrong. Both use IEEE 754 binary floating-point, which cannot represent 0.1 exactly. After a few thousand arithmetic operations you accumulate rounding error that will not reconcile with paper statements. Use <code>DECIMAL(19,4)</code> for currency — 4 decimal places cover sub-cent precision, 15 integer digits cover values up to one trillion.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <!-- title -->
+      <text x="350" y="22" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Integer &amp; Real Number Storage Layout</text>
+      <!-- bar chart rows -->
+      <!-- TINYINT -->
+      <text x="100" y="58" text-anchor="end" fill="#57534e">TINYINT</text>
+      <rect x="110" y="44" width="35" height="22" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="127" y="59" text-anchor="middle" fill="#14532d" font-size="9">1B</text>
+      <!-- SMALLINT -->
+      <text x="100" y="84" text-anchor="end" fill="#57534e">SMALLINT</text>
+      <rect x="110" y="70" width="70" height="22" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="145" y="85" text-anchor="middle" fill="#14532d" font-size="9">2B</text>
+      <!-- INT -->
+      <text x="100" y="110" text-anchor="end" fill="#57534e">INT</text>
+      <rect x="110" y="96" width="140" height="22" rx="3" fill="#16a34a"/>
+      <text x="180" y="111" text-anchor="middle" fill="#fff" font-size="9">4 bytes · ±2.1B</text>
+      <!-- BIGINT -->
+      <text x="100" y="136" text-anchor="end" fill="#57534e">BIGINT</text>
+      <rect x="110" y="122" width="280" height="22" rx="3" fill="#14532d"/>
+      <text x="250" y="137" text-anchor="middle" fill="#fff" font-size="9">8 bytes · ±9.2×10¹⁸</text>
+      <!-- FLOAT -->
+      <text x="100" y="165" text-anchor="end" fill="#57534e">FLOAT</text>
+      <rect x="110" y="151" width="140" height="22" rx="3" fill="#fb923c" stroke="#c2410c"/>
+      <text x="180" y="166" text-anchor="middle" fill="#fff" font-size="9">4B · ~7 sig digits</text>
+      <!-- DOUBLE -->
+      <text x="100" y="191" text-anchor="end" fill="#57534e">DOUBLE</text>
+      <rect x="110" y="177" width="280" height="22" rx="3" fill="#c2410c"/>
+      <text x="250" y="192" text-anchor="middle" fill="#fff" font-size="9">8B · ~15 sig digits</text>
+      <!-- DECIMAL -->
+      <text x="100" y="220" text-anchor="end" fill="#57534e">DECIMAL(19,4)</text>
+      <rect x="110" y="206" width="315" height="22" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="267" y="221" text-anchor="middle" fill="#c2410c" font-size="9">9 bytes · exact · USE FOR MONEY</text>
+      <!-- legend -->
+      <rect x="500" y="160" width="14" height="14" rx="2" fill="#16a34a"/>
+      <text x="520" y="172" fill="#57534e" font-size="10">Integer</text>
+      <rect x="500" y="182" width="14" height="14" rx="2" fill="#c2410c"/>
+      <text x="520" y="194" fill="#57534e" font-size="10">Floating-point (approx)</text>
+      <rect x="500" y="204" width="14" height="14" rx="2" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="520" y="216" fill="#57534e" font-size="10">Exact decimal</text>
+      <text x="350" y="248" text-anchor="middle" fill="#57534e" font-size="10">Bar width proportional to storage bytes</text>
+    </svg>
+  </div>
+
+  <p>The <code>UNSIGNED</code> modifier doubles the positive range of any integer type by repurposing the sign bit. Use it for auto-increment primary keys — you get the positive range you actually need and gain a tiny storage win because the optimizer can sometimes use fewer comparisons. Be careful when mixing SIGNED and UNSIGNED columns in arithmetic: MySQL may silently cast and produce unexpected results.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>String Types</h2>
+
+  <p>The three string families — CHAR, VARCHAR, and TEXT/BLOB — differ in how MySQL stores them, where it stores them, and which operations can be applied efficiently.</p>
+
+  <p><strong>CHAR(n)</strong> is right-padded to exactly <em>n</em> characters on disk and in memory. This makes equality comparisons branch-free and sort buffers exactly predictable. It is ideal for columns of fixed, known width: country codes (<code>CHAR(2)</code>), MD5 hashes (<code>CHAR(32)</code>), UUID strings (<code>CHAR(36)</code>).</p>
+
+  <p><strong>VARCHAR(n)</strong> stores only the actual bytes used plus a 1-byte length prefix for values up to 255 bytes, or a 2-byte prefix beyond that. InnoDB stores VARCHAR inline in the page as long as the row fits. The max row size limit of 65 535 bytes applies across all VARCHAR columns combined — this trips up wide tables with many VARCHAR(255) columns.</p>
+
+  <p><strong>TEXT / BLOB</strong> families store data off-page when they exceed the threshold (usually 768 bytes per column in the Antelope format, or when the row would overflow). Off-page storage means every access to that column fires an additional I/O to fetch the overflow page — a hidden performance tax for large values. You cannot use TEXT/BLOB columns as index keys (without a prefix index) and you cannot include them in a covering index.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">String Type Storage Architecture</text>
+      <!-- CHAR column block -->
+      <rect x="30" y="35" width="190" height="200" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="125" y="55" text-anchor="middle" fill="#14532d" font-weight="700">CHAR(10)</text>
+      <text x="125" y="70" text-anchor="middle" fill="#57534e" font-size="10">fixed 10 bytes on disk</text>
+      <rect x="45" y="80" width="160" height="28" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="125" y="99" text-anchor="middle" fill="#14532d">"US"▒▒▒▒▒▒▒▒</text>
+      <text x="125" y="120" text-anchor="middle" fill="#57534e" font-size="10">right-padded with spaces</text>
+      <rect x="45" y="130" width="160" height="28" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="125" y="149" text-anchor="middle" fill="#14532d">"CHAR_DATA"▒</text>
+      <text x="125" y="172" text-anchor="middle" fill="#c2410c" font-size="10">+ No length prefix</text>
+      <text x="125" y="187" text-anchor="middle" fill="#c2410c" font-size="10">+ O(1) offset lookup</text>
+      <text x="125" y="202" text-anchor="middle" fill="#c2410c" font-size="10">+ Good for fixed codes</text>
+      <text x="125" y="217" text-anchor="middle" fill="#16a34a" font-size="10">Wasted: trailing spaces</text>
+      <!-- VARCHAR column block -->
+      <rect x="255" y="35" width="190" height="200" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="350" y="55" text-anchor="middle" fill="#14532d" font-weight="700">VARCHAR(255)</text>
+      <text x="350" y="70" text-anchor="middle" fill="#57534e" font-size="10">actual bytes + 1 or 2 length</text>
+      <rect x="270" y="80" width="160" height="28" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="99" text-anchor="middle" fill="#14532d">[2]"US"</text>
+      <text x="350" y="120" text-anchor="middle" fill="#57534e" font-size="10">length prefix + actual data</text>
+      <rect x="270" y="130" width="160" height="28" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="149" text-anchor="middle" fill="#14532d">[10]"HELLO DIDI"</text>
+      <text x="350" y="172" text-anchor="middle" fill="#c2410c" font-size="10">+ Space efficient</text>
+      <text x="350" y="187" text-anchor="middle" fill="#c2410c" font-size="10">+ Inline in B-tree page</text>
+      <text x="350" y="202" text-anchor="middle" fill="#16a34a" font-size="10">Sort buffer: full width alloc</text>
+      <text x="350" y="217" text-anchor="middle" fill="#16a34a" font-size="10">Row update may cause split</text>
+      <!-- TEXT column block -->
+      <rect x="480" y="35" width="190" height="200" rx="5" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="575" y="55" text-anchor="middle" fill="#c2410c" font-weight="700">TEXT / BLOB</text>
+      <text x="575" y="70" text-anchor="middle" fill="#57534e" font-size="10">inline or off-page</text>
+      <rect x="495" y="80" width="160" height="28" rx="3" fill="#fb923c" stroke="#c2410c" opacity=".7"/>
+      <text x="575" y="99" text-anchor="middle" fill="#fff">row page: 20-byte ptr</text>
+      <rect x="495" y="130" width="160" height="28" rx="3" fill="#c2410c"/>
+      <text x="575" y="149" text-anchor="middle" fill="#fff">overflow page chain</text>
+      <line x1="575" y1="108" x2="575" y2="130" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="575" y="172" text-anchor="middle" fill="#c2410c" font-size="10">Extra I/O per access</text>
+      <text x="575" y="187" text-anchor="middle" fill="#c2410c" font-size="10">No index key (no prefix)</text>
+      <text x="575" y="202" text-anchor="middle" fill="#c2410c" font-size="10">No covering index</text>
+      <text x="575" y="217" text-anchor="middle" fill="#16a34a" font-size="10">OK for rarely-read blobs</text>
+      <!-- bottom labels -->
+      <text x="125" y="248" text-anchor="middle" fill="#14532d" font-size="10" font-weight="700">≤ 255 chars, fixed</text>
+      <text x="350" y="248" text-anchor="middle" fill="#14532d" font-size="10" font-weight="700">Variable, ≤ 64 KB, inline</text>
+      <text x="575" y="248" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">Large, potentially off-page</text>
+      <text x="350" y="275" text-anchor="middle" fill="#57534e" font-size="10">All types: character set determines byte-per-char multiplier (utf8mb4 = up to 4 bytes/char)</text>
+    </svg>
+  </div>
+
+  <p>One subtle gotcha: in <code>utf8mb4</code>, every character can consume up to 4 bytes. MySQL must allocate the <em>maximum</em> possible bytes for fixed-width operations like in-memory sorting. A <code>VARCHAR(100)</code> column in a utf8mb4 table requires 400 bytes of sort buffer allocation per row, not 100. This multiplier makes it even more important to declare realistic column widths.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>JSON Data</h2>
+
+  <p>MySQL 5.7 introduced a native JSON column type backed by an internal binary format (BJSON). Values are validated at write time and stored in a compact binary encoding that allows partial updates via <code>JSON_SET()</code> without rewriting the full document. Generated virtual columns over JSON paths can be indexed, giving you the flexibility of documents with the performance of a B-tree.</p>
+
+  <p>However, JSON columns are not a free pass. Every read of a JSON column deserialises the entire BJSON value — you cannot read one field without paying the cost of the whole document. There is no row-level partial locking inside a JSON field; an <code>UPDATE</code> on any path within the document locks the entire row. Foreign key constraints and JOINs require normalised relational columns.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Normalised Relational vs JSON Column Trade-offs</text>
+      <!-- left: relational -->
+      <rect x="30" y="35" width="290" height="240" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="175" y="57" text-anchor="middle" fill="#14532d" font-weight="700">Normalised Relational</text>
+      <rect x="45" y="65" width="260" height="18" rx="2" fill="#14532d"/>
+      <text x="55" y="78" fill="#fff" font-size="10">orders (id, user_id, total)</text>
+      <rect x="45" y="86" width="260" height="18" rx="2" fill="#bbf7d0"/>
+      <text x="55" y="99" fill="#14532d" font-size="10">order_items (id, order_id, sku, qty)</text>
+      <rect x="45" y="107" width="260" height="18" rx="2" fill="#bbf7d0"/>
+      <text x="55" y="120" fill="#14532d" font-size="10">products (id, sku, price, weight)</text>
+      <text x="175" y="148" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">ADVANTAGES</text>
+      <text x="55" y="165" fill="#14532d" font-size="10">✓  FK constraints enforced</text>
+      <text x="55" y="181" fill="#14532d" font-size="10">✓  Any column indexable</text>
+      <text x="55" y="197" fill="#14532d" font-size="10">✓  Column-level stats for optimizer</text>
+      <text x="55" y="213" fill="#14532d" font-size="10">✓  Partial updates (single column)</text>
+      <text x="175" y="233" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">CONSTRAINTS</text>
+      <text x="55" y="250" fill="#57534e" font-size="10">✗  Schema migration required for new fields</text>
+      <text x="55" y="266" fill="#57534e" font-size="10">✗  More joins = more code</text>
+      <!-- right: JSON -->
+      <rect x="380" y="35" width="290" height="240" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="525" y="57" text-anchor="middle" fill="#c2410c" font-weight="700">JSON Column</text>
+      <rect x="395" y="65" width="260" height="18" rx="2" fill="#c2410c"/>
+      <text x="405" y="78" fill="#fff" font-size="10">orders (id, user_id, payload JSON)</text>
+      <rect x="395" y="86" width="260" height="50" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="405" y="102" fill="#57534e" font-size="9">{"items":[{"sku":"X1","qty":2}],</text>
+      <text x="405" y="116" fill="#57534e" font-size="9"> "total":49.99,"tags":["promo"]}</text>
+      <text x="525" y="148" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">ADVANTAGES</text>
+      <text x="405" y="165" fill="#c2410c" font-size="10">✓  Schema-less / evolving shape</text>
+      <text x="405" y="181" fill="#c2410c" font-size="10">✓  One row = one document</text>
+      <text x="405" y="197" fill="#c2410c" font-size="10">✓  Generated col index on path</text>
+      <text x="405" y="213" fill="#c2410c" font-size="10">✓  Binary BJSON partial update</text>
+      <text x="525" y="233" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">CONSTRAINTS</text>
+      <text x="405" y="250" fill="#57534e" font-size="10">✗  Full doc deserialised per read</text>
+      <text x="405" y="266" fill="#57534e" font-size="10">✗  No FK, no cross-path JOIN</text>
+      <!-- centre arrow label -->
+      <text x="350" y="160" text-anchor="middle" fill="#57534e" font-size="10">vs</text>
+    </svg>
+  </div>
+
+  <p>The canonical guidance is: store <em>structured</em> data that you query by column value in normalised tables; use JSON for genuinely semi-structured, sparse, or user-extensible data where the shape varies across rows. Avoid the antipattern of stuffing everything into a single JSON column to avoid migrations — you lose all optimizer cardinality statistics on the fields within.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Schema Design Gotchas</h2>
+
+  <p>Production schema problems tend to cluster around a small set of recurring antipatterns. Recognising them early — during design review rather than post-launch — saves enormous migration pain.</p>
+
+  <h3>Too Many Columns</h3>
+  <p>InnoDB stores rows in 16 KB pages. A table with 200 VARCHAR columns can push a single row past the 8126-byte inline threshold, forcing most columns off-page. Additionally, SELECT * across such a table transfers enormous amounts of unnecessary data across the network. MySQL's internal row parsing also becomes slower as column count grows. The limit is hard at 4096 columns, but performance degrades well before that.</p>
+
+  <h3>ENUM Misuse</h3>
+  <p><code>ENUM</code> looks attractive: it stores values as a 1- or 2-byte integer internally while surfacing a human-readable string. The problem is that adding a new valid value requires an <code>ALTER TABLE</code>, which is a blocking operation on older MySQL versions and an online DDL operation in 8.0+ but still risks production impact. More critically, the set of valid values is embedded in the column definition — not in an application-level lookup table where it can be queried and extended without schema changes. Use <code>TINYINT</code> + a lookup table, or <code>VARCHAR</code> if the domain is truly open-ended.</p>
+
+  <h3>NULL Abuse</h3>
+  <p>NULL has well-defined semantics — "unknown" or "not applicable" — but is frequently misused as a sentinel for "not yet set," "zero," or "empty string." Problems arise because: NULL propagates through arithmetic (<code>1 + NULL = NULL</code>), comparisons require <code>IS NULL</code> not <code>= NULL</code>, and MyISAM/InnoDB must store a null-bitmap per row even when a column is rarely null. Wherever a column has a sensible default, declare it <code>NOT NULL DEFAULT ''</code> or <code>NOT NULL DEFAULT 0</code>. Reserve NULL for genuinely unknown values.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Schema Anti-Pattern Catalog</text>
+      <!-- three cards -->
+      <!-- card 1 -->
+      <rect x="20" y="35" width="200" height="200" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <rect x="20" y="35" width="200" height="30" rx="6" fill="#c2410c"/>
+      <text x="120" y="55" text-anchor="middle" fill="#fff" font-weight="700">Too Many Columns</text>
+      <text x="30" y="82" fill="#57534e" font-size="10">symptoms:</text>
+      <text x="30" y="97" fill="#c2410c" font-size="10">· SELECT * = 50 KB / row</text>
+      <text x="30" y="112" fill="#c2410c" font-size="10">· row > 8126 B → off-page</text>
+      <text x="30" y="127" fill="#c2410c" font-size="10">· &gt;100 cols in one table</text>
+      <text x="30" y="148" fill="#57534e" font-size="10">fix:</text>
+      <text x="30" y="163" fill="#16a34a" font-size="10">✓ Vertical decompose</text>
+      <text x="30" y="178" fill="#16a34a" font-size="10">✓ JSON for sparse attrs</text>
+      <text x="30" y="193" fill="#16a34a" font-size="10">✓ Never SELECT *</text>
+      <!-- card 2 -->
+      <rect x="250" y="35" width="200" height="200" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <rect x="250" y="35" width="200" height="30" rx="6" fill="#c2410c"/>
+      <text x="350" y="55" text-anchor="middle" fill="#fff" font-weight="700">ENUM Misuse</text>
+      <text x="260" y="82" fill="#57534e" font-size="10">symptoms:</text>
+      <text x="260" y="97" fill="#c2410c" font-size="10">· New state → ALTER TABLE</text>
+      <text x="260" y="112" fill="#c2410c" font-size="10">· Domain in DDL not app</text>
+      <text x="260" y="127" fill="#c2410c" font-size="10">· App must know all values</text>
+      <text x="260" y="148" fill="#57534e" font-size="10">fix:</text>
+      <text x="260" y="163" fill="#16a34a" font-size="10">✓ TINYINT + lookup table</text>
+      <text x="260" y="178" fill="#16a34a" font-size="10">✓ FK to status table</text>
+      <text x="260" y="193" fill="#16a34a" font-size="10">✓ VARCHAR for open sets</text>
+      <!-- card 3 -->
+      <rect x="480" y="35" width="200" height="200" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <rect x="480" y="35" width="200" height="30" rx="6" fill="#c2410c"/>
+      <text x="580" y="55" text-anchor="middle" fill="#fff" font-weight="700">NULL Abuse</text>
+      <text x="490" y="82" fill="#57534e" font-size="10">symptoms:</text>
+      <text x="490" y="97" fill="#c2410c" font-size="10">· 1+NULL = NULL surprise</text>
+      <text x="490" y="112" fill="#c2410c" font-size="10">· IS NULL everywhere</text>
+      <text x="490" y="127" fill="#c2410c" font-size="10">· NULL as sentinel zero</text>
+      <text x="490" y="148" fill="#57534e" font-size="10">fix:</text>
+      <text x="490" y="163" fill="#16a34a" font-size="10">✓ NOT NULL DEFAULT ''</text>
+      <text x="490" y="178" fill="#16a34a" font-size="10">✓ NOT NULL DEFAULT 0</text>
+      <text x="490" y="193" fill="#16a34a" font-size="10">✓ Reserve NULL = unknown</text>
+      <!-- bottom note -->
+      <text x="350" y="248" text-anchor="middle" fill="#57534e" font-size="10">Other anti-patterns: EAV tables, polymorphic FK, storing timestamps as VARCHAR</text>
+    </svg>
+  </div>
+
+  <p>Entity-Attribute-Value (EAV) schemas deserve special mention. An EAV table stores all attributes as rows in a generic <code>(entity_id, attribute_name, attribute_value)</code> table, circumventing schema evolution costs. The query cost is enormous: retrieving a single "row" requires pivoting dozens of rows from the EAV table. The optimizer has no column statistics on attribute values. Indexed lookups on values require full scans or at best a range scan on the value column with poor selectivity. EAV is almost always the wrong answer for a relational database.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Schema Management and Migrations</h2>
+
+  <p>Altering a large table in production MySQL is one of the most nerve-wracking DBA operations. A naïve <code>ALTER TABLE</code> on a 500 GB table can lock the table for hours. MySQL 8.0 supports online DDL for many operation types via <code>ALGORITHM=INPLACE, LOCK=NONE</code>, but not all operations qualify, and even online DDL consumes I/O that impacts query latency.</p>
+
+  <p>Two open-source tools have become the de facto standard for zero-downtime schema changes in MySQL production environments: <strong>gh-ost</strong> (GitHub's Online Schema Transformation) and <strong>pt-online-schema-change</strong> (Percona Toolkit).</p>
+
+  <h3>gh-ost Pipeline</h3>
+  <p>gh-ost works by connecting to MySQL as a replication client. It creates a shadow table (<code>_tablename_gho</code>), copies rows in batches, and simultaneously tails the binary log to apply concurrent DML changes to the shadow table. When the shadow table catches up, gh-ost performs a brief atomic rename. Because it uses the binlog rather than triggers, it imposes lower write amplification than pt-osc. It also exposes a Unix socket for real-time throttle control without restarting the migration.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">gh-ost / pt-osc Online Schema Migration Pipeline</text>
+      <!-- original table -->
+      <rect x="20" y="50" width="130" height="60" rx="5" fill="#bbf7d0" stroke="#16a34a" stroke-width="2"/>
+      <text x="85" y="75" text-anchor="middle" fill="#14532d" font-weight="700">Original</text>
+      <text x="85" y="92" text-anchor="middle" fill="#14532d" font-size="10">users (old schema)</text>
+      <!-- ghost table -->
+      <rect x="285" y="50" width="130" height="60" rx="5" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="350" y="75" text-anchor="middle" fill="#c2410c" font-weight="700">_users_gho</text>
+      <text x="350" y="92" text-anchor="middle" fill="#c2410c" font-size="10">(shadow, new schema)</text>
+      <!-- final table -->
+      <rect x="550" y="50" width="130" height="60" rx="5" fill="#14532d" stroke="#14532d" stroke-width="2"/>
+      <text x="615" y="75" text-anchor="middle" fill="#fff" font-weight="700">users</text>
+      <text x="615" y="92" text-anchor="middle" fill="#bbf7d0" font-size="10">(new schema, live)</text>
+      <!-- step arrows -->
+      <line x1="150" y1="80" x2="280" y2="80" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="276,76 284,80 276,84" fill="#16a34a"/>
+      <text x="215" y="72" text-anchor="middle" fill="#16a34a" font-size="10">1. batch copy</text>
+      <line x1="415" y1="80" x2="545" y2="80" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="541,76 549,80 541,84" fill="#c2410c"/>
+      <text x="480" y="72" text-anchor="middle" fill="#c2410c" font-size="10">3. atomic rename</text>
+      <!-- binlog feed -->
+      <rect x="180" y="150" width="145" height="50" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="252" y="172" text-anchor="middle" fill="#14532d" font-weight="700">Binary Log</text>
+      <text x="252" y="188" text-anchor="middle" fill="#57534e" font-size="10">INSERT/UPDATE/DELETE</text>
+      <line x1="85" y1="110" x2="85" y2="175" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="85" y1="175" x2="180" y2="175" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="176,171 184,175 176,179" fill="#16a34a"/>
+      <line x1="325" y1="175" x2="350" y2="175" stroke="#c2410c" stroke-width="1.5"/>
+      <line x1="350" y1="175" x2="350" y2="110" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="346,114 350,106 354,114" fill="#c2410c"/>
+      <text x="370" y="168" fill="#c2410c" font-size="10">2. apply concurrent</text>
+      <text x="370" y="182" fill="#c2410c" font-size="10">DML from binlog</text>
+      <!-- throttle socket -->
+      <rect x="30" y="210" width="140" height="40" rx="5" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="100" y="228" text-anchor="middle" fill="#c2410c" font-size="10">Unix socket</text>
+      <text x="100" y="243" text-anchor="middle" fill="#c2410c" font-size="10">throttle / pause / status</text>
+      <line x1="85" y1="210" x2="85" y2="175" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <!-- labels at bottom -->
+      <text x="350" y="270" text-anchor="middle" fill="#57534e" font-size="10">gh-ost uses binlog stream (low write amp); pt-osc uses triggers (higher overhead, simpler setup)</text>
+    </svg>
+  </div>
+
+  <p>For migration safety, always test on a staging environment first, measure row-copy throughput against your peak DML rate, and configure <code>--max-load</code> thresholds to pause the copy when the server comes under write pressure. With gh-ost's socket interface you can even hook the migration into your CI/CD pipeline and automatically pause during deployments or traffic spikes.</p>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

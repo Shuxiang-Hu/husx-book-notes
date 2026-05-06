@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch11 · Scaling MySQL — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch11 · Scaling MySQL</h1>
+  <p class="lead">Scaling MySQL is not a single lever but a layered set of architectural decisions — from adding read replicas to sharding to adopting purpose-built middleware — each trading operational complexity for additional capacity headroom.</p>
+
+  <!-- ── Section 1: What Is Scaling ─────────────────────────────────────── -->
+  <h2>What Is Scaling</h2>
+  <p>Scaling a database system means increasing its ability to handle more load — more queries per second, more concurrent connections, more data — without degrading latency or availability. The first and most critical decision is whether to scale <em>vertically</em> (making a single node bigger) or <em>horizontally</em> (adding more nodes). These strategies are not mutually exclusive, but the choice of when to stop scaling vertically and begin distributing load is among the most consequential an engineering team will make.</p>
+  <p>Vertical scaling is attractive because it requires no application changes: upgrade to a 96-vCPU machine with 768 GB of RAM and a PCIe NVMe array, and throughput rises immediately. InnoDB's buffer pool scales with RAM, and more CPU threads reduce contention on the query execution pipeline. However, vertical scaling has a hard ceiling — both physical hardware limits and cost curves that grow super-linearly at the top tier. A single MySQL primary also remains a single point of failure for writes regardless of how large the machine is.</p>
+  <p>Horizontal scaling distributes load across multiple machines. For MySQL this typically begins with read replicas, progresses to functional decomposition of the schema across multiple clusters, and eventually reaches full horizontal sharding. Each step multiplies operational surface area: more nodes to monitor, more replication lag to reason about, more places for split-brain to occur during a failover.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <!-- Background bands -->
+      <rect x="0" y="0" width="700" height="320" rx="6" fill="#f0fdf4"/>
+      <!-- Vertical axis label -->
+      <text x="18" y="170" font-size="11" fill="#14532d" font-weight="700" transform="rotate(-90,18,170)" text-anchor="middle">CAPACITY</text>
+      <!-- Horizontal axis -->
+      <line x1="50" y1="270" x2="660" y2="270" stroke="#57534e" stroke-width="1.5"/>
+      <text x="355" y="295" font-size="11" fill="#57534e" text-anchor="middle">LOAD / GROWTH OVER TIME</text>
+      <!-- Vertical axis -->
+      <line x1="50" y1="40" x2="50" y2="270" stroke="#57534e" stroke-width="1.5"/>
+
+      <!-- Vertical scaling curve (tapers off) -->
+      <path d="M 60 250 C 160 200, 260 120, 340 90 C 380 75, 420 72, 460 70" stroke="#c2410c" stroke-width="2.5" fill="none" stroke-dasharray="6,3"/>
+      <text x="470" y="68" font-size="10" fill="#c2410c" font-weight="700">Vertical scaling</text>
+      <text x="470" y="81" font-size="9" fill="#c2410c">(ceiling hit)</text>
+
+      <!-- Horizontal scaling curve (keeps rising) -->
+      <path d="M 60 250 C 160 220, 280 170, 400 120 C 480 90, 560 60, 640 42" stroke="#16a34a" stroke-width="2.5" fill="none"/>
+      <text x="548" y="38" font-size="10" fill="#16a34a" font-weight="700">Horizontal scaling</text>
+
+      <!-- Decision point marker -->
+      <circle cx="310" cy="135" r="7" fill="#c2410c" opacity="0.85"/>
+      <line x1="310" y1="128" x2="310" y2="80" stroke="#c2410c" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="315" y="77" font-size="10" fill="#c2410c" font-weight="700">Decision point:</text>
+      <text x="315" y="89" font-size="9" fill="#57534e">vertical ROI diminishes,</text>
+      <text x="315" y="101" font-size="9" fill="#57534e">consider horizontal</text>
+
+      <!-- Stage labels on x axis -->
+      <text x="80"  y="285" font-size="9" fill="#57534e" text-anchor="middle">Single node</text>
+      <text x="210" y="285" font-size="9" fill="#57534e" text-anchor="middle">Bigger node</text>
+      <text x="360" y="285" font-size="9" fill="#57534e" text-anchor="middle">Near hardware limit</text>
+      <text x="560" y="285" font-size="9" fill="#57534e" text-anchor="middle">Multi-node / sharding</text>
+
+      <!-- Legend -->
+      <rect x="52" y="44" width="140" height="40" rx="4" fill="white" stroke="#bbf7d0"/>
+      <line x1="62" y1="62" x2="82" y2="62" stroke="#c2410c" stroke-width="2.5" stroke-dasharray="5,3"/>
+      <text x="86" y="65" font-size="9" fill="#57534e">Vertical (diminishing)</text>
+      <line x1="62" y1="76" x2="82" y2="76" stroke="#16a34a" stroke-width="2.5"/>
+      <text x="86" y="79" font-size="9" fill="#57534e">Horizontal (linear+)</text>
+    </svg>
+  </div>
+
+  <p>The decision matrix is roughly: if your working set fits in memory and write throughput is below ~20 k TPS, vertical scaling combined with read replicas is usually sufficient and dramatically simpler. Once your write throughput saturates a single InnoDB instance, or your dataset exceeds the largest available RAM tier by a wide margin, you must distribute writes — either through functional sharding or horizontal sharding.</p>
+
+  <!-- ── Section 2: Read vs Write Workloads ────────────────────────────── -->
+  <h2>Read vs Write Workloads</h2>
+  <p>Before choosing a scaling pattern, you must characterize your workload. A read-bound system spends the vast majority of its query budget on <code>SELECT</code> statements — product pages, search results, reporting dashboards. A write-bound system is dominated by <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> — order ingestion, event pipelines, IoT telemetry. Many systems are mixed but have a clear dominant axis that determines where the bottleneck lives.</p>
+  <p>Read-bound workloads scale cleanly with additional replicas: the binary log streams writes to each replica, the primary handles all mutations, and a load balancer distributes reads. The replication lag budget becomes the key SLO. Write-bound workloads cannot be relieved by adding replicas — every replica must still apply every write from the primary, so replication lag worsens as write volume climbs. Write-bound systems require either a bigger primary (vertical), sharding (horizontal partition of writes), or a fundamentally different storage model.</p>
+  <p>A useful heuristic from the book: measure reads-per-second and writes-per-second from <code>Com_select</code> vs <code>Com_insert + Com_update + Com_delete</code> in <code>SHOW GLOBAL STATUS</code>. A read:write ratio above 10:1 typically means read-pool scaling is the right first step. Below 3:1, you are write-bound and replica fanout will not help.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="300" rx="6" fill="#f0fdf4"/>
+
+      <!-- Read-bound box -->
+      <rect x="40" y="30" width="280" height="220" rx="6" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+      <text x="180" y="55" font-size="12" fill="#c2410c" font-weight="700" text-anchor="middle">READ-BOUND</text>
+      <text x="180" y="70" font-size="9" fill="#57534e" text-anchor="middle">Read:Write &gt; 10:1</text>
+
+      <rect x="60"  y="88" width="240" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="180" y="107" font-size="10" fill="#14532d" text-anchor="middle" font-weight="700">Add Read Replicas</text>
+
+      <rect x="60"  y="126" width="240" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="180" y="145" font-size="10" fill="#14532d" text-anchor="middle" font-weight="700">ProxySQL / HAProxy load balancing</text>
+
+      <rect x="60"  y="164" width="240" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="180" y="183" font-size="10" fill="#14532d" text-anchor="middle" font-weight="700">Query caching layer (Redis)</text>
+
+      <rect x="60"  y="202" width="240" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="180" y="221" font-size="10" fill="#14532d" text-anchor="middle" font-weight="700">Read-replica routing rules</text>
+
+      <!-- Write-bound box -->
+      <rect x="380" y="30" width="280" height="220" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="520" y="55" font-size="12" fill="#c2410c" font-weight="700" text-anchor="middle">WRITE-BOUND</text>
+      <text x="520" y="70" font-size="9" fill="#57534e" text-anchor="middle">Read:Write &lt; 3:1</text>
+
+      <rect x="400" y="88" width="240" height="28" rx="4" fill="#fecaca" stroke="#c2410c"/>
+      <text x="520" y="107" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="700">Vertical scale (bigger primary)</text>
+
+      <rect x="400" y="126" width="240" height="28" rx="4" fill="#fecaca" stroke="#c2410c"/>
+      <text x="520" y="145" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="700">Functional sharding by domain</text>
+
+      <rect x="400" y="164" width="240" height="28" rx="4" fill="#fecaca" stroke="#c2410c"/>
+      <text x="520" y="183" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="700">Horizontal sharding (hash/range)</text>
+
+      <rect x="400" y="202" width="240" height="28" rx="4" fill="#fecaca" stroke="#c2410c"/>
+      <text x="520" y="221" font-size="10" fill="#7f1d1d" text-anchor="middle" font-weight="700">Vitess or NewSQL alternative</text>
+
+      <!-- divider arrow -->
+      <text x="350" y="145" font-size="20" fill="#57534e" text-anchor="middle">⇔</text>
+      <text x="350" y="162" font-size="8" fill="#57534e" text-anchor="middle">workload</text>
+      <text x="350" y="173" font-size="8" fill="#57534e" text-anchor="middle">axis</text>
+
+      <!-- Metric row -->
+      <text x="180" y="266" font-size="9" fill="#16a34a" text-anchor="middle" font-weight="700">Solution: replica fan-out</text>
+      <text x="520" y="266" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">Solution: write distribution</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 3: Read Pools with Load Balancing ──────────────────────── -->
+  <h2>Read Pools with Load Balancing</h2>
+  <p>The simplest horizontal scaling technique for read-heavy MySQL deployments is a read pool: one primary that accepts all writes, and a set of asynchronous replicas that serve all read traffic. The application must be aware of the distinction — or a middleware proxy must enforce it transparently.</p>
+  <p>ProxySQL is the de-facto standard for MySQL proxy-based load balancing. It operates at the MySQL protocol level, speaking the MySQL wire protocol to both clients and backends. Query routing rules are defined in <code>mysql_query_rules</code>: a rule can match on regex against the query text, the client username, the schema, or the digest hash, and route the query to a named hostgroup. Reads go to the replica hostgroup; writes (or queries touching replication-sensitive tables) go to the primary hostgroup.</p>
+  <p>ProxySQL also handles multiplexing: a single backend connection can be reused across many client sessions, dramatically reducing the connection overhead on MySQL. It tracks server health via <code>SELECT 1</code> heartbeats and automatically removes unhealthy nodes from the pool. For replica lag awareness, ProxySQL can query <code>SHOW REPLICA STATUS</code> periodically and demote replicas that exceed a configured lag threshold to a lower-priority hostgroup, ensuring reads do not observe stale data beyond the application's tolerance.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="340" rx="6" fill="#f0fdf4"/>
+
+      <!-- App tier -->
+      <rect x="260" y="18" width="180" height="44" rx="5" fill="#14532d" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="38" font-size="11" fill="white" text-anchor="middle" font-weight="700">Application</text>
+      <text x="350" y="52" font-size="9" fill="#bbf7d0" text-anchor="middle">app server / service</text>
+
+      <!-- Arrow down to ProxySQL -->
+      <line x1="350" y1="62" x2="350" y2="100" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="350,100 344,88 356,88" fill="#c2410c"/>
+      <text x="358" y="84" font-size="9" fill="#c2410c">all queries</text>
+
+      <!-- ProxySQL box -->
+      <rect x="220" y="100" width="260" height="54" rx="5" fill="#c2410c" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="350" y="122" font-size="12" fill="white" text-anchor="middle" font-weight="700">ProxySQL</text>
+      <text x="350" y="138" font-size="9" fill="#fff7ed" text-anchor="middle">mysql_query_rules · hostgroup routing</text>
+      <text x="350" y="149" font-size="9" fill="#fff7ed" text-anchor="middle">connection multiplexing · lag monitoring</text>
+
+      <!-- Arrow to primary -->
+      <line x1="270" y1="154" x2="150" y2="200" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="150,200 155,188 163,196" fill="#c2410c"/>
+      <text x="168" y="176" font-size="9" fill="#c2410c" font-weight="700">Writes</text>
+      <text x="155" y="188" font-size="8" fill="#57534e">hostgroup 10</text>
+
+      <!-- Arrow to replica 1 -->
+      <line x1="350" y1="154" x2="350" y2="200" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="350,200 344,188 356,188" fill="#16a34a"/>
+      <text x="358" y="178" font-size="9" fill="#16a34a" font-weight="700">Reads</text>
+
+      <!-- Arrow to replica 2 -->
+      <line x1="430" y1="154" x2="560" y2="200" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="560,200 552,192 562,188" fill="#16a34a"/>
+
+      <!-- Primary node -->
+      <rect x="60" y="200" width="170" height="70" rx="5" fill="#14532d" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="145" y="222" font-size="11" fill="white" text-anchor="middle" font-weight="700">Primary</text>
+      <text x="145" y="238" font-size="9" fill="#bbf7d0" text-anchor="middle">hostgroup 10</text>
+      <text x="145" y="252" font-size="9" fill="#bbf7d0" text-anchor="middle">all DDL + DML writes</text>
+      <text x="145" y="264" font-size="8" fill="#86efac" text-anchor="middle">binlog stream →</text>
+
+      <!-- Replica 1 -->
+      <rect x="265" y="200" width="170" height="70" rx="5" fill="#166534" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="222" font-size="11" fill="white" text-anchor="middle" font-weight="700">Replica 1</text>
+      <text x="350" y="238" font-size="9" fill="#bbf7d0" text-anchor="middle">hostgroup 20</text>
+      <text x="350" y="252" font-size="9" fill="#bbf7d0" text-anchor="middle">read-only queries</text>
+      <text x="350" y="264" font-size="8" fill="#86efac" text-anchor="middle">lag: &lt; 500 ms</text>
+
+      <!-- Replica 2 -->
+      <rect x="470" y="200" width="170" height="70" rx="5" fill="#166534" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="555" y="222" font-size="11" fill="white" text-anchor="middle" font-weight="700">Replica 2</text>
+      <text x="555" y="238" font-size="9" fill="#bbf7d0" text-anchor="middle">hostgroup 20</text>
+      <text x="555" y="252" font-size="9" fill="#bbf7d0" text-anchor="middle">read-only queries</text>
+      <text x="555" y="264" font-size="8" fill="#86efac" text-anchor="middle">lag: &lt; 500 ms</text>
+
+      <!-- Health check annotations -->
+      <text x="350" y="300" font-size="9" fill="#57534e" text-anchor="middle">ProxySQL health checks: SELECT 1 every 1s · lag check via SHOW REPLICA STATUS</text>
+      <text x="350" y="315" font-size="9" fill="#57534e" text-anchor="middle">Demote replica to hostgroup 30 if lag &gt; threshold · restore on recovery</text>
+    </svg>
+  </div>
+
+  <p>A critical operational detail: <code>mysql_query_rules</code> matching is evaluated in ascending <code>rule_id</code> order and stops at the first match. Rules that explicitly match write patterns (<code>^INSERT|^UPDATE|^DELETE|^REPLACE|^CALL</code>) should have lower rule IDs than the catch-all read rule, to prevent writes from being accidentally routed to replicas. Transactions that mix reads and writes must be pinned to the primary for the entire transaction duration; ProxySQL handles this automatically when it detects a <code>BEGIN</code> or when the client uses an implicit transaction.</p>
+
+  <!-- ── Section 4: Functional Sharding ───────────────────────────────── -->
+  <h2>Functional Sharding</h2>
+  <p>Functional sharding — also called vertical decomposition or service-per-database — is the technique of breaking a single large MySQL instance into multiple separate clusters, each owning the data for a specific business domain. Instead of one monolithic schema containing <code>users</code>, <code>orders</code>, <code>inventory</code>, <code>payments</code>, and <code>analytics</code> tables, each domain gets its own MySQL cluster with its own primary and replicas.</p>
+  <p>This pattern scales write throughput because each domain's writes hit a dedicated primary that no longer competes for InnoDB buffer pool space, redo log bandwidth, or lock contention with other domains. It also enables independent tuning: the orders cluster might be configured for durability (<code>innodb_flush_log_at_trx_commit=1</code>, synchronous binlog), while the analytics cluster can trade some durability for throughput (<code>innodb_flush_log_at_trx_commit=2</code>). It simplifies compliance and access control: the payments cluster can have stricter network ACLs and auditing than the catalog cluster.</p>
+  <p>The primary cost of functional sharding is the elimination of cross-domain JOIN operations. Queries that previously could join <code>users</code> with <code>orders</code> in a single SQL statement now require application-level joins or a separate aggregation layer. This pushes complexity into service code and forces teams to reason explicitly about data consistency across domain boundaries — a problem that was previously invisible inside a monolithic schema.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="320" rx="6" fill="#f0fdf4"/>
+
+      <!-- API Gateway / App -->
+      <rect x="270" y="14" width="160" height="40" rx="5" fill="#14532d" stroke="#16a34a"/>
+      <text x="350" y="32" font-size="11" fill="white" text-anchor="middle" font-weight="700">API Gateway</text>
+      <text x="350" y="46" font-size="9" fill="#bbf7d0" text-anchor="middle">routes by domain</text>
+
+      <!-- Arrows down to services -->
+      <line x1="210" y1="54" x2="130" y2="100" stroke="#57534e" stroke-width="1.5"/>
+      <polygon points="130,100 128,88 138,91" fill="#57534e"/>
+      <line x1="310" y1="54" x2="310" y2="100" stroke="#57534e" stroke-width="1.5"/>
+      <polygon points="310,100 304,88 316,88" fill="#57534e"/>
+      <line x1="390" y1="54" x2="390" y2="100" stroke="#57534e" stroke-width="1.5"/>
+      <polygon points="390,100 384,88 396,88" fill="#57534e"/>
+      <line x1="490" y1="54" x2="570" y2="100" stroke="#57534e" stroke-width="1.5"/>
+      <polygon points="570,100 568,88 578,91" fill="#57534e"/>
+
+      <!-- User Service -->
+      <rect x="30"  y="100" width="160" height="36" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="110" y="116" font-size="10" fill="white" text-anchor="middle" font-weight="700">User Service</text>
+      <text x="110" y="129" font-size="9" fill="#fff7ed" text-anchor="middle">users, profiles, auth</text>
+
+      <!-- Order Service -->
+      <rect x="230" y="100" width="160" height="36" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="310" y="116" font-size="10" fill="white" text-anchor="middle" font-weight="700">Order Service</text>
+      <text x="310" y="129" font-size="9" fill="#fff7ed" text-anchor="middle">orders, line items</text>
+
+      <!-- Inventory Service -->
+      <rect x="315" y="100" width="160" height="36" rx="4" fill="#c2410c" stroke="#fb923c" x="310"/>
+      <rect x="310" y="100" width="160" height="36" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <!-- redraw properly -->
+      <rect x="430" y="100" width="160" height="36" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="510" y="116" font-size="10" fill="white" text-anchor="middle" font-weight="700">Inventory Service</text>
+      <text x="510" y="129" font-size="9" fill="#fff7ed" text-anchor="middle">products, stock, SKUs</text>
+
+      <!-- Payment Service -->
+      <rect x="600" y="100" width="0" height="36" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <!-- adjust last one -->
+      <rect x="595" y="100" width="90" height="36" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="640" y="116" font-size="10" fill="white" text-anchor="middle" font-weight="700">Payments</text>
+      <text x="640" y="129" font-size="9" fill="#fff7ed" text-anchor="middle">txn, billing</text>
+
+      <!-- Arrows to MySQL clusters -->
+      <line x1="110" y1="136" x2="110" y2="195" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="110,195 104,183 116,183" fill="#16a34a"/>
+      <line x1="310" y1="136" x2="310" y2="195" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="310,195 304,183 316,183" fill="#16a34a"/>
+      <line x1="510" y1="136" x2="510" y2="195" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="510,195 504,183 516,183" fill="#16a34a"/>
+      <line x1="640" y1="136" x2="640" y2="195" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="640,195 634,183 646,183" fill="#16a34a"/>
+
+      <!-- MySQL cluster boxes -->
+      <rect x="30"  y="195" width="160" height="90" rx="4" fill="#166534" stroke="#16a34a"/>
+      <text x="110" y="215" font-size="10" fill="white" text-anchor="middle" font-weight="700">MySQL Cluster A</text>
+      <text x="110" y="230" font-size="8" fill="#bbf7d0" text-anchor="middle">user_db</text>
+      <text x="110" y="244" font-size="8" fill="#86efac" text-anchor="middle">Primary + 2 Replicas</text>
+      <text x="110" y="258" font-size="8" fill="#86efac" text-anchor="middle">tuned: OLTP reads</text>
+      <text x="110" y="272" font-size="8" fill="#86efac" text-anchor="middle">~50 GB dataset</text>
+
+      <rect x="230" y="195" width="160" height="90" rx="4" fill="#166534" stroke="#16a34a"/>
+      <text x="310" y="215" font-size="10" fill="white" text-anchor="middle" font-weight="700">MySQL Cluster B</text>
+      <text x="310" y="230" font-size="8" fill="#bbf7d0" text-anchor="middle">order_db</text>
+      <text x="310" y="244" font-size="8" fill="#86efac" text-anchor="middle">Primary + 2 Replicas</text>
+      <text x="310" y="258" font-size="8" fill="#86efac" text-anchor="middle">tuned: high write TPS</text>
+      <text x="310" y="272" font-size="8" fill="#86efac" text-anchor="middle">~200 GB dataset</text>
+
+      <rect x="430" y="195" width="160" height="90" rx="4" fill="#166534" stroke="#16a34a"/>
+      <text x="510" y="215" font-size="10" fill="white" text-anchor="middle" font-weight="700">MySQL Cluster C</text>
+      <text x="510" y="230" font-size="8" fill="#bbf7d0" text-anchor="middle">inventory_db</text>
+      <text x="510" y="244" font-size="8" fill="#86efac" text-anchor="middle">Primary + 1 Replica</text>
+      <text x="510" y="258" font-size="8" fill="#86efac" text-anchor="middle">tuned: point reads</text>
+      <text x="510" y="272" font-size="8" fill="#86efac" text-anchor="middle">~30 GB dataset</text>
+
+      <rect x="597" y="195" width="95" height="90" rx="4" fill="#166534" stroke="#c2410c" stroke-width="2"/>
+      <text x="645" y="215" font-size="9" fill="white" text-anchor="middle" font-weight="700">MySQL D</text>
+      <text x="645" y="230" font-size="8" fill="#bbf7d0" text-anchor="middle">payment_db</text>
+      <text x="645" y="244" font-size="8" fill="#86efac" text-anchor="middle">strict ACL</text>
+      <text x="645" y="258" font-size="8" fill="#fecaca" text-anchor="middle">PCI-DSS zone</text>
+      <text x="645" y="272" font-size="8" fill="#86efac" text-anchor="middle">encrypted</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 5: Horizontal Sharding ──────────────────────────────── -->
+  <h2>Horizontal Sharding</h2>
+  <p>When a single domain's data volume or write rate exceeds what one MySQL cluster can handle, horizontal sharding partitions the rows of a table across multiple physically separate MySQL instances called shards. Each shard holds a subset of the data; together, all shards hold the complete dataset. A shard key — typically the primary key or a tenant identifier — determines which shard owns a given row.</p>
+  <p>Consistent hashing is the most common shard-routing algorithm. The shard key is passed through a deterministic hash function, and the hash space (typically 0–2³² − 1) is divided into virtual nodes (vnodes) assigned to physical shards. When a new shard is added, only the vnodes re-assigned to the new shard need to migrate data — the rest of the ring is undisturbed. This property makes consistent hashing superior to simple modulo hashing for clusters that grow over time.</p>
+  <p>Cross-shard queries are the central pain point of horizontal sharding. A query like <code>SELECT * FROM orders WHERE status = 'pending'</code> — with no shard-key predicate — must fan out to every shard, gather results, merge and sort them in a scatter-gather coordinator, and return the merged result. Latency is bounded by the slowest shard, not the average. This makes cross-shard analytics extremely expensive and pushes teams toward maintaining a separate denormalized read store (Elasticsearch, BigQuery, ClickHouse) for ad-hoc queries.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="360" rx="6" fill="#f0fdf4"/>
+
+      <!-- Hash ring background circle -->
+      <circle cx="350" cy="195" r="130" fill="none" stroke="#bbf7d0" stroke-width="20" stroke-opacity="0.4"/>
+      <circle cx="350" cy="195" r="130" fill="none" stroke="#16a34a" stroke-width="2"/>
+
+      <!-- Ring label -->
+      <text x="350" y="199" font-size="11" fill="#14532d" text-anchor="middle" font-weight="700">Consistent</text>
+      <text x="350" y="215" font-size="11" fill="#14532d" text-anchor="middle" font-weight="700">Hash Ring</text>
+      <text x="350" y="231" font-size="9"  fill="#57534e" text-anchor="middle">0 … 2³²−1</text>
+
+      <!-- Shard nodes on the ring: top, right, bottom-right, bottom-left, left -->
+      <!-- Shard 0: top (350, 65) -->
+      <circle cx="350" cy="65" r="22" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" cy="65" y="61" font-size="9" fill="white" text-anchor="middle" font-weight="700">Shard 0</text>
+      <text x="350" y="73" font-size="8" fill="#bbf7d0" text-anchor="middle">users 0–19%</text>
+
+      <!-- Shard 1: right (476, 121) -->
+      <circle cx="476" cy="121" r="22" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="476" y="117" font-size="9" fill="white" text-anchor="middle" font-weight="700">Shard 1</text>
+      <text x="476" y="129" font-size="8" fill="#bbf7d0" text-anchor="middle">users 20–39%</text>
+
+      <!-- Shard 2: lower-right (476, 269) -->
+      <circle cx="476" cy="269" r="22" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="476" y="265" font-size="9" fill="white" text-anchor="middle" font-weight="700">Shard 2</text>
+      <text x="476" y="277" font-size="8" fill="#bbf7d0" text-anchor="middle">users 40–59%</text>
+
+      <!-- Shard 3: bottom (350, 325) -->
+      <circle cx="350" cy="325" r="22" fill="#c2410c" stroke="#fb923c" stroke-width="2"/>
+      <text x="350" y="321" font-size="9" fill="white" text-anchor="middle" font-weight="700">Shard 3</text>
+      <text x="350" y="333" font-size="8" fill="#fff7ed" text-anchor="middle">users 60–79%</text>
+
+      <!-- Shard 4: left (224, 269) -->
+      <circle cx="224" cy="269" r="22" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="224" y="265" font-size="9" fill="white" text-anchor="middle" font-weight="700">Shard 4</text>
+      <text x="224" y="277" font-size="8" fill="#bbf7d0" text-anchor="middle">users 80–99%</text>
+
+      <!-- Application / router box at top -->
+      <rect x="270" y="5" width="160" height="34" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="350" y="20" font-size="10" fill="white" text-anchor="middle" font-weight="700">Shard Router</text>
+      <text x="350" y="33" font-size="8" fill="#fff7ed" text-anchor="middle">hash(shard_key) → shard ID</text>
+
+      <!-- Arrow from router to ring -->
+      <line x1="350" y1="39" x2="350" y2="43" stroke="#c2410c" stroke-width="1.5"/>
+
+      <!-- Fan-out annotation -->
+      <rect x="20" y="138" width="170" height="62" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="105" y="155" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">Cross-shard query fan-out</text>
+      <text x="105" y="169" font-size="8" fill="#57534e" text-anchor="middle">SELECT without shard key</text>
+      <text x="105" y="182" font-size="8" fill="#57534e" text-anchor="middle">→ scatter to all shards</text>
+      <text x="105" y="195" font-size="8" fill="#57534e" text-anchor="middle">→ merge results in app</text>
+      <line x1="190" y1="168" x2="224" y2="168" stroke="#c2410c" stroke-width="1" stroke-dasharray="3,2"/>
+      <line x1="190" y1="168" x2="350" y2="100" stroke="#c2410c" stroke-width="1" stroke-dasharray="3,2" opacity="0.4"/>
+
+      <!-- vnode labels on ring arc -->
+      <text x="420" y="195" font-size="8" fill="#16a34a" text-anchor="middle">vnodes</text>
+      <circle cx="436" cy="155" r="3" fill="#16a34a"/>
+      <circle cx="450" cy="195" r="3" fill="#16a34a"/>
+      <circle cx="436" cy="235" r="3" fill="#16a34a"/>
+    </svg>
+  </div>
+
+  <p>Shard rebalancing — moving vnodes from one shard to another — is operationally complex. Data must be migrated while the cluster remains online, queries must be dual-routed during the migration window, and a cutover mechanism must ensure no writes are lost at the moment of transition. Tools like Vitess implement this natively; teams doing bare-metal sharding typically build custom migration scripts using <code>pt-online-schema-change</code> semantics.</p>
+
+  <!-- ── Section 6: Vitess Architecture ──────────────────────────────── -->
+  <h2>Vitess Architecture</h2>
+  <p>Vitess is an open-source sharding middleware originally built at YouTube to scale MySQL horizontally. It wraps MySQL instances with a layer of orchestration that handles shard routing, connection pooling, query rewriting, online schema changes, and resharding — all transparently to the application. Vitess is deployed at Slack, Square, GitHub, HubSpot, and many other high-volume MySQL users.</p>
+  <p>The key components of Vitess are VTGate, VTTablet, and the topology service. <strong>VTGate</strong> is a stateless proxy that receives queries from applications, parses and validates them against the VSchema (Vitess's sharding metadata), rewrites scatter queries into per-shard queries, and aggregates results. Because VTGate is stateless, it scales horizontally behind a standard load balancer. <strong>VTTablet</strong> is a sidecar process that runs alongside each MySQL instance. It handles connection pooling (eliminating the per-connection overhead that crushes MySQL at high concurrency), enforces query timeouts, and mediates with the topology service for leader election. <strong>The topology service</strong> — typically etcd or ZooKeeper — stores keyspace and shard metadata, current primary information, and shard routing tables.</p>
+  <p>The VSchema defines keyspaces (logical databases), vindexes (sharding keys and their hash functions), and the mapping of tables to keyspaces. When VTGate receives a query, it resolves the vindex values in the WHERE clause to a set of shard IDs, and routes the query to the corresponding VTTablet instances. Queries with no vindex predicate are scattered to all shards (a full scatter) and merged by VTGate.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="380" rx="6" fill="#f0fdf4"/>
+
+      <!-- Application -->
+      <rect x="260" y="12" width="180" height="44" rx="5" fill="#14532d" stroke="#16a34a"/>
+      <text x="350" y="32" font-size="11" fill="white" text-anchor="middle" font-weight="700">Application</text>
+      <text x="350" y="48" font-size="9" fill="#bbf7d0" text-anchor="middle">MySQL protocol (port 3306)</text>
+
+      <!-- Arrow to VTGate -->
+      <line x1="350" y1="56" x2="350" y2="94" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="350,94 344,82 356,82" fill="#c2410c"/>
+
+      <!-- VTGate cluster -->
+      <rect x="180" y="94" width="340" height="58" rx="5" fill="#c2410c" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="350" y="116" font-size="12" fill="white" text-anchor="middle" font-weight="700">VTGate (stateless, N instances)</text>
+      <text x="350" y="131" font-size="9" fill="#fff7ed" text-anchor="middle">query parse · VSchema lookup · shard routing · result merge</text>
+      <text x="350" y="144" font-size="9" fill="#fff7ed" text-anchor="middle">scatter/gather · connection multiplexing · auth</text>
+
+      <!-- Topology service -->
+      <rect x="560" y="94" width="120" height="58" rx="5" fill="#57534e" stroke="#e7e5e4"/>
+      <text x="620" y="116" font-size="10" fill="white" text-anchor="middle" font-weight="700">Topology</text>
+      <text x="620" y="130" font-size="9" fill="#e7e5e4" text-anchor="middle">etcd / ZooKeeper</text>
+      <text x="620" y="143" font-size="8" fill="#e7e5e4" text-anchor="middle">keyspace metadata</text>
+      <line x1="520" y1="122" x2="560" y2="122" stroke="#e7e5e4" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- Arrows to VTTablets -->
+      <line x1="260" y1="152" x2="135" y2="205" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="135,205 136,193 145,199" fill="#16a34a"/>
+      <line x1="330" y1="152" x2="310" y2="205" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="310,205 308,193 318,196" fill="#16a34a"/>
+      <line x1="420" y1="152" x2="440" y2="205" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="440,205 436,193 446,195" fill="#16a34a"/>
+      <line x1="490" y1="152" x2="565" y2="205" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="565,205 560,194 569,197" fill="#16a34a"/>
+
+      <!-- VTTablet + MySQL stacks: 4 shards -->
+      <!-- Shard 0 -->
+      <rect x="30"  y="205" width="160" height="44" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="110" y="223" font-size="9" fill="white" text-anchor="middle" font-weight="700">VTTablet · Shard 0</text>
+      <text x="110" y="238" font-size="8" fill="#fff7ed" text-anchor="middle">conn pool · query guard</text>
+      <line x1="110" y1="249" x2="110" y2="267" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="110,267 104,255 116,255" fill="#16a34a"/>
+      <rect x="30"  y="267" width="160" height="44" rx="4" fill="#14532d" stroke="#16a34a"/>
+      <text x="110" y="287" font-size="9" fill="white" text-anchor="middle" font-weight="700">MySQL · Shard 0</text>
+      <text x="110" y="301" font-size="8" fill="#bbf7d0" text-anchor="middle">keyspace-0 / -00</text>
+
+      <!-- Shard 1 -->
+      <rect x="210" y="205" width="160" height="44" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="290" y="223" font-size="9" fill="white" text-anchor="middle" font-weight="700">VTTablet · Shard 1</text>
+      <text x="290" y="238" font-size="8" fill="#fff7ed" text-anchor="middle">conn pool · query guard</text>
+      <line x1="290" y1="249" x2="290" y2="267" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="290,267 284,255 296,255" fill="#16a34a"/>
+      <rect x="210" y="267" width="160" height="44" rx="4" fill="#14532d" stroke="#16a34a"/>
+      <text x="290" y="287" font-size="9" fill="white" text-anchor="middle" font-weight="700">MySQL · Shard 1</text>
+      <text x="290" y="301" font-size="8" fill="#bbf7d0" text-anchor="middle">keyspace-0 / -01</text>
+
+      <!-- Shard 2 -->
+      <rect x="390" y="205" width="160" height="44" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="470" y="223" font-size="9" fill="white" text-anchor="middle" font-weight="700">VTTablet · Shard 2</text>
+      <text x="470" y="238" font-size="8" fill="#fff7ed" text-anchor="middle">conn pool · query guard</text>
+      <line x1="470" y1="249" x2="470" y2="267" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="470,267 464,255 476,255" fill="#16a34a"/>
+      <rect x="390" y="267" width="160" height="44" rx="4" fill="#14532d" stroke="#16a34a"/>
+      <text x="470" y="287" font-size="9" fill="white" text-anchor="middle" font-weight="700">MySQL · Shard 2</text>
+      <text x="470" y="301" font-size="8" fill="#bbf7d0" text-anchor="middle">keyspace-0 / -80</text>
+
+      <!-- Shard 3 -->
+      <rect x="510" y="205" width="160" height="44" rx="4" fill="#c2410c" stroke="#fb923c" x="500"/>
+      <rect x="500" y="205" width="170" height="44" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="585" y="223" font-size="9" fill="white" text-anchor="middle" font-weight="700">VTTablet · Shard 3</text>
+      <text x="585" y="238" font-size="8" fill="#fff7ed" text-anchor="middle">conn pool · query guard</text>
+      <line x1="585" y1="249" x2="585" y2="267" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="585,267 579,255 591,255" fill="#16a34a"/>
+      <rect x="500" y="267" width="170" height="44" rx="4" fill="#14532d" stroke="#16a34a"/>
+      <text x="585" y="287" font-size="9" fill="white" text-anchor="middle" font-weight="700">MySQL · Shard 3</text>
+      <text x="585" y="301" font-size="8" fill="#bbf7d0" text-anchor="middle">keyspace-0 / -ff</text>
+
+      <!-- Bottom note -->
+      <text x="350" y="340" font-size="9" fill="#57534e" text-anchor="middle">Each shard has its own primary + replica(s) managed independently</text>
+      <text x="350" y="355" font-size="9" fill="#57534e" text-anchor="middle">VReplication handles online reshard: split shard -80 into -40 and 40-80</text>
+    </svg>
+  </div>
+
+  <p>Vitess's resharding capability — <code>VReplication</code> — allows an operator to split a shard into two new shards online. VReplication streams row changes from the source shard to the two target shards using a MySQL binlog-like mechanism, backfills historical data, and performs a traffic cutover with sub-second downtime by briefly buffering writes during the switch. This makes Vitess fundamentally different from hand-rolled sharding: the shard topology is mutable without application downtime.</p>
+
+  <!-- ── Comparison Table ──────────────────────────────────────────────── -->
+  <h2>Scaling Pattern Decision Matrix</h2>
+  <p>Choosing a scaling pattern depends on the dominant bottleneck (reads vs writes), the size and complexity of the dataset, team operational maturity, and tolerance for distributed systems complexity. The table below summarizes the four principal options.</p>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Pattern</th>
+        <th>When to Use</th>
+        <th>Complexity</th>
+        <th>Consistency Model</th>
+        <th>Operational Cost</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Read Pool</strong> (primary + replicas + ProxySQL)</td>
+        <td>Read:write ratio &gt; 5:1; dataset fits in RAM; write TPS &lt; 20 k; team already runs replication</td>
+        <td>Low — additive to existing replication; no schema changes required</td>
+        <td>Eventually consistent reads from replicas; strong reads must target primary explicitly</td>
+        <td>Low — ProxySQL is mature and well-documented; replica lag alerting is the primary concern</td>
+      </tr>
+      <tr>
+        <td><strong>Functional Sharding</strong> (per-domain clusters)</td>
+        <td>Monolith has clearly separable domains; write TPS on one domain is saturating the shared cluster; teams are organized around services</td>
+        <td>Medium — requires schema decomposition, service-level data access rewrites, cross-domain join elimination</td>
+        <td>Strong within each domain; eventual / application-enforced across domains; distributed transactions are avoided by design</td>
+        <td>Medium — N independent clusters to provision, monitor, and patch; on-call burden scales with cluster count</td>
+      </tr>
+      <tr>
+        <td><strong>Horizontal Sharding</strong> (consistent hash, custom)</td>
+        <td>Single-domain dataset too large or write-heavy for one cluster; Vitess overhead is unacceptable; team has deep MySQL expertise</td>
+        <td>High — shard key selection is irreversible; cross-shard queries require scatter-gather; schema changes must be applied to every shard</td>
+        <td>Strong within a shard; cross-shard requires application coordination; XA transactions rarely used in practice</td>
+        <td>High — custom migration tooling, shard rebalancing scripts, dual-write cutover procedures; significant incident risk during reshards</td>
+      </tr>
+      <tr>
+        <td><strong>Vitess</strong></td>
+        <td>Largest MySQL deployments; need online resharding; need transparent connection pooling at scale (&gt; 10 k app threads); willing to invest in Vitess operational expertise</td>
+        <td>Very High — VTGate, VTTablet, topology service, VSchema, vtctld; learning curve is steep; query compatibility constraints (limited subquery support)</td>
+        <td>Tunable per-keyspace; eventual by default for replica reads; strong reads available via primary tablet routing</td>
+        <td>Very High — Vitess team expertise is rare; separate upgrade cycles for Vitess vs MySQL; topology service becomes a critical dependency</td>
+      </tr>
+    </tbody>
+  </table>
+
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

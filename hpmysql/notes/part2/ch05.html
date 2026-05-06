@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch05 · Optimizing Server Settings — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch05 · Optimizing Server Settings</h1>
+  <p class="lead">InnoDB configuration is the highest-leverage tuning surface in MySQL — a handful of variables governing the buffer pool, redo log, and I/O subsystem determine the performance ceiling for all workloads running above them.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       1. HOW MYSQL CONFIGURATION WORKS
+       ═══════════════════════════════════════════════════ -->
+  <h2>How MySQL Configuration Works</h2>
+  <p>MySQL variables exist in a three-level scope hierarchy. <strong>Global</strong> variables apply to the server instance as a whole — changes take effect for new connections (and sometimes immediately). <strong>Session</strong> variables can be overridden per connection and revert to the global default when the session ends. A handful of variables are set at statement execution time. Understanding this scope model prevents the common mistake of tuning a session variable in one connection and wondering why performance doesn't improve server-wide.</p>
+  <p>Configuration sources are evaluated in priority order: command-line arguments override configuration file values, which override compiled-in defaults. The <code>my.cnf</code> (or <code>my.ini</code> on Windows) file is processed in a fixed section order: <code>[mysqld_safe]</code>, then <code>[mysqld]</code>. On MySQL 8.0, the <code>SET PERSIST</code> command writes a variable to <code>mysqld-auto.cnf</code> in the data directory, which is applied after <code>my.cnf</code> — use this for runtime tuning that survives restarts without editing configuration files.</p>
+  <p>The authors' approach to configuration: start with the minimum viable set (buffer pool size, redo log size, <code>innodb_flush_method</code>), measure under production load, then tune incrementally. Cargo-culting a 200-line <code>my.cnf</code> from the internet is a reliable way to make things worse.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="j" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Configuration Scope Hierarchy &amp; Source Priority</text>
+
+      <!-- Global scope -->
+      <rect x="60" y="44" width="580" height="60" rx="8" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="67" text-anchor="middle" font-size="12" font-weight="700" fill="#bbf7d0">Global Scope</text>
+      <text x="350" y="86" text-anchor="middle" font-size="10" fill="#86efac">innodb_buffer_pool_size · innodb_log_file_size · max_connections · innodb_flush_method</text>
+      <text x="120" y="98" font-size="9" fill="#6ee7b7">affects: all new connections</text>
+
+      <!-- Session scope -->
+      <rect x="110" y="120" width="480" height="56" rx="8" fill="#c2410c" stroke="#fb923c" stroke-width="2"/>
+      <text x="350" y="143" text-anchor="middle" font-size="12" font-weight="700" fill="#fff7ed">Session Scope</text>
+      <text x="350" y="160" text-anchor="middle" font-size="10" fill="#fef3c7">sort_buffer_size · join_buffer_size · tmp_table_size · transaction_isolation</text>
+      <text x="180" y="170" font-size="9" fill="#fed7aa">overrides global for this connection only</text>
+
+      <!-- Statement level -->
+      <rect x="200" y="192" width="300" height="44" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="212" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Statement / Hint</text>
+      <text x="350" y="228" text-anchor="middle" font-size="10" fill="#57534e">/*+ NO_INDEX_MERGE() */ · SET_VAR(sort_buffer_size=…)</text>
+
+      <!-- arrows -->
+      <line x1="350" y1="104" x2="350" y2="120" stroke="#57534e" stroke-width="1.5" marker-end="url(#j)"/>
+      <line x1="350" y1="176" x2="350" y2="192" stroke="#57534e" stroke-width="1.5" marker-end="url(#j)"/>
+
+      <!-- Source priority on right -->
+      <rect x="580" y="44" width="0" height="0"/>
+      <text x="660" y="60" text-anchor="end" font-size="9" fill="#c2410c" font-weight="700">Source priority (high→low):</text>
+      <text x="660" y="76" text-anchor="end" font-size="9" fill="#57534e">1. CLI flags</text>
+      <text x="660" y="90" text-anchor="end" font-size="9" fill="#57534e">2. mysqld-auto.cnf (SET PERSIST)</text>
+      <text x="660" y="104" text-anchor="end" font-size="9" fill="#57534e">3. my.cnf [mysqld] section</text>
+      <text x="660" y="118" text-anchor="end" font-size="9" fill="#57534e">4. compiled-in defaults</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       2. INNODB BUFFER POOL
+       ═══════════════════════════════════════════════════ -->
+  <h2>InnoDB Buffer Pool</h2>
+  <p>The buffer pool is the single most important configuration in MySQL. It is a shared memory pool of 16 KB pages that caches data and index pages from InnoDB tablespaces. When a query needs a page, InnoDB first checks the buffer pool — a hit costs nothing beyond a mutex acquisition; a miss triggers a synchronous disk read and the page is loaded into the pool.</p>
+  <p>On a dedicated MySQL server, set <code>innodb_buffer_pool_size</code> to 70–80% of available physical RAM. Leave headroom for the OS page cache, per-thread buffers (sort_buffer, join_buffer, tmp_table), and MySQL's own overhead. A 128 GB server should have roughly 96–100 GB allocated to the buffer pool. In MySQL 8.0, the buffer pool can be resized online without restart via <code>SET GLOBAL innodb_buffer_pool_size = N</code>, though the resize is asynchronous and may take time on large pools.</p>
+  <p>Multiple buffer pool instances (<code>innodb_buffer_pool_instances</code>) reduce mutex contention on multi-core servers. The pool is partitioned into instances and pages are assigned to instances by page hash. The default of 8 instances is appropriate for most servers; increase to 16 for very high-concurrency workloads.</p>
+
+  <h3>LRU List Structure</h3>
+  <p>The buffer pool uses a modified LRU (Least Recently Used) algorithm with a <strong>midpoint insertion strategy</strong>. The LRU list is logically divided into a "young" (hot) half and an "old" (cold) half. New pages enter at the midpoint — the boundary between the two halves — rather than the head of the list. This prevents large sequential scans (which would evict the entire hot half in a naive LRU) from polluting the pool. A page is promoted to the hot half only after being accessed again while still in the cold half.</p>
+  <p>The <strong>flush list</strong> tracks dirty pages (modified but not yet written to disk) in order of their oldest modification LSN. The background flush thread writes dirty pages to disk in LSN order to maintain a valid checkpoint. The <strong>free list</strong> holds unallocated pages available for immediate use.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="k" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+        <marker id="kg" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Buffer Pool Internal Structure — LRU / Flush / Free Lists</text>
+
+      <!-- LRU list -->
+      <rect x="30" y="42" width="400" height="120" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="50" y="62" font-size="11" font-weight="700" fill="#14532d">LRU List</text>
+      <!-- head = MRU -->
+      <text x="50" y="80" font-size="9" fill="#57534e">HEAD (MRU)</text>
+      <!-- hot section -->
+      <rect x="44" y="86" width="170" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="129" y="104" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">Young / Hot half (63%)</text>
+      <!-- midpoint marker -->
+      <line x1="214" y1="82" x2="214" y2="150" stroke="#c2410c" stroke-width="2" stroke-dasharray="4,2"/>
+      <text x="216" y="78" font-size="9" fill="#c2410c">midpoint</text>
+      <text x="216" y="152" font-size="8" fill="#c2410c">insert new pages here</text>
+      <!-- old section -->
+      <rect x="220" y="86" width="185" height="28" rx="4" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="312" y="104" text-anchor="middle" font-size="10" font-weight="700" fill="#c2410c">Old / Cold half (37%)</text>
+      <!-- tail = LRU -->
+      <text x="50" y="145" font-size="9" fill="#57534e">TAIL (LRU evicted)</text>
+      <line x1="44" y1="138" x2="405" y2="138" stroke="#e7e5e4" stroke-width="1"/>
+      <!-- eviction arrow -->
+      <line x1="415" y1="100" x2="438" y2="100" stroke="#c2410c" stroke-width="2" marker-end="url(#k)"/>
+      <text x="440" y="94" font-size="8" fill="#c2410c">evict</text>
+      <text x="440" y="106" font-size="8" fill="#c2410c">LRU tail</text>
+
+      <!-- Flush list -->
+      <rect x="30" y="180" width="180" height="80" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="120" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">Flush List</text>
+      <text x="120" y="218" text-anchor="middle" font-size="9" fill="#57534e">dirty pages ordered</text>
+      <text x="120" y="232" text-anchor="middle" font-size="9" fill="#57534e">by oldest_modification</text>
+      <text x="120" y="246" text-anchor="middle" font-size="9" fill="#57534e">LSN (checkpoint writes)</text>
+
+      <!-- Free list -->
+      <rect x="240" y="180" width="180" height="80" rx="8" fill="#e7e5e4" stroke="#57534e" stroke-width="2"/>
+      <text x="330" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#57534e">Free List</text>
+      <text x="330" y="218" text-anchor="middle" font-size="9" fill="#57534e">clean pages available</text>
+      <text x="330" y="232" text-anchor="middle" font-size="9" fill="#57534e">for immediate reuse</text>
+      <text x="330" y="246" text-anchor="middle" font-size="9" fill="#57534e">no I/O required</text>
+
+      <!-- Disk -->
+      <rect x="480" y="180" width="190" height="80" rx="8" fill="#14532d"/>
+      <text x="575" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">InnoDB Data Files</text>
+      <text x="575" y="218" text-anchor="middle" font-size="9" fill="#86efac">ibdata1 / tablespace .ibd</text>
+      <text x="575" y="234" text-anchor="middle" font-size="9" fill="#86efac">pages flushed by</text>
+      <text x="575" y="248" text-anchor="middle" font-size="9" fill="#86efac">page_cleaner thread</text>
+
+      <!-- flush arrow -->
+      <line x1="210" y1="220" x2="480" y2="220" stroke="#c2410c" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#k)"/>
+      <text x="345" y="212" text-anchor="middle" font-size="9" fill="#c2410c">checkpoint flush</text>
+
+      <!-- read arrow from disk to free list -->
+      <line x1="480" y1="240" x2="420" y2="240" stroke="#16a34a" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#kg)"/>
+      <text x="450" y="256" text-anchor="middle" font-size="9" fill="#16a34a">page miss → load</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       3. INNODB REDO LOG
+       ═══════════════════════════════════════════════════ -->
+  <h2>InnoDB Redo Log</h2>
+  <p>The redo log (write-ahead log) is InnoDB's durability mechanism. Before modifying any buffer pool page, InnoDB writes a compact redo log record describing the change. After the redo log record is durably written to disk (an fsync), the transaction can be considered committed, even if the corresponding data page is still dirty in the buffer pool. On crash recovery, InnoDB replays the redo log forward from the last checkpoint to reconstruct all changes.</p>
+  <p>The redo log is a fixed-size circular file (or set of files). In MySQL 8.0, the redo log size is controlled by <code>innodb_redo_log_capacity</code> (replacing the old <code>innodb_log_file_size × innodb_log_files_in_group</code>). A larger redo log allows more dirty pages to be resident in the buffer pool between checkpoints, reducing I/O write amplification. A smaller redo log forces more frequent checkpoints and more disk writes, but reduces crash recovery time.</p>
+  <p>The critical constraint is the <strong>checkpoint LSN</strong>: InnoDB cannot overwrite the redo log ring buffer beyond the oldest dirty page's LSN. If the write position catches up to the checkpoint, InnoDB must synchronously flush dirty pages — a <em>furious flushing</em> event that causes severe write latency spikes. The target is to size the redo log such that the write position and checkpoint stay comfortably apart. The rule of thumb: redo log capacity should be at least 1 hour of redo log generation at peak write throughput.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="l" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+        <marker id="lr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#c2410c"/>
+        </marker>
+        <marker id="lg" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">InnoDB Redo Log Ring Buffer — LSN, Write Position, Checkpoint</text>
+
+      <!-- Ring buffer as a circle -->
+      <circle cx="350" cy="165" r="110" fill="none" stroke="#e7e5e4" stroke-width="20"/>
+      <!-- Used (active) segment — green from checkpoint to write_pos (about 200 degrees) -->
+      <path d="M 350 55 A 110 110 0 1 1 200 250" fill="none" stroke="#bbf7d0" stroke-width="20"/>
+      <!-- Dirty segment — orange from flush_pos to write_pos -->
+      <path d="M 350 55 A 110 110 0 0 0 200 250" fill="none" stroke="#fff7ed" stroke-width="20"/>
+
+      <!-- Checkpoint position (bottom-left) -->
+      <circle cx="210" cy="252" r="10" fill="#16a34a"/>
+      <text x="160" y="272" font-size="10" fill="#16a34a" font-weight="700" text-anchor="middle">checkpoint</text>
+      <text x="160" y="286" font-size="9" fill="#16a34a" text-anchor="middle">LSN advance</text>
+
+      <!-- Write position (top) -->
+      <circle cx="350" cy="55" r="10" fill="#c2410c"/>
+      <text x="350" y="36" font-size="10" fill="#c2410c" font-weight="700" text-anchor="middle">write_pos</text>
+      <text x="350" y="22" font-size="9" fill="#c2410c" text-anchor="middle">(new redo records appended here)</text>
+
+      <!-- Arrow showing rotation direction -->
+      <path d="M 440 100 A 110 110 0 0 1 460 165" fill="none" stroke="#57534e" stroke-width="2" marker-end="url(#l)"/>
+      <text x="500" y="140" font-size="9" fill="#57534e" text-anchor="middle">writes</text>
+      <text x="500" y="153" font-size="9" fill="#57534e" text-anchor="middle">advance →</text>
+
+      <!-- Free segment indicator -->
+      <text x="350" y="165" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Redo Log</text>
+      <text x="350" y="182" text-anchor="middle" font-size="10" fill="#57534e">Ring Buffer</text>
+      <text x="350" y="198" text-anchor="middle" font-size="9" fill="#57534e">innodb_redo_log_capacity</text>
+
+      <!-- Free zone label -->
+      <text x="460" y="220" font-size="9" fill="#e7e5e4" text-anchor="middle">free zone</text>
+      <text x="460" y="233" font-size="9" fill="#57534e" text-anchor="middle">(reusable)</text>
+
+      <!-- Danger: write_pos nearing checkpoint -->
+      <rect x="20" y="126" width="180" height="56" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
+      <text x="110" y="148" text-anchor="middle" font-size="10" font-weight="700" fill="#c2410c">Danger Zone</text>
+      <text x="110" y="164" text-anchor="middle" font-size="9" fill="#57534e">write_pos ≈ checkpoint</text>
+      <text x="110" y="178" text-anchor="middle" font-size="9" fill="#c2410c">→ furious flushing spike</text>
+
+      <!-- Size recommendation -->
+      <rect x="510" y="230" width="180" height="50" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="600" y="250" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">Rule of Thumb</text>
+      <text x="600" y="266" text-anchor="middle" font-size="9" fill="#57534e">≥ 1 hr of peak redo</text>
+      <text x="600" y="278" text-anchor="middle" font-size="9" fill="#57534e">generation rate</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       4. INNODB TABLESPACE
+       ═══════════════════════════════════════════════════ -->
+  <h2>InnoDB Tablespace</h2>
+  <p>InnoDB stores table data in <em>tablespaces</em> — logical containers that map to one or more files on disk. MySQL 5.6 introduced <code>innodb_file_per_table=ON</code> (the modern default), giving each table its own <code>.ibd</code> file. This mode enables online table operations like <code>ALTER TABLE … ALGORITHM=INPLACE</code> and makes it easy to reclaim disk space by dropping tables. The original <em>shared tablespace</em> model (all tables in <code>ibdata1</code>) is still used for the InnoDB system tables, undo logs (in older versions), and the data dictionary.</p>
+  <p>MySQL 8.0 further separates undo logs into dedicated undo tablespace files (<code>undo_001</code>, <code>undo_002</code> by default), allowing the undo tablespace to be purged and truncated independently. This is important for workloads with long-running transactions that accumulate large undo histories.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">InnoDB Tablespace Structure — file-per-table vs shared</text>
+
+      <!-- Shared tablespace (ibdata1) -->
+      <rect x="30" y="46" width="200" height="186" rx="8" fill="#e7e5e4" stroke="#57534e" stroke-width="2"/>
+      <text x="130" y="68" text-anchor="middle" font-size="11" font-weight="700" fill="#57534e">ibdata1</text>
+      <text x="130" y="84" text-anchor="middle" font-size="9" fill="#57534e">(shared tablespace)</text>
+      <rect x="48" y="94" width="164" height="24" rx="4" fill="#57534e"/>
+      <text x="130" y="110" text-anchor="middle" font-size="9" fill="#ffffff">InnoDB system tables</text>
+      <rect x="48" y="124" width="164" height="24" rx="4" fill="#57534e"/>
+      <text x="130" y="140" text-anchor="middle" font-size="9" fill="#ffffff">Data Dictionary (8.0: .sdi)</text>
+      <rect x="48" y="154" width="164" height="24" rx="4" fill="#c2410c"/>
+      <text x="130" y="170" text-anchor="middle" font-size="9" fill="#ffffff">Undo logs (pre-8.0)</text>
+      <rect x="48" y="184" width="164" height="24" rx="4" fill="#c2410c"/>
+      <text x="130" y="200" text-anchor="middle" font-size="9" fill="#ffffff">Rollback segments</text>
+      <text x="130" y="226" text-anchor="middle" font-size="9" fill="#c2410c">Never shrinks!</text>
+
+      <!-- File-per-table -->
+      <rect x="270" y="46" width="200" height="186" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="370" y="68" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">File-Per-Table</text>
+      <text x="370" y="84" text-anchor="middle" font-size="9" fill="#57534e">innodb_file_per_table=ON (default)</text>
+      <rect x="288" y="94" width="164" height="24" rx="4" fill="#16a34a"/>
+      <text x="370" y="110" text-anchor="middle" font-size="9" fill="#ffffff">mydb/orders.ibd</text>
+      <rect x="288" y="124" width="164" height="24" rx="4" fill="#16a34a"/>
+      <text x="370" y="140" text-anchor="middle" font-size="9" fill="#ffffff">mydb/users.ibd</text>
+      <rect x="288" y="154" width="164" height="24" rx="4" fill="#16a34a"/>
+      <text x="370" y="170" text-anchor="middle" font-size="9" fill="#ffffff">mydb/products.ibd</text>
+      <rect x="288" y="184" width="164" height="24" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="370" y="200" text-anchor="middle" font-size="9" fill="#14532d">DROP TABLE → reclaim space</text>
+      <text x="370" y="226" text-anchor="middle" font-size="9" fill="#16a34a">Online DDL supported</text>
+
+      <!-- Undo tablespace (MySQL 8.0) -->
+      <rect x="510" y="46" width="170" height="186" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="595" y="68" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">Undo Tablespace</text>
+      <text x="595" y="84" text-anchor="middle" font-size="9" fill="#57534e">(MySQL 8.0 separate files)</text>
+      <rect x="528" y="94" width="134" height="24" rx="4" fill="#fb923c"/>
+      <text x="595" y="110" text-anchor="middle" font-size="9" fill="#ffffff">undo_001</text>
+      <rect x="528" y="124" width="134" height="24" rx="4" fill="#fb923c"/>
+      <text x="595" y="140" text-anchor="middle" font-size="9" fill="#ffffff">undo_002</text>
+      <rect x="528" y="154" width="134" height="24" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="595" y="170" text-anchor="middle" font-size="9" fill="#c2410c">purge + truncate</text>
+      <rect x="528" y="184" width="134" height="24" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="595" y="200" text-anchor="middle" font-size="9" fill="#c2410c">independently</text>
+      <text x="595" y="226" text-anchor="middle" font-size="9" fill="#16a34a">Long-txn friendly</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       5. I/O CONFIGURATION
+       ═══════════════════════════════════════════════════ -->
+  <h2>I/O Configuration</h2>
+  <p>InnoDB's I/O subsystem has several layers of configuration that interact with each other and with the underlying OS and filesystem. Getting these right is the difference between a MySQL server that saturates its storage and one that leaves I/O bandwidth on the table.</p>
+
+  <h3>innodb_flush_method</h3>
+  <p>This variable controls how InnoDB issues writes to disk. The most important options are:</p>
+  <ul>
+    <li><strong><code>O_DIRECT</code></strong> — Bypasses the OS page cache for data file reads and writes. Prevents double-buffering (data cached in both the buffer pool and the OS cache), the correct setting for a dedicated MySQL server with a large buffer pool. Required for accurate memory utilization — without it, the OS cache can silently consume RAM you thought was free.</li>
+    <li><strong><code>O_DIRECT_NO_FSYNC</code></strong> — Like O_DIRECT but skips the fsync on flushed pages. Safe on some filesystems (XFS, ext4 with journal) that provide write ordering guarantees. Can improve performance but requires validation.</li>
+    <li><strong><code>fsync</code></strong> (default) — Uses the OS page cache for reads and writes, then calls fsync() to flush. Correct for virtual machines where O_DIRECT may have issues with virtual disk drivers.</li>
+  </ul>
+
+  <h3>Doublewrite Buffer</h3>
+  <p>The doublewrite buffer protects against torn page writes — partial writes of a 16 KB InnoDB page that can occur if the system crashes mid-write on storage that writes in smaller atomic units than 16 KB. InnoDB writes pages to the doublewrite buffer area first, then to their actual tablespace location. On crash recovery, if a data page looks corrupt, InnoDB recovers the intact copy from the doublewrite buffer. On storage that guarantees atomic writes of 16 KB or larger (some NVMe drives, AWS io2), the doublewrite buffer can be disabled with <code>innodb_doublewrite=OFF</code> for a ~5–10% write performance gain.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="n" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+        <marker id="ng" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">I/O Write Path — Doublewrite Buffer &amp; flush_method</text>
+
+      <!-- Buffer pool dirty page -->
+      <rect x="30" y="50" width="150" height="50" rx="6" fill="#c2410c"/>
+      <text x="105" y="73" text-anchor="middle" font-size="10" font-weight="700" fill="#fff7ed">Dirty Page</text>
+      <text x="105" y="88" text-anchor="middle" font-size="9" fill="#fef3c7">buffer pool</text>
+
+      <!-- Step 1: write to DWB -->
+      <line x1="180" y1="75" x2="240" y2="75" stroke="#57534e" stroke-width="2" marker-end="url(#n)"/>
+      <text x="210" y="68" text-anchor="middle" font-size="9" fill="#57534e">1. write</text>
+
+      <!-- Doublewrite buffer -->
+      <rect x="240" y="50" width="160" height="50" rx="6" fill="#fb923c"/>
+      <text x="320" y="73" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">Doublewrite Buffer</text>
+      <text x="320" y="88" text-anchor="middle" font-size="9" fill="#fef3c7">ibdata1 / undo tbsp</text>
+
+      <!-- Step 2: fsync DWB -->
+      <line x1="400" y1="65" x2="400" y2="140" stroke="#c2410c" stroke-width="2" stroke-dasharray="4,2" marker-end="url(#n)"/>
+      <text x="415" y="106" font-size="9" fill="#c2410c">2. fsync</text>
+
+      <!-- Step 3: write to actual location -->
+      <line x1="400" y1="75" x2="490" y2="75" stroke="#57534e" stroke-width="2" marker-end="url(#n)"/>
+      <text x="445" y="68" text-anchor="middle" font-size="9" fill="#57534e">3. write</text>
+
+      <!-- Tablespace file -->
+      <rect x="490" y="50" width="180" height="50" rx="6" fill="#14532d"/>
+      <text x="580" y="73" text-anchor="middle" font-size="10" font-weight="700" fill="#bbf7d0">Tablespace (.ibd)</text>
+      <text x="580" y="88" text-anchor="middle" font-size="9" fill="#86efac">actual data location</text>
+
+      <!-- Step 4: fsync tablespace -->
+      <line x1="580" y1="100" x2="580" y2="140" stroke="#16a34a" stroke-width="2" stroke-dasharray="4,2" marker-end="url(#ng)"/>
+      <text x="596" y="124" font-size="9" fill="#16a34a">4. fsync</text>
+
+      <!-- Crash recovery note -->
+      <rect x="30" y="160" width="640" height="54" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="180" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Crash Recovery</text>
+      <text x="350" y="198" text-anchor="middle" font-size="10" fill="#57534e">If data page corrupt → restore from doublewrite buffer → continue redo log replay</text>
+      <text x="350" y="210" text-anchor="middle" font-size="9" fill="#c2410c">innodb_doublewrite=OFF safe only when storage guarantees atomic 16KB writes</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       6. CONCURRENCY SETTINGS
+       ═══════════════════════════════════════════════════ -->
+  <h2>Concurrency Settings</h2>
+  <p>MySQL concurrency is governed by two distinct subsystems: the <strong>thread cache</strong> (connection-level) and <strong>InnoDB thread concurrency</strong> (storage engine-level). Getting both right prevents two common failure modes: connection storm (too many OS threads waiting for CPU) and InnoDB concurrency bottleneck (threads serializing inside the storage engine).</p>
+
+  <h3>Thread Cache and max_connections</h3>
+  <p><code>max_connections</code> is the ceiling on simultaneous connected clients. Each connection consumes approximately 1–2 MB of RAM for its thread stack plus per-thread buffers. On a 128 GB server, 1000 connections consumes roughly 2 GB in thread overhead alone — before counting sort buffers or join buffers that may be allocated during query execution. The key insight: <code>max_connections</code> should be set based on what the server can <em>actually serve concurrently</em>, not as a high-water mark to allow growth. If 1000 connections are all active simultaneously, MySQL will likely be CPU-saturated long before memory is an issue.</p>
+  <p><code>thread_cache_size</code> controls how many idle threads are kept in a cache pool for reuse by new connections. Without this, every new connection requires an OS-level thread creation, which can add 1–5 ms of connection overhead. Set to roughly <code>max_connections / 10</code> — this is usually enough to absorb connection bursts without excess memory consumption.</p>
+
+  <h3>InnoDB Thread Concurrency</h3>
+  <p><code>innodb_thread_concurrency</code> limits how many threads can be executing inside InnoDB simultaneously. When this limit is reached, additional threads must wait in a queue (the <em>ticket</em> system). The correct value depends on CPU cores and workload. A common starting point is <code>2 × CPU cores</code>. Setting it to 0 (the default) disables the limit entirely, which can lead to excessive context switching on heavily loaded servers. The goal is to keep all CPU cores utilized without them fighting for InnoDB's internal mutexes.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="o" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Thread Pool &amp; InnoDB Concurrency Ticket System</text>
+
+      <!-- Connections queue -->
+      <rect x="20" y="50" width="140" height="160" rx="8" fill="#e7e5e4" stroke="#57534e" stroke-width="1.5"/>
+      <text x="90" y="70" text-anchor="middle" font-size="10" font-weight="700" fill="#57534e">Connections</text>
+      <rect x="36" y="80" width="108" height="18" rx="3" fill="#c2410c"/><text x="90" y="93" text-anchor="middle" font-size="8" fill="#fff">conn 1</text>
+      <rect x="36" y="102" width="108" height="18" rx="3" fill="#c2410c"/><text x="90" y="115" text-anchor="middle" font-size="8" fill="#fff">conn 2</text>
+      <rect x="36" y="124" width="108" height="18" rx="3" fill="#fb923c"/><text x="90" y="137" text-anchor="middle" font-size="8" fill="#fff">conn 3 (waiting)</text>
+      <rect x="36" y="146" width="108" height="18" rx="3" fill="#fb923c"/><text x="90" y="159" text-anchor="middle" font-size="8" fill="#fff">conn 4 (waiting)</text>
+      <rect x="36" y="168" width="108" height="18" rx="3" fill="#e7e5e4" stroke="#57534e"/><text x="90" y="181" text-anchor="middle" font-size="8" fill="#57534e">... up to max_connections</text>
+
+      <!-- thread cache -->
+      <rect x="180" y="50" width="120" height="80" rx="8" fill="#bbf7d0" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="240" y="70" text-anchor="middle" font-size="10" font-weight="700" fill="#14532d">Thread Cache</text>
+      <text x="240" y="88" text-anchor="middle" font-size="9" fill="#57534e">idle reusable</text>
+      <text x="240" y="103" text-anchor="middle" font-size="9" fill="#57534e">OS threads</text>
+      <text x="240" y="118" text-anchor="middle" font-size="9" fill="#14532d">thread_cache_size</text>
+      <line x1="160" y1="90" x2="180" y2="90" stroke="#16a34a" stroke-width="1.5" marker-end="url(#o)"/>
+
+      <!-- InnoDB concurrency gate -->
+      <rect x="340" y="50" width="180" height="160" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="430" y="70" text-anchor="middle" font-size="10" font-weight="700" fill="#c2410c">InnoDB Concurrency</text>
+      <text x="430" y="88" text-anchor="middle" font-size="9" fill="#57534e">innodb_thread_concurrency</text>
+      <!-- slots -->
+      <rect x="358" y="100" width="70" height="28" rx="4" fill="#16a34a"/><text x="393" y="118" text-anchor="middle" font-size="9" fill="#fff">active</text>
+      <rect x="434" y="100" width="70" height="28" rx="4" fill="#16a34a"/><text x="469" y="118" text-anchor="middle" font-size="9" fill="#fff">active</text>
+      <rect x="358" y="136" width="70" height="28" rx="4" fill="#16a34a"/><text x="393" y="154" text-anchor="middle" font-size="9" fill="#fff">active</text>
+      <rect x="434" y="136" width="70" height="28" rx="4" fill="#fb923c"/><text x="469" y="154" text-anchor="middle" font-size="9" fill="#fff">wait</text>
+      <text x="430" y="186" text-anchor="middle" font-size="9" fill="#c2410c">≤ 2×CPU cores</text>
+      <line x1="300" y1="115" x2="340" y2="115" stroke="#57534e" stroke-width="1.5" marker-end="url(#o)"/>
+
+      <!-- CPU -->
+      <rect x="560" y="80" width="120" height="100" rx="8" fill="#14532d"/>
+      <text x="620" y="120" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">CPU Cores</text>
+      <text x="620" y="138" text-anchor="middle" font-size="9" fill="#86efac">execute InnoDB</text>
+      <text x="620" y="152" text-anchor="middle" font-size="9" fill="#86efac">page operations</text>
+      <line x1="520" y1="130" x2="560" y2="130" stroke="#57534e" stroke-width="2" marker-end="url(#o)"/>
+
+      <!-- Legend -->
+      <rect x="20" y="230" width="12" height="12" fill="#c2410c"/>
+      <text x="36" y="241" font-size="9" fill="#57534e">active thread</text>
+      <rect x="120" y="230" width="12" height="12" fill="#fb923c"/>
+      <text x="136" y="241" font-size="9" fill="#57534e">waiting for concurrency ticket</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       TABLE: Critical InnoDB Config Variables
+       ═══════════════════════════════════════════════════ -->
+  <h2>Critical InnoDB Configuration Variables</h2>
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Variable</th>
+        <th>Default</th>
+        <th>Recommended</th>
+        <th>What It Controls</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>innodb_buffer_pool_size</code></td>
+        <td>128M</td>
+        <td>70–80% of RAM (e.g., 96G on 128G server)</td>
+        <td>Main data/index page cache. Single most impactful setting. Larger = more data stays in memory = fewer disk reads.</td>
+      </tr>
+      <tr>
+        <td><code>innodb_buffer_pool_instances</code></td>
+        <td>8</td>
+        <td>8–16 (1 per GB, max 64)</td>
+        <td>Partitions buffer pool to reduce mutex contention. Effective at high concurrency (&gt;8 threads active).</td>
+      </tr>
+      <tr>
+        <td><code>innodb_redo_log_capacity</code></td>
+        <td>100M</td>
+        <td>4G–16G (≥1 hr of peak redo generation)</td>
+        <td>Size of the circular redo log. Larger = less frequent checkpoint pressure = less furious flushing. 8.0 replaces innodb_log_file_size.</td>
+      </tr>
+      <tr>
+        <td><code>innodb_flush_method</code></td>
+        <td>fsync</td>
+        <td>O_DIRECT (dedicated host) / fsync (VM)</td>
+        <td>How InnoDB writes data files. O_DIRECT bypasses OS cache, prevents double-buffering, gives accurate memory stats.</td>
+      </tr>
+      <tr>
+        <td><code>innodb_flush_log_at_trx_commit</code></td>
+        <td>1</td>
+        <td>1 (full ACID) or 2 (tolerate 1s data loss)</td>
+        <td>Controls when redo log is flushed to disk per commit. 1=fsync on every commit (safest), 2=write to OS cache (1s loss risk), 0=write once/sec (high loss risk).</td>
+      </tr>
+      <tr>
+        <td><code>innodb_io_capacity</code></td>
+        <td>200</td>
+        <td>2000–20000 (NVMe), 1000 (SSD), 200 (HDD)</td>
+        <td>Baseline I/O operations per second InnoDB assumes it can sustain for background flushing. Set based on measured storage throughput.</td>
+      </tr>
+      <tr>
+        <td><code>innodb_io_capacity_max</code></td>
+        <td>2000</td>
+        <td>2× innodb_io_capacity</td>
+        <td>Maximum IOPS InnoDB uses during aggressive flushing. Prevent it from monopolizing I/O during checkpoint storms.</td>
+      </tr>
+      <tr>
+        <td><code>innodb_thread_concurrency</code></td>
+        <td>0 (unlimited)</td>
+        <td>0 or 2×CPU cores</td>
+        <td>Max threads executing simultaneously inside InnoDB. 0=no limit (fine for low concurrency); set explicitly for very high concurrency to prevent contention cascade.</td>
+      </tr>
+      <tr>
+        <td><code>innodb_doublewrite</code></td>
+        <td>ON</td>
+        <td>ON (unless NVMe with atomic writes)</td>
+        <td>Doublewrite buffer protects against torn page writes. Disable only when storage guarantees atomic 16KB writes — saves ~5–10% write overhead.</td>
+      </tr>
+      <tr>
+        <td><code>max_connections</code></td>
+        <td>151</td>
+        <td>200–1000 (match actual expected concurrency)</td>
+        <td>Maximum simultaneous client connections. Each connection consumes 1–2MB overhead. Oversizing increases memory pressure and crash recovery time.</td>
+      </tr>
+    </tbody>
+  </table>
+
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch03 · Performance Schema — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch03 · Performance Schema</h1>
+  <p class="lead">Performance Schema is MySQL's built-in low-overhead instrumentation engine — a system database of in-memory tables that expose exactly what the server is doing at any given moment, from individual statement execution stages to memory allocations and mutex waits.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       1. ARCHITECTURE OVERVIEW
+       ═══════════════════════════════════════════════════ -->
+  <h2>Architecture Overview</h2>
+  <p>Performance Schema (P_S) follows a classic producer-consumer architecture. <strong>Instruments</strong> are points in the MySQL source code that collect measurement data — a function call, a lock acquisition, a file read. <strong>Consumers</strong> are the in-memory tables that receive and aggregate that data. When an instrument fires, it only delivers data to consumers that are currently enabled, keeping overhead proportional to what you actually need to measure.</p>
+  <p>This design has two key implications. First, you pay only for what you enable — a server with all instruments and consumers disabled has near-zero overhead from P_S. Second, data collection is entirely in-memory with ring-buffer semantics; there is no persistence across restarts. Schema-level configuration (which instruments and consumers are enabled) can be persisted to a configuration file, but the collected data itself is ephemeral.</p>
+  <p>MySQL 8.0 enables Performance Schema by default with a balanced set of instruments and consumers active. The <code>performance_schema</code> system variable must be set at startup to enable or disable it entirely; you cannot change this at runtime.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="c" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Performance Schema: Instruments → Consumers → Tables</text>
+
+      <!-- Instruments column -->
+      <rect x="30" y="42" width="170" height="220" rx="8" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="115" y="64" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">Instruments</text>
+      <text x="115" y="80" text-anchor="middle" font-size="9" fill="#86efac">(code probe points)</text>
+      <rect x="48" y="92" width="134" height="22" rx="4" fill="#16a34a"/>
+      <text x="115" y="107" text-anchor="middle" font-size="9" fill="#ffffff">statement/sql/*</text>
+      <rect x="48" y="120" width="134" height="22" rx="4" fill="#16a34a"/>
+      <text x="115" y="135" text-anchor="middle" font-size="9" fill="#ffffff">wait/io/file/*</text>
+      <rect x="48" y="148" width="134" height="22" rx="4" fill="#16a34a"/>
+      <text x="115" y="163" text-anchor="middle" font-size="9" fill="#ffffff">wait/lock/table/*</text>
+      <rect x="48" y="176" width="134" height="22" rx="4" fill="#16a34a"/>
+      <text x="115" y="191" text-anchor="middle" font-size="9" fill="#ffffff">memory/sql/*</text>
+      <rect x="48" y="204" width="134" height="22" rx="4" fill="#16a34a"/>
+      <text x="115" y="219" text-anchor="middle" font-size="9" fill="#ffffff">stage/innodb/*</text>
+      <rect x="48" y="232" width="134" height="22" rx="4" fill="#16a34a"/>
+      <text x="115" y="247" text-anchor="middle" font-size="9" fill="#ffffff">transaction/*</text>
+
+      <!-- Arrow instruments → consumers -->
+      <line x1="200" y1="152" x2="260" y2="152" stroke="#57534e" stroke-width="2" marker-end="url(#c)"/>
+      <text x="230" y="145" text-anchor="middle" font-size="9" fill="#57534e">if enabled</text>
+
+      <!-- Consumers column -->
+      <rect x="260" y="42" width="170" height="220" rx="8" fill="#c2410c" stroke="#fb923c" stroke-width="2"/>
+      <text x="345" y="64" text-anchor="middle" font-size="11" font-weight="700" fill="#fff7ed">Consumers</text>
+      <text x="345" y="80" text-anchor="middle" font-size="9" fill="#fed7aa">(aggregation layers)</text>
+      <rect x="278" y="92" width="134" height="22" rx="4" fill="#ea580c"/>
+      <text x="345" y="107" text-anchor="middle" font-size="9" fill="#fff7ed">global_instrumentation</text>
+      <rect x="278" y="120" width="134" height="22" rx="4" fill="#ea580c"/>
+      <text x="345" y="135" text-anchor="middle" font-size="9" fill="#fff7ed">thread_instrumentation</text>
+      <rect x="278" y="148" width="134" height="22" rx="4" fill="#ea580c"/>
+      <text x="345" y="163" text-anchor="middle" font-size="9" fill="#fff7ed">events_statements_*</text>
+      <rect x="278" y="176" width="134" height="22" rx="4" fill="#ea580c"/>
+      <text x="345" y="191" text-anchor="middle" font-size="9" fill="#fff7ed">events_waits_*</text>
+      <rect x="278" y="204" width="134" height="22" rx="4" fill="#ea580c"/>
+      <text x="345" y="219" text-anchor="middle" font-size="9" fill="#fff7ed">events_stages_*</text>
+      <rect x="278" y="232" width="134" height="22" rx="4" fill="#ea580c"/>
+      <text x="345" y="247" text-anchor="middle" font-size="9" fill="#fff7ed">events_transactions_*</text>
+
+      <!-- Arrow consumers → tables -->
+      <line x1="430" y1="152" x2="490" y2="152" stroke="#57534e" stroke-width="2" marker-end="url(#c)"/>
+      <text x="460" y="145" text-anchor="middle" font-size="9" fill="#57534e">populate</text>
+
+      <!-- Tables column -->
+      <rect x="490" y="42" width="190" height="220" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="585" y="64" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">P_S Tables</text>
+      <text x="585" y="80" text-anchor="middle" font-size="9" fill="#57534e">(in-memory, queryable)</text>
+      <rect x="508" y="92" width="154" height="22" rx="4" fill="#bbf7d0"/>
+      <text x="585" y="107" text-anchor="middle" font-size="9" fill="#14532d">events_statements_history</text>
+      <rect x="508" y="120" width="154" height="22" rx="4" fill="#bbf7d0"/>
+      <text x="585" y="135" text-anchor="middle" font-size="9" fill="#14532d">events_statements_summary_by_digest</text>
+      <rect x="508" y="148" width="154" height="22" rx="4" fill="#bbf7d0"/>
+      <text x="585" y="163" text-anchor="middle" font-size="9" fill="#14532d">file_summary_by_instance</text>
+      <rect x="508" y="176" width="154" height="22" rx="4" fill="#bbf7d0"/>
+      <text x="585" y="191" text-anchor="middle" font-size="9" fill="#14532d">table_io_waits_summary</text>
+      <rect x="508" y="204" width="154" height="22" rx="4" fill="#bbf7d0"/>
+      <text x="585" y="219" text-anchor="middle" font-size="9" fill="#14532d">memory_summary_global</text>
+      <rect x="508" y="232" width="154" height="22" rx="4" fill="#bbf7d0"/>
+      <text x="585" y="247" text-anchor="middle" font-size="9" fill="#14532d">mutex_instances</text>
+
+      <!-- SQL query arrow -->
+      <text x="585" y="275" text-anchor="middle" font-size="10" fill="#c2410c" font-weight="700">← SELECT queries from any MySQL client</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       2. INSTRUMENT ELEMENTS
+       ═══════════════════════════════════════════════════ -->
+  <h2>Instrument Elements</h2>
+  <p>Instrument names follow a hierarchical naming convention: <code>category/subcategory/.../leaf_name</code>. For example, <code>statement/sql/select</code> instruments SELECT statements; <code>wait/io/file/innodb/innodb_data_file</code> instruments InnoDB data file reads and writes. This hierarchy enables selective enabling — you can turn on all statement instruments with a single wildcard pattern while leaving I/O instruments disabled.</p>
+  <p>Each instrument has two configuration flags: <code>ENABLED</code> (whether it fires at all) and <code>TIMED</code> (whether it records timing information). Timing adds overhead; if you only need counts (not latencies), you can set <code>TIMED=NO</code> for a given instrument to reduce impact.</p>
+  <p>The instrument hierarchy also reflects the execution model. Global instruments aggregate across the entire server instance. Thread instruments track per-connection state. Statement instruments capture each SQL statement. Stage instruments track sub-steps within a statement (e.g., "Sending data", "Creating sort index"). This four-level hierarchy — global → thread → statement → stage — maps precisely to the granularity at which you would diagnose performance problems.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="d" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Instrument Scope Hierarchy</text>
+
+      <!-- Global -->
+      <rect x="240" y="36" width="220" height="44" rx="8" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="56" text-anchor="middle" font-size="12" font-weight="700" fill="#bbf7d0">Global</text>
+      <text x="350" y="72" text-anchor="middle" font-size="9" fill="#86efac">server-wide counters, mutex stats, memory totals</text>
+
+      <!-- arrow down -->
+      <line x1="350" y1="80" x2="350" y2="96" stroke="#57534e" stroke-width="1.5" marker-end="url(#d)"/>
+
+      <!-- Thread -->
+      <rect x="200" y="96" width="300" height="44" rx="8" fill="#16a34a" stroke="#14532d" stroke-width="2"/>
+      <text x="350" y="116" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">Connection / Thread</text>
+      <text x="350" y="132" text-anchor="middle" font-size="9" fill="#bbf7d0">per-session I/O, lock waits, memory allocated per thread</text>
+
+      <line x1="350" y1="140" x2="350" y2="156" stroke="#57534e" stroke-width="1.5" marker-end="url(#d)"/>
+
+      <!-- Statement -->
+      <rect x="160" y="156" width="380" height="44" rx="8" fill="#c2410c" stroke="#fb923c" stroke-width="2"/>
+      <text x="350" y="176" text-anchor="middle" font-size="12" font-weight="700" fill="#fff7ed">Statement</text>
+      <text x="350" y="192" text-anchor="middle" font-size="9" fill="#fef3c7">normalized SQL digest, rows examined/sent, latency histogram</text>
+
+      <line x1="350" y1="200" x2="350" y2="216" stroke="#57534e" stroke-width="1.5" marker-end="url(#d)"/>
+
+      <!-- Stage -->
+      <rect x="120" y="216" width="460" height="44" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="350" y="236" text-anchor="middle" font-size="12" font-weight="700" fill="#c2410c">Stage</text>
+      <text x="350" y="252" text-anchor="middle" font-size="9" fill="#57534e">Sending data · Sorting result · Creating tmp table · Waiting for lock</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       3. CONSUMER ORGANIZATION
+       ═══════════════════════════════════════════════════ -->
+  <h2>Consumer Organization</h2>
+  <p>Consumers form a dependency tree — a child consumer only receives data if its parent is also enabled. The root is <code>global_instrumentation</code>: if this is disabled, nothing works. Beneath it are <code>thread_instrumentation</code> (per-connection data) and the <code>statements_digest</code> consumer (the global digest table, which does not require thread_instrumentation). This design means you can enable digest-level aggregation (the most useful for identifying slow query patterns) at minimal overhead, without enabling per-thread history tables (which are more expensive).</p>
+  <p>The <strong>history</strong> consumers (<code>events_statements_history</code>, <code>events_statements_history_long</code>) maintain ring buffers of recent events per thread or globally. History tables are expensive because they retain per-event rows; in production you typically enable them for diagnosis periods rather than permanently. The <strong>summary</strong> consumers aggregate by digest, user, host, or account — these are low overhead and permanently useful.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="e" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Consumer Hierarchy — Fan-Out Tree</text>
+
+      <!-- root -->
+      <rect x="260" y="38" width="180" height="36" rx="6" fill="#14532d"/>
+      <text x="350" y="61" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">global_instrumentation</text>
+
+      <!-- level 1 -->
+      <line x1="350" y1="74" x2="200" y2="96" stroke="#57534e" stroke-width="1.5" marker-end="url(#e)"/>
+      <line x1="350" y1="74" x2="500" y2="96" stroke="#57534e" stroke-width="1.5" marker-end="url(#e)"/>
+
+      <rect x="110" y="96" width="180" height="36" rx="6" fill="#16a34a"/>
+      <text x="200" y="119" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">thread_instrumentation</text>
+      <rect x="410" y="96" width="180" height="36" rx="6" fill="#16a34a"/>
+      <text x="500" y="119" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">statements_digest</text>
+
+      <!-- level 2 from thread -->
+      <line x1="200" y1="132" x2="120" y2="156" stroke="#57534e" stroke-width="1.5" marker-end="url(#e)"/>
+      <line x1="200" y1="132" x2="200" y2="156" stroke="#57534e" stroke-width="1.5" marker-end="url(#e)"/>
+      <line x1="200" y1="132" x2="280" y2="156" stroke="#57534e" stroke-width="1.5" marker-end="url(#e)"/>
+
+      <rect x="50" y="156" width="140" height="36" rx="6" fill="#c2410c"/>
+      <text x="120" y="178" text-anchor="middle" font-size="9" fill="#fff7ed">events_statements</text>
+      <text x="120" y="190" text-anchor="middle" font-size="9" fill="#fef3c7">_current</text>
+      <rect x="130" y="156" width="140" height="36" rx="6" fill="#c2410c"/>
+      <text x="200" y="178" text-anchor="middle" font-size="9" fill="#fff7ed">events_statements</text>
+      <text x="200" y="190" text-anchor="middle" font-size="9" fill="#fef3c7">_history</text>
+      <rect x="210" y="156" width="140" height="36" rx="6" fill="#fb923c"/>
+      <text x="280" y="174" text-anchor="middle" font-size="9" fill="#ffffff">events_statements</text>
+      <text x="280" y="186" text-anchor="middle" font-size="9" fill="#fff7ed">_history_long</text>
+
+      <!-- level 2 from digest -->
+      <line x1="500" y1="132" x2="430" y2="156" stroke="#57534e" stroke-width="1.5" marker-end="url(#e)"/>
+      <line x1="500" y1="132" x2="550" y2="156" stroke="#57534e" stroke-width="1.5" marker-end="url(#e)"/>
+
+      <rect x="360" y="156" width="140" height="36" rx="6" fill="#14532d"/>
+      <text x="430" y="174" text-anchor="middle" font-size="9" fill="#bbf7d0">summary_by</text>
+      <text x="430" y="186" text-anchor="middle" font-size="9" fill="#86efac">_digest (global)</text>
+      <rect x="510" y="156" width="155" height="36" rx="6" fill="#14532d"/>
+      <text x="587" y="174" text-anchor="middle" font-size="9" fill="#bbf7d0">summary_by</text>
+      <text x="587" y="186" text-anchor="middle" font-size="9" fill="#86efac">_program (sprocs)</text>
+
+      <!-- level 3: waits and stages under thread -->
+      <line x1="120" y1="192" x2="80"  y2="240" stroke="#57534e" stroke-width="1" marker-end="url(#e)"/>
+      <line x1="200" y1="192" x2="200" y2="240" stroke="#57534e" stroke-width="1" marker-end="url(#e)"/>
+      <line x1="280" y1="192" x2="320" y2="240" stroke="#57534e" stroke-width="1" marker-end="url(#e)"/>
+
+      <rect x="30"  y="240" width="100" height="30" rx="5" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="80"  y="259" text-anchor="middle" font-size="8" fill="#14532d">events_stages_*</text>
+      <rect x="148" y="240" width="104" height="30" rx="5" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="200" y="259" text-anchor="middle" font-size="8" fill="#14532d">events_waits_*</text>
+      <rect x="265" y="240" width="110" height="30" rx="5" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="320" y="259" text-anchor="middle" font-size="8" fill="#14532d">events_transactions_*</text>
+
+      <!-- Note -->
+      <text x="350" y="290" text-anchor="middle" font-size="9" fill="#57534e">Child consumer only fires if parent consumer is ENABLED=YES</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       4. CONFIGURATION
+       ═══════════════════════════════════════════════════ -->
+  <h2>Configuration</h2>
+  <p>Performance Schema configuration is done via two control tables: <code>setup_instruments</code> and <code>setup_consumers</code>. Both are live — changes take effect immediately without a server restart. This makes it safe to enable additional instruments for a diagnostic session and then disable them once the investigation is complete.</p>
+  <p>The canonical pattern for enabling statement instrumentation is:</p>
+  <pre>UPDATE performance_schema.setup_instruments
+SET ENABLED='YES', TIMED='YES'
+WHERE NAME LIKE 'statement/%';
+
+UPDATE performance_schema.setup_consumers
+SET ENABLED='YES'
+WHERE NAME IN (
+  'events_statements_history',
+  'events_statements_history_long'
+);</pre>
+  <p>To minimize overhead in production: enable only <code>statements_digest</code> and the global summary tables permanently; enable per-thread history consumers only during active diagnosis; keep I/O and memory instruments disabled unless specifically investigating those subsystems.</p>
+  <p>MySQL 8.0 also introduces <code>setup_threads</code> to control instrumentation per background thread and <code>setup_objects</code> to filter instrumentation by schema/table, allowing you to, for example, exclude performance_schema and information_schema tables from table I/O tracking to reduce noise.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="f" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Enabling / Disabling Instruments — Live Configuration Flow</text>
+
+      <!-- setup_instruments -->
+      <rect x="30" y="50" width="200" height="80" rx="8" fill="#14532d"/>
+      <text x="130" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">setup_instruments</text>
+      <text x="130" y="92" text-anchor="middle" font-size="9" fill="#86efac">NAME  ENABLED  TIMED</text>
+      <text x="130" y="108" text-anchor="middle" font-size="9" fill="#6ee7b7">statement/sql/select YES   YES</text>
+      <text x="130" y="122" text-anchor="middle" font-size="9" fill="#6ee7b7">wait/io/file/*       NO    NO</text>
+
+      <line x1="230" y1="90" x2="280" y2="90" stroke="#57534e" stroke-width="1.5" marker-end="url(#f)"/>
+      <text x="255" y="83" font-size="8" fill="#57534e" text-anchor="middle">UPDATE</text>
+
+      <!-- setup_consumers -->
+      <rect x="280" y="50" width="200" height="80" rx="8" fill="#c2410c"/>
+      <text x="380" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#fff7ed">setup_consumers</text>
+      <text x="380" y="92" text-anchor="middle" font-size="9" fill="#fef3c7">NAME                  ENABLED</text>
+      <text x="380" y="108" text-anchor="middle" font-size="9" fill="#fed7aa">events_stmt_history    YES</text>
+      <text x="380" y="122" text-anchor="middle" font-size="9" fill="#fed7aa">events_waits_current   NO</text>
+
+      <line x1="480" y1="90" x2="530" y2="90" stroke="#57534e" stroke-width="1.5" marker-end="url(#f)"/>
+      <text x="505" y="83" font-size="8" fill="#57534e" text-anchor="middle">feeds</text>
+
+      <!-- Output tables -->
+      <rect x="530" y="50" width="150" height="80" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="605" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">P_S Tables</text>
+      <text x="605" y="92" text-anchor="middle" font-size="9" fill="#57534e">populated in memory</text>
+      <text x="605" y="108" text-anchor="middle" font-size="9" fill="#57534e">ring buffer / summary</text>
+      <text x="605" y="122" text-anchor="middle" font-size="9" fill="#57534e">volatile across restart</text>
+
+      <!-- setup_objects and setup_threads at bottom -->
+      <rect x="80" y="160" width="200" height="50" rx="6" fill="#e7e5e4" stroke="#57534e"/>
+      <text x="180" y="180" text-anchor="middle" font-size="10" font-weight="700" fill="#57534e">setup_objects</text>
+      <text x="180" y="198" text-anchor="middle" font-size="9" fill="#57534e">filter by schema/table name</text>
+
+      <rect x="420" y="160" width="200" height="50" rx="6" fill="#e7e5e4" stroke="#57534e"/>
+      <text x="520" y="180" text-anchor="middle" font-size="10" font-weight="700" fill="#57534e">setup_threads</text>
+      <text x="520" y="198" text-anchor="middle" font-size="9" fill="#57534e">filter by background thread</text>
+
+      <line x1="180" y1="160" x2="280" y2="130" stroke="#57534e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#f)"/>
+      <line x1="520" y1="160" x2="380" y2="130" stroke="#57534e" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#f)"/>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       5. USING PERFORMANCE SCHEMA
+       ═══════════════════════════════════════════════════ -->
+  <h2>Using Performance Schema</h2>
+  <p>The Performance Schema becomes useful the moment you start querying it. The three most important use cases are: identifying slow query patterns via the digest table, understanding lock contention, and tracking memory usage.</p>
+
+  <h3>Statement Analysis via Digest Table</h3>
+  <p>The <code>events_statements_summary_by_digest</code> table aggregates all statements into canonical "digests" — normalized forms where literals are replaced with <code>?</code> placeholders. This lets you identify the query pattern consuming the most total server time, even if no individual execution is slow:</p>
+  <pre>SELECT DIGEST_TEXT, COUNT_STAR, AVG_TIMER_WAIT/1e9 AS avg_ms,
+       SUM_TIMER_WAIT/1e9 AS total_ms,
+       SUM_ROWS_EXAMINED, SUM_ROWS_SENT
+FROM performance_schema.events_statements_summary_by_digest
+ORDER BY SUM_TIMER_WAIT DESC
+LIMIT 10;</pre>
+
+  <h3>Lock Analysis</h3>
+  <p>The <code>data_locks</code> and <code>data_lock_waits</code> tables (in <code>performance_schema</code> since MySQL 8.0, previously in <code>information_schema</code>) show current lock state. Joining these tables exposes the full blocker-victim chain, which is essential for diagnosing lock contention incidents that don't manifest as deadlocks.</p>
+
+  <h3>Memory Tracking</h3>
+  <p>Memory instruments (<code>memory/*</code>) track allocations and deallocations per code component. The <code>memory_summary_global_by_event_name</code> table shows current usage and high-water marks. This is the correct tool for diagnosing unexpected memory growth that <code>innodb_buffer_pool_size</code> alone cannot explain — for example, large sort buffers, prepared statement caches, or the table open cache.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       6. SYS SCHEMA
+       ═══════════════════════════════════════════════════ -->
+  <h2>sys Schema</h2>
+  <p>The <code>sys</code> schema (bundled with MySQL 5.7.7+ and enabled by default in 8.0) is a collection of views and stored procedures layered on top of Performance Schema. It translates raw P_S data into human-readable formats — converting picosecond timer values to "10.23 ms", bytes to "2.40 GiB", and normalizing digest text. The <code>sys</code> schema does not collect any additional data; it is purely a presentation layer.</p>
+  <p>The most commonly used sys views are: <code>sys.statements_with_runtimes_in_95th_percentile</code>, <code>sys.schema_tables_with_full_table_scans</code>, <code>sys.innodb_buffer_stats_by_schema</code>, and <code>sys.host_summary</code>. The stored procedure <code>sys.ps_trace_statement_digest()</code> performs a real-time profiling session for a specific query digest.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">sys Schema — View Wrapper Architecture</text>
+
+      <!-- P_S base layer -->
+      <rect x="30" y="50" width="640" height="56" rx="8" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">performance_schema (raw P_S tables)</text>
+      <text x="350" y="92" text-anchor="middle" font-size="9" fill="#86efac">events_statements_summary_by_digest · memory_summary_global · data_locks · file_summary · ...</text>
+
+      <!-- Arrow up -->
+      <line x1="350" y1="106" x2="350" y2="124" stroke="#57534e" stroke-width="2" marker-end="url(#g)"/>
+
+      <!-- sys layer -->
+      <rect x="60" y="124" width="580" height="56" rx="8" fill="#c2410c" stroke="#fb923c" stroke-width="2"/>
+      <text x="350" y="148" text-anchor="middle" font-size="11" font-weight="700" fill="#fff7ed">sys schema (views &amp; procedures — presentation layer only)</text>
+      <text x="350" y="166" text-anchor="middle" font-size="9" fill="#fef3c7">statements_with_runtimes_in_95th_percentile · schema_tables_with_full_table_scans · innodb_buffer_stats_by_schema</text>
+
+      <!-- Arrow up -->
+      <line x1="350" y1="180" x2="350" y2="196" stroke="#57534e" stroke-width="2" marker-end="url(#g)"/>
+
+      <!-- DBA / app -->
+      <rect x="270" y="196" width="160" height="20" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="210" text-anchor="middle" font-size="10" fill="#14532d">DBA / monitoring tool (SELECT)</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       TABLE: Key P_S Tables
+       ═══════════════════════════════════════════════════ -->
+  <h2>Key Performance Schema Tables</h2>
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Table Name</th>
+        <th>What It Tracks</th>
+        <th>Key Columns</th>
+        <th>Primary Use Case</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>events_statements_summary_by_digest</code></td>
+        <td>Per-normalized-SQL aggregate timing and row stats</td>
+        <td>DIGEST_TEXT, COUNT_STAR, AVG_TIMER_WAIT, SUM_ROWS_EXAMINED</td>
+        <td>Identify top SQL patterns by total server time; find full-scan patterns</td>
+      </tr>
+      <tr>
+        <td><code>events_statements_history_long</code></td>
+        <td>Last N individual statement executions across all threads</td>
+        <td>SQL_TEXT, TIMER_WAIT, ROWS_EXAMINED, CREATED_TMP_DISK_TABLES</td>
+        <td>Capture specific slow statements with full SQL text; post-incident forensics</td>
+      </tr>
+      <tr>
+        <td><code>data_locks</code></td>
+        <td>Currently held InnoDB row/table locks</td>
+        <td>ENGINE_LOCK_ID, LOCK_TYPE, LOCK_MODE, LOCK_STATUS, LOCK_DATA</td>
+        <td>Identify blocker threads during lock contention incidents</td>
+      </tr>
+      <tr>
+        <td><code>data_lock_waits</code></td>
+        <td>Waiting lock → blocking lock relationships</td>
+        <td>REQUESTING_ENGINE_LOCK_ID, BLOCKING_ENGINE_LOCK_ID</td>
+        <td>Trace the full blocking chain; pair with data_locks for context</td>
+      </tr>
+      <tr>
+        <td><code>memory_summary_global_by_event_name</code></td>
+        <td>Per-component memory allocation current &amp; high-water marks</td>
+        <td>EVENT_NAME, CURRENT_ALLOC, HIGH_COUNT_USED, HIGH_NUMBER_OF_BYTES_USED</td>
+        <td>Diagnose unexpected memory growth; identify which component is leaking</td>
+      </tr>
+      <tr>
+        <td><code>file_summary_by_instance</code></td>
+        <td>Per-file I/O stats — reads, writes, waits</td>
+        <td>FILE_NAME, COUNT_READ, SUM_TIMER_READ, COUNT_WRITE, SUM_TIMER_WRITE</td>
+        <td>Identify hot files; confirm I/O is dominated by data vs redo log vs undo</td>
+      </tr>
+      <tr>
+        <td><code>table_io_waits_summary_by_table</code></td>
+        <td>Per-table read/write I/O wait times</td>
+        <td>OBJECT_SCHEMA, OBJECT_NAME, COUNT_READ, SUM_TIMER_WAIT</td>
+        <td>Find tables with excessive full-scan I/O; confirm index effectiveness</td>
+      </tr>
+      <tr>
+        <td><code>replication_applier_status_by_worker</code></td>
+        <td>Per-worker replication apply thread status</td>
+        <td>WORKER_ID, LAST_APPLIED_TRANSACTION, APPLYING_TRANSACTION_ORIGINAL_COMMIT_TIMESTAMP</td>
+        <td>Diagnose multi-threaded replication lag; identify stalled workers</td>
+      </tr>
+    </tbody>
+  </table>
+
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

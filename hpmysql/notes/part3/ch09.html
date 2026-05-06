@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch09 · Replication — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch09 · Replication</h1>
+  <p class="lead">MySQL replication is the foundation of high availability, disaster recovery, and read scaling — understanding the mechanics from binlog to relay log to apply thread is prerequisite knowledge for every production DBA.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>How Replication Works</h2>
+
+  <p>MySQL replication is asynchronous by default. The source server writes every committed change to a binary log (binlog). The replica connects to the source with a dedicated I/O thread, reads binlog events from the source's binlog dump thread, and writes them to the replica's own relay log. A separate SQL thread (or multiple parallel apply threads in MySQL 8.0+) reads events from the relay log and applies them to the replica's data files. This three-thread model decouples network transfer from apply latency and lets the replica buffer events during apply slowdowns.</p>
+
+  <p>Semi-synchronous replication (rpl_semi_sync plugin) modifies this model: the source waits for at least one replica to acknowledge receipt into its relay log before returning success to the client. This prevents data loss on source crash at the cost of slightly higher write latency. It does NOT wait for the replica to apply the event — only to receive it.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="18" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">MySQL Replication Pipeline — Source to Replica</text>
+      <!-- SOURCE box -->
+      <rect x="20" y="35" width="230" height="200" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <rect x="20" y="35" width="230" height="26" rx="6" fill="#14532d"/>
+      <text x="135" y="53" text-anchor="middle" fill="#fff" font-weight="700">SOURCE</text>
+      <!-- app writes -->
+      <rect x="35" y="72" width="100" height="30" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="85" y="91" text-anchor="middle" fill="#14532d" font-size="10">App writes</text>
+      <line x1="85" y1="102" x2="85" y2="120" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="81,116 89,116 85,122" fill="#16a34a"/>
+      <!-- InnoDB redo -->
+      <rect x="35" y="122" width="100" height="30" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="85" y="141" text-anchor="middle" fill="#14532d" font-size="10">InnoDB commit</text>
+      <line x1="135" y1="137" x2="165" y2="137" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="161,133 169,137 161,141" fill="#16a34a"/>
+      <!-- binlog -->
+      <rect x="165" y="122" width="70" height="30" rx="3" fill="#14532d"/>
+      <text x="200" y="141" text-anchor="middle" fill="#fff" font-size="10">binlog</text>
+      <text x="200" y="160" text-anchor="middle" fill="#57534e" font-size="9">mysql-bin.000001</text>
+      <!-- dump thread -->
+      <rect x="100" y="185" width="130" height="30" rx="3" fill="#16a34a"/>
+      <text x="165" y="204" text-anchor="middle" fill="#fff" font-size="10">binlog dump thread</text>
+      <line x1="200" y1="152" x2="200" y2="185" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="196,181 204,181 200,187" fill="#16a34a"/>
+      <!-- NETWORK arrow -->
+      <line x1="250" y1="200" x2="360" y2="200" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="356,196 364,200 356,204" fill="#c2410c"/>
+      <text x="305" y="193" text-anchor="middle" fill="#c2410c" font-size="9">TCP / binlog events</text>
+      <!-- REPLICA box -->
+      <rect x="360" y="35" width="320" height="200" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <rect x="360" y="35" width="320" height="26" rx="6" fill="#c2410c"/>
+      <text x="520" y="53" text-anchor="middle" fill="#fff" font-weight="700">REPLICA</text>
+      <!-- I/O thread -->
+      <rect x="375" y="72" width="120" height="30" rx="3" fill="#fb923c"/>
+      <text x="435" y="91" text-anchor="middle" fill="#fff" font-size="10">I/O Thread</text>
+      <text x="435" y="108" text-anchor="middle" fill="#57534e" font-size="9">reads from source</text>
+      <line x1="375" y1="200" x2="375" y2="155" stroke="#c2410c" stroke-width="1.5"/>
+      <line x1="375" y1="155" x2="435" y2="102" stroke="#c2410c" stroke-width="1.5"/>
+      <!-- relay log -->
+      <rect x="375" y="122" width="120" height="30" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="435" y="141" text-anchor="middle" fill="#c2410c" font-size="10">relay log</text>
+      <text x="435" y="158" text-anchor="middle" fill="#57534e" font-size="9">relay-bin.000001</text>
+      <line x1="435" y1="102" x2="435" y2="122" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="431,118 439,118 435,124" fill="#c2410c"/>
+      <!-- SQL apply thread -->
+      <rect x="520" y="85" width="140" height="50" rx="3" fill="#14532d"/>
+      <text x="590" y="105" text-anchor="middle" fill="#fff" font-size="10">SQL Apply Thread(s)</text>
+      <text x="590" y="120" text-anchor="middle" fill="#bbf7d0" font-size="9">or parallel workers (8.0+)</text>
+      <line x1="495" y1="137" x2="520" y2="110" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="516,108 524,107 521,115" fill="#16a34a"/>
+      <!-- replica data files -->
+      <rect x="520" y="155" width="140" height="35" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="590" y="172" text-anchor="middle" fill="#14532d" font-size="10">Replica data files</text>
+      <text x="590" y="185" text-anchor="middle" fill="#57534e" font-size="9">InnoDB tablespace</text>
+      <line x1="590" y1="135" x2="590" y2="155" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="586,151 594,151 590,157" fill="#16a34a"/>
+      <!-- semi-sync note -->
+      <text x="350" y="260" text-anchor="middle" fill="#57534e" font-size="10">Semi-sync: source waits for relay-log ACK from ≥1 replica before returning commit success to client</text>
+    </svg>
+  </div>
+
+  <p>Replication position tracking is managed via binlog coordinates (file name + offset) in classic replication, or globally unique transaction IDs (GTIDs) in GTID-based replication. GTID mode simplifies failover automation because any replica can be promoted to source without needing to calculate equivalent binlog coordinates across servers.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Replication Formats</h2>
+
+  <p>The binary log can record changes in three formats, controlled by the <code>binlog_format</code> system variable. The choice has significant implications for consistency, safety, and replicated data fidelity.</p>
+
+  <p><strong>Statement-Based Replication (SBR)</strong> logs the exact SQL statement executed on the source. The replica re-executes the statement. This produces compact binlog events but is unsafe for non-deterministic statements: <code>NOW()</code>, <code>UUID()</code>, <code>RAND()</code>, or any function whose result depends on server state that may differ between source and replica. SBR also requires statement execution context (session variables) to be replicated alongside the SQL.</p>
+
+  <p><strong>Row-Based Replication (RBR)</strong> logs the actual before/after images of every changed row. The replica applies the row changes directly, bypassing re-execution. RBR is always safe regardless of non-determinism, but produces larger binlog events — a multi-row UPDATE that affects 1 million rows logs 1 million row change events. RBR is the recommended default in MySQL 5.7+ and 8.0.</p>
+
+  <p><strong>Mixed-mode</strong> uses SBR by default but automatically switches to RBR when a non-deterministic statement is detected. In practice, the mix of formats makes it harder to debug and reason about replication state; most production environments choose pure RBR.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="18" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Replication Format Trade-offs</text>
+      <!-- SBR -->
+      <rect x="15" y="30" width="210" height="200" rx="5" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <rect x="15" y="30" width="210" height="24" rx="5" fill="#14532d"/>
+      <text x="120" y="47" text-anchor="middle" fill="#fff" font-weight="700">SBR — Statement</text>
+      <text x="120" y="72" text-anchor="middle" fill="#57534e" font-size="10">binlog event:</text>
+      <rect x="30" y="78" width="180" height="22" rx="2" fill="#bbf7d0"/>
+      <text x="120" y="93" text-anchor="middle" fill="#14532d" font-size="9">UPDATE orders SET … WHERE id&lt;100</text>
+      <text x="120" y="118" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">Pros:</text>
+      <text x="30" y="133" fill="#14532d" font-size="10">+ Compact log events</text>
+      <text x="30" y="148" fill="#14532d" font-size="10">+ Human-readable binlog</text>
+      <text x="30" y="163" fill="#14532d" font-size="10">+ Low write amplification</text>
+      <text x="120" y="183" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">Cons:</text>
+      <text x="30" y="198" fill="#c2410c" font-size="10">- Unsafe: NOW(), RAND(), UUID()</text>
+      <text x="30" y="213" fill="#c2410c" font-size="10">- Requires full context</text>
+      <text x="30" y="226" fill="#c2410c" font-size="10">- Hard to audit exact row changes</text>
+      <!-- RBR -->
+      <rect x="245" y="30" width="210" height="200" rx="5" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <rect x="245" y="30" width="210" height="24" rx="5" fill="#c2410c"/>
+      <text x="350" y="47" text-anchor="middle" fill="#fff" font-weight="700">RBR — Row (default)</text>
+      <text x="350" y="72" text-anchor="middle" fill="#57534e" font-size="10">binlog event:</text>
+      <rect x="260" y="78" width="180" height="22" rx="2" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="350" y="93" text-anchor="middle" fill="#c2410c" font-size="9">before:{id:1,status:pending} after:{…paid}</text>
+      <text x="350" y="118" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">Pros:</text>
+      <text x="260" y="133" fill="#14532d" font-size="10">+ Always deterministic</text>
+      <text x="260" y="148" fill="#14532d" font-size="10">+ Safe for any SQL</text>
+      <text x="260" y="163" fill="#14532d" font-size="10">+ Exact row audit trail</text>
+      <text x="350" y="183" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">Cons:</text>
+      <text x="260" y="198" fill="#c2410c" font-size="10">- Large events (bulk DML)</text>
+      <text x="260" y="213" fill="#c2410c" font-size="10">- Harder to read in mysqlbinlog</text>
+      <!-- MIXED -->
+      <rect x="475" y="30" width="210" height="200" rx="5" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <rect x="475" y="30" width="210" height="24" rx="5" fill="#16a34a"/>
+      <text x="580" y="47" text-anchor="middle" fill="#fff" font-weight="700">MIXED</text>
+      <text x="580" y="72" text-anchor="middle" fill="#57534e" font-size="10">auto-selects SBR or RBR</text>
+      <text x="580" y="90" text-anchor="middle" fill="#57534e" font-size="10">per statement</text>
+      <text x="580" y="118" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">Pros:</text>
+      <text x="490" y="133" fill="#14532d" font-size="10">+ Compact where safe</text>
+      <text x="490" y="148" fill="#14532d" font-size="10">+ Safe when needed</text>
+      <text x="580" y="173" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">Cons:</text>
+      <text x="490" y="188" fill="#c2410c" font-size="10">- Unpredictable log size</text>
+      <text x="490" y="203" fill="#c2410c" font-size="10">- Harder to debug</text>
+      <text x="490" y="218" fill="#c2410c" font-size="10">- Rarely used in prod</text>
+      <!-- recommendation -->
+      <text x="350" y="248" text-anchor="middle" fill="#14532d" font-size="10" font-weight="700">Recommendation: binlog_format=ROW, binlog_row_image=MINIMAL to reduce event size</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>GTID Replication</h2>
+
+  <p>Global Transaction Identifiers (GTIDs) give every committed transaction a globally unique ID composed of the originating server's UUID and a monotonically increasing sequence number: <code>3E11FA47-71CA-11E1-9E33-C80AA9429562:23</code>. This identifier is written into the binlog and replicated along with the transaction data.</p>
+
+  <p>Each MySQL server maintains a <code>gtid_executed</code> set — the set of all GTIDs it has applied. When a replica connects to a new source, it sends its <code>gtid_executed</code> set; the source automatically sends only the transactions the replica hasn't applied yet. This makes failover dramatically simpler: pointing a replica at a new source is safe regardless of binlog file coordinates.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="18" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">GTID Lifecycle State Machine</text>
+      <!-- states as nodes -->
+      <!-- state 1: transaction starts -->
+      <rect x="20" y="35" width="130" height="40" rx="20" fill="#14532d"/>
+      <text x="85" y="59" text-anchor="middle" fill="#fff" font-size="10">1. Txn begins</text>
+      <!-- state 2: GTID assigned -->
+      <line x1="150" y1="55" x2="190" y2="55" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="186,51 194,55 186,59" fill="#16a34a"/>
+      <rect x="190" y="35" width="130" height="40" rx="20" fill="#16a34a"/>
+      <text x="255" y="55" text-anchor="middle" fill="#fff" font-size="10">2. GTID assigned</text>
+      <text x="255" y="68" text-anchor="middle" fill="#bbf7d0" font-size="9">server_uuid:N</text>
+      <!-- state 3: write binlog -->
+      <line x1="320" y1="55" x2="360" y2="55" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="356,51 364,55 356,59" fill="#16a34a"/>
+      <rect x="360" y="35" width="130" height="40" rx="20" fill="#16a34a"/>
+      <text x="425" y="55" text-anchor="middle" fill="#fff" font-size="10">3. Written to binlog</text>
+      <text x="425" y="68" text-anchor="middle" fill="#bbf7d0" font-size="9">+ added to gtid_executed</text>
+      <!-- state 4: replicated -->
+      <line x1="490" y1="55" x2="530" y2="55" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="526,51 534,55 526,59" fill="#16a34a"/>
+      <rect x="530" y="35" width="150" height="40" rx="20" fill="#14532d"/>
+      <text x="605" y="55" text-anchor="middle" fill="#fff" font-size="10">4. Sent to replicas</text>
+      <text x="605" y="68" text-anchor="middle" fill="#bbf7d0" font-size="9">via binlog dump</text>
+      <!-- second row: replica side -->
+      <rect x="360" y="120" width="150" height="40" rx="20" fill="#c2410c"/>
+      <text x="435" y="140" text-anchor="middle" fill="#fff" font-size="10">5. Relay log written</text>
+      <text x="435" y="153" text-anchor="middle" fill="#fff7ed" font-size="9">replica I/O thread</text>
+      <line x1="605" y1="75" x2="605" y2="140" stroke="#c2410c" stroke-width="1.5"/>
+      <line x1="605" y1="140" x2="510" y2="140" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="514,136 506,140 514,144" fill="#c2410c"/>
+      <!-- state 6: apply -->
+      <line x1="360" y1="140" x2="220" y2="140" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="224,136 216,140 224,144" fill="#c2410c"/>
+      <rect x="80" y="120" width="140" height="40" rx="20" fill="#fb923c"/>
+      <text x="150" y="140" text-anchor="middle" fill="#fff" font-size="10">6. Applied to replica</text>
+      <text x="150" y="153" text-anchor="middle" fill="#fff7ed" font-size="9">SQL apply thread</text>
+      <!-- state 7: gtid_executed updated -->
+      <line x1="80" y1="140" x2="20" y2="185" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="21,181 18,189 26,187" fill="#c2410c"/>
+      <rect x="20" y="185" width="160" height="40" rx="20" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="100" y="205" text-anchor="middle" fill="#14532d" font-size="10">7. gtid_executed updated</text>
+      <text x="100" y="218" text-anchor="middle" fill="#57534e" font-size="9">replica won't re-apply</text>
+      <!-- failover benefit box -->
+      <rect x="400" y="175" width="285" height="70" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="542" y="195" text-anchor="middle" fill="#14532d" font-weight="700" font-size="11">Failover Benefit</text>
+      <text x="415" y="212" fill="#57534e" font-size="10">Replica sends its gtid_executed to new source.</text>
+      <text x="415" y="227" fill="#57534e" font-size="10">Source auto-sends only missing transactions.</text>
+      <text x="415" y="242" fill="#16a34a" font-size="10" font-weight="700">No binlog position calculation needed!</text>
+    </svg>
+  </div>
+
+  <p>GTID-based replication requires <code>gtid_mode=ON</code> and <code>enforce_gtid_consistency=ON</code>. Some SQL patterns are incompatible with GTID consistency enforcement: non-transactional DML inside transactions, CREATE TABLE ... SELECT, and temporary tables within transactions. These must be refactored before enabling GTID mode in a running cluster.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Replication Topologies</h2>
+
+  <p>MySQL replication supports several topologies, each with different trade-offs for read/write distribution, high availability, and operational complexity.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="10">
+      <text x="350" y="15" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Replication Topology Patterns</text>
+      <!-- A/P single replica -->
+      <rect x="10" y="25" width="155" height="135" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="87" y="42" text-anchor="middle" fill="#14532d" font-weight="700">Active/Passive</text>
+      <rect x="30" y="50" width="110" height="25" rx="3" fill="#14532d"/>
+      <text x="85" y="67" text-anchor="middle" fill="#fff" font-size="10">Source (R+W)</text>
+      <line x1="85" y1="75" x2="85" y2="95" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="81,91 89,91 85,97" fill="#16a34a"/>
+      <rect x="30" y="97" width="110" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="85" y="114" text-anchor="middle" fill="#14532d" font-size="10">Replica (standby)</text>
+      <text x="87" y="140" text-anchor="middle" fill="#57534e" font-size="9">HA failover only</text>
+      <text x="87" y="153" text-anchor="middle" fill="#57534e" font-size="9">No read offload</text>
+      <!-- A/R read pool -->
+      <rect x="180" y="25" width="155" height="135" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="257" y="42" text-anchor="middle" fill="#14532d" font-weight="700">Active/Read Pool</text>
+      <rect x="200" y="50" width="110" height="25" rx="3" fill="#14532d"/>
+      <text x="255" y="67" text-anchor="middle" fill="#fff" font-size="10">Source (writes)</text>
+      <line x1="230" y1="75" x2="210" y2="97" stroke="#16a34a" stroke-width="1.2"/>
+      <line x1="255" y1="75" x2="255" y2="97" stroke="#16a34a" stroke-width="1.2"/>
+      <line x1="280" y1="75" x2="300" y2="97" stroke="#16a34a" stroke-width="1.2"/>
+      <rect x="195" y="97" width="50" height="22" rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="220" y="112" text-anchor="middle" fill="#14532d" font-size="9">R1</text>
+      <rect x="232" y="97" width="50" height="22" rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="257" y="112" text-anchor="middle" fill="#14532d" font-size="9">R2</text>
+      <rect x="270" y="97" width="50" height="22" rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="295" y="112" text-anchor="middle" fill="#14532d" font-size="9">R3</text>
+      <text x="257" y="135" text-anchor="middle" fill="#c2410c" font-size="9">Read scale-out</text>
+      <text x="257" y="149" text-anchor="middle" fill="#c2410c" font-size="9">+ Replica lag risk</text>
+      <!-- Chain topology -->
+      <rect x="350" y="25" width="155" height="135" rx="5" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="427" y="42" text-anchor="middle" fill="#c2410c" font-weight="700">Chain</text>
+      <rect x="370" y="50" width="110" height="22" rx="3" fill="#14532d"/>
+      <text x="425" y="65" text-anchor="middle" fill="#fff" font-size="10">Source</text>
+      <line x1="425" y1="72" x2="425" y2="88" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="421,84 429,84 425,90" fill="#c2410c"/>
+      <rect x="370" y="88" width="110" height="22" rx="3" fill="#fb923c"/>
+      <text x="425" y="103" text-anchor="middle" fill="#fff" font-size="10">Intermediate Replica</text>
+      <line x1="425" y1="110" x2="425" y2="124" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="421,120 429,120 425,126" fill="#c2410c"/>
+      <rect x="370" y="126" width="110" height="22" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="425" y="141" text-anchor="middle" fill="#c2410c" font-size="10">Leaf Replica</text>
+      <text x="427" y="155" text-anchor="middle" fill="#57534e" font-size="9">Reduces source load</text>
+      <!-- Multi-source -->
+      <rect x="520" y="25" width="165" height="135" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="602" y="42" text-anchor="middle" fill="#14532d" font-weight="700">Multi-Source</text>
+      <rect x="535" y="50" width="60" height="22" rx="3" fill="#14532d"/>
+      <text x="565" y="65" text-anchor="middle" fill="#fff" font-size="9">Source A</text>
+      <rect x="617" y="50" width="60" height="22" rx="3" fill="#14532d"/>
+      <text x="647" y="65" text-anchor="middle" fill="#fff" font-size="9">Source B</text>
+      <line x1="565" y1="72" x2="602" y2="95" stroke="#16a34a" stroke-width="1.5"/>
+      <line x1="647" y1="72" x2="602" y2="95" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="599,91 606,96 602,101" fill="#16a34a"/>
+      <rect x="555" y="95" width="95" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="602" y="112" text-anchor="middle" fill="#14532d" font-size="9">Aggregate Replica</text>
+      <text x="602" y="138" text-anchor="middle" fill="#57534e" font-size="9">Consolidation / BI</text>
+      <text x="602" y="151" text-anchor="middle" fill="#57534e" font-size="9">Cross-shard queries</text>
+      <!-- second row: group replication -->
+      <rect x="10" y="185" width="680" height="120" rx="5" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="350" y="205" text-anchor="middle" fill="#c2410c" font-weight="700">MySQL Group Replication / InnoDB Cluster (Multi-Primary or Single-Primary)</text>
+      <!-- nodes -->
+      <rect x="60" y="215" width="90" height="40" rx="4" fill="#14532d"/>
+      <text x="105" y="235" text-anchor="middle" fill="#fff" font-size="9">Primary</text>
+      <text x="105" y="248" text-anchor="middle" fill="#bbf7d0" font-size="8">R+W</text>
+      <rect x="210" y="215" width="90" height="40" rx="4" fill="#16a34a"/>
+      <text x="255" y="235" text-anchor="middle" fill="#fff" font-size="9">Secondary 1</text>
+      <text x="255" y="248" text-anchor="middle" fill="#bbf7d0" font-size="8">reads</text>
+      <rect x="360" y="215" width="90" height="40" rx="4" fill="#16a34a"/>
+      <text x="405" y="235" text-anchor="middle" fill="#fff" font-size="9">Secondary 2</text>
+      <text x="405" y="248" text-anchor="middle" fill="#bbf7d0" font-size="8">reads</text>
+      <rect x="510" y="215" width="90" height="40" rx="4" fill="#16a34a"/>
+      <text x="555" y="235" text-anchor="middle" fill="#fff" font-size="9">Secondary 3</text>
+      <text x="555" y="248" text-anchor="middle" fill="#bbf7d0" font-size="8">reads</text>
+      <!-- paxos ring -->
+      <line x1="150" y1="235" x2="210" y2="235" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="300" y1="235" x2="360" y2="235" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="450" y1="235" x2="510" y2="235" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="350" y="285" text-anchor="middle" fill="#57534e" font-size="9">Paxos-based consensus · auto failover · requires ≥3 nodes · synchronous replication within group</text>
+      <text x="350" y="298" text-anchor="middle" fill="#c2410c" font-size="9">Higher write latency than async replication — use for HA, not pure throughput</text>
+    </svg>
+  </div>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Topology</th>
+        <th>Reads / Writes</th>
+        <th>HA Characteristics</th>
+        <th>Complexity</th>
+        <th>Best Use Case</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Active/Passive</td>
+        <td>All traffic to source; replica idle</td>
+        <td>Manual or orchestrated failover; seconds to minutes</td>
+        <td>Low</td>
+        <td>Disaster recovery warm standby</td>
+      </tr>
+      <tr>
+        <td>Active/Read Pool</td>
+        <td>Writes to source; reads distributed across replicas</td>
+        <td>Replica lag possible; failover needs promotion</td>
+        <td>Medium</td>
+        <td>Read-heavy OLTP, reporting offload</td>
+      </tr>
+      <tr>
+        <td>Chain (cascading)</td>
+        <td>Writes to source; reads anywhere</td>
+        <td>Increased lag at each hop; more SPOF</td>
+        <td>Medium</td>
+        <td>Reduce source binlog dump threads</td>
+      </tr>
+      <tr>
+        <td>Multi-Source</td>
+        <td>One replica applies from multiple sources</td>
+        <td>Complex; no standard failover</td>
+        <td>High</td>
+        <td>Data warehouse aggregation, cross-shard queries</td>
+      </tr>
+      <tr>
+        <td>Group Replication</td>
+        <td>Single-primary: writes to primary only; multi-primary: any node</td>
+        <td>Automatic failover via Paxos (&lt;30 s)</td>
+        <td>High</td>
+        <td>Zero-downtime HA; InnoDB Cluster</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Monitoring Replication</h2>
+
+  <p>Replication lag is the most critical replication health metric. Lag means the replica is serving stale data — a business problem if reads that must be consistent are routed to the replica. Two methods exist for measuring lag, and they give different answers.</p>
+
+  <p><strong><code>Seconds_Behind_Master</code></strong> (shown by <code>SHOW REPLICA STATUS</code>) measures the timestamp difference between the event currently being applied by the SQL thread and the current wall clock time on the replica. This is an estimate based on event timestamps in the relay log. It can be misleading: it reports 0 when the SQL thread is idle (caught up) but the I/O thread may be behind; it can jump suddenly; and it doesn't account for multi-source scenarios.</p>
+
+  <p><strong>Heartbeat-based lag</strong> is more accurate. A separate process writes a timestamp to a known table on the source every N seconds. The replica reads that timestamp and computes <code>NOW() - heartbeat_timestamp</code> as the true perceived lag. Tools like Percona Toolkit's <code>pt-heartbeat</code> implement this pattern. This measures actual data propagation delay, not relay-log metadata.</p>
+
+  <p>Key replication monitoring queries to run regularly:</p>
+  <ul>
+    <li><code>SHOW REPLICA STATUS\G</code> — comprehensive status including SQL/IO thread state, relay log position, lag estimate</li>
+    <li><code>SELECT * FROM performance_schema.replication_connection_status</code> — I/O thread detail in 8.0</li>
+    <li><code>SELECT * FROM performance_schema.replication_applier_status_by_worker</code> — per-worker parallel apply status</li>
+  </ul>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Common Problems and Solutions</h2>
+
+  <h3>Stale Reads</h3>
+  <p>An application reads from a replica immediately after writing to the source. The replica hasn't applied the change yet, so the read returns stale data. Solutions: route reads to the source for sessions that just wrote (<em>read-your-writes consistency</em>); use a ProxySQL rule to send transactions to the primary; implement application-level replica lag awareness with a fallback to the source when lag exceeds a threshold.</p>
+
+  <h3>Split-Brain</h3>
+  <p>In a manual failover scenario, if the original source comes back online after the replica has been promoted, two nodes may accept writes simultaneously. Protecting against split-brain requires fencing: STONITH (Shoot The Other Node In The Head) via IPMI/iDRAC power fence, or VIP/DNS TTL expiration before the old source can be reached. Orchestrator (GitHub's replication manager) implements anti-split-brain checks before promoting a replica.</p>
+
+  <h3>Non-Unique Server IDs</h3>
+  <p>Every MySQL instance in a replication topology must have a unique <code>server_id</code>. Cloned VMs or container replicas often inherit the same server ID as the source, causing replication loops or silent dropped events. Always set <code>server_id</code> explicitly in <code>/etc/mysql/my.cnf</code> using a value derived from IP octet, hostname hash, or configuration management tool.</p>
+
+  <h3>Large Transaction Lag Spikes</h3>
+  <p>A single large transaction (e.g., batch delete of 5 million rows) executes as one atomic RBR event on the replica's SQL thread. Since MySQL 5.7, parallel replication (<code>slave_parallel_workers &gt; 0</code>, <code>slave_parallel_type=LOGICAL_CLOCK</code>) can apply independent transactions concurrently. However, a single large transaction still serialises the apply thread. The solution is to batch large operations into smaller transactions on the source.</p>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch01 · MySQL Architecture — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch01 · MySQL Architecture</h1>
+  <p class="lead">MySQL's layered architecture separates client connections from query processing and storage, giving operators surgical control over each tier's behavior and tuning.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       1. LOGICAL ARCHITECTURE
+       ═══════════════════════════════════════════════════ -->
+  <h2>Logical Architecture</h2>
+  <p>MySQL is organized into three clean tiers. The <strong>connection/service layer</strong> manages authentication, thread pooling, and presents the client API. Above it sits the <strong>query processing layer</strong> — the parser, optimizer, and executor. Beneath everything lives a pluggable <strong>storage engine layer</strong> that handles data layout, caching, and durability. This separation lets MySQL swap storage engines (InnoDB, MyISAM, Memory, NDB) without touching query logic.</p>
+  <p>Understanding this layering is essential for diagnosis. Slow queries are almost always a problem in the optimizer or the storage engine, not the connection tier. Configuration variables that start with <code>innodb_</code> reach all the way down to the third tier; variables like <code>max_connections</code> only touch the first.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <!-- Layer 1: Connection / Service -->
+      <rect x="60" y="20" width="580" height="74" rx="8" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="47" text-anchor="middle" font-size="13" font-weight="700" fill="#bbf7d0">Layer 1 · Connection / Service</text>
+      <text x="350" y="67" text-anchor="middle" font-size="11" fill="#86efac">Authentication · Thread Cache · Connection Pool · Client API</text>
+      <!-- client arrows -->
+      <line x1="160" y1="15" x2="160" y2="20" stroke="#fb923c" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="350" y1="15" x2="350" y2="20" stroke="#fb923c" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="540" y1="15" x2="540" y2="20" stroke="#fb923c" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="160" y="11" text-anchor="middle" font-size="9" fill="#c2410c">client</text>
+      <text x="350" y="11" text-anchor="middle" font-size="9" fill="#c2410c">client</text>
+      <text x="540" y="11" text-anchor="middle" font-size="9" fill="#c2410c">client</text>
+
+      <!-- Arrow down -->
+      <line x1="350" y1="94" x2="350" y2="112" stroke="#57534e" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- Layer 2: Query Processing -->
+      <rect x="60" y="112" width="580" height="84" rx="8" fill="#c2410c" stroke="#fb923c" stroke-width="2"/>
+      <text x="350" y="137" text-anchor="middle" font-size="13" font-weight="700" fill="#fff7ed">Layer 2 · Query Processing</text>
+      <text x="350" y="157" text-anchor="middle" font-size="11" fill="#fef3c7">Parser → Preprocessor → Optimizer → Execution Engine</text>
+      <text x="350" y="177" text-anchor="middle" font-size="10" fill="#fed7aa">Query Cache (deprecated 8.0) · Privileges · Statistics</text>
+
+      <!-- Arrow down -->
+      <line x1="350" y1="196" x2="350" y2="214" stroke="#57534e" stroke-width="2" marker-end="url(#arr)"/>
+
+      <!-- Layer 3: Storage Engines -->
+      <rect x="60" y="214" width="580" height="84" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="239" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Layer 3 · Storage Engines</text>
+      <!-- engine boxes -->
+      <rect x="90" y="250" width="110" height="32" rx="4" fill="#bbf7d0" stroke="#16a34a" stroke-width="1"/>
+      <text x="145" y="270" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">InnoDB</text>
+      <rect x="220" y="250" width="110" height="32" rx="4" fill="#e7e5e4" stroke="#57534e" stroke-width="1"/>
+      <text x="275" y="270" text-anchor="middle" font-size="11" fill="#57534e">MyISAM</text>
+      <rect x="350" y="250" width="110" height="32" rx="4" fill="#e7e5e4" stroke="#57534e" stroke-width="1"/>
+      <text x="405" y="270" text-anchor="middle" font-size="11" fill="#57534e">Memory</text>
+      <rect x="480" y="250" width="110" height="32" rx="4" fill="#e7e5e4" stroke="#57534e" stroke-width="1"/>
+      <text x="535" y="270" text-anchor="middle" font-size="11" fill="#57534e">NDB / other</text>
+
+      <!-- Storage media -->
+      <line x1="350" y1="298" x2="350" y2="310" stroke="#57534e" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="350" y="318" text-anchor="middle" font-size="10" fill="#57534e">Disk / SSD / RAM</text>
+
+      <!-- Arrow marker -->
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <p>The <strong>parser</strong> tokenizes and validates SQL syntax into a parse tree. The <strong>optimizer</strong> rewrites the tree into an execution plan — choosing join order, index access paths, and whether to use temporary tables. The <strong>execution engine</strong> then calls the storage engine API in a loop to fetch rows. Knowing that the optimizer is cost-based (not rule-based) explains why identical SQL can behave differently as cardinality estimates drift over time.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       2. INNODB STORAGE ENGINE
+       ═══════════════════════════════════════════════════ -->
+  <h2>InnoDB Storage Engine</h2>
+  <p>InnoDB is MySQL's default and production-grade storage engine. Its architecture centers on three tightly coupled subsystems: the <strong>buffer pool</strong> (an in-memory page cache), the <strong>clustered primary-key index</strong> (the actual data layout on disk), and the <strong>redo log</strong> (write-ahead durability). These three work in concert to deliver ACID transactions at high concurrency.</p>
+
+  <h3>Clustered Index</h3>
+  <p>Every InnoDB table is physically ordered by its primary key — the B+tree leaf pages contain the full row data, not just key pointers. This is called a <em>clustered index</em>. Accessing a row by primary key is extremely fast because only one B+tree traversal is needed. Secondary indexes, however, store only the primary key value as their "pointer", meaning lookups through a secondary index require a second traversal (the <em>double-dip</em>). Choosing a narrow, monotonic primary key (e.g., <code>BIGINT AUTO_INCREMENT</code>) is therefore one of the highest-leverage schema decisions you can make.</p>
+
+  <h3>Buffer Pool</h3>
+  <p>The buffer pool is InnoDB's main memory structure — a shared cache of 16 KB data pages. Reads first check the buffer pool; a miss triggers a disk read and the page is warmed into the pool. Dirty pages (modified but not yet flushed to disk) are tracked on a flush list. The buffer pool is subdivided into instances (default: 8) to reduce mutex contention on multi-core hardware. It should typically consume 70–80% of available RAM on a dedicated MySQL host.</p>
+
+  <h3>Redo Log</h3>
+  <p>Before modifying a buffer pool page, InnoDB first writes a compact record of the change to the redo log — a fixed-size circular file on disk. This is the write-ahead log (WAL) pattern. On crash recovery, InnoDB replays redo log entries to bring data files to a consistent state, then uses the undo log to roll back any transactions that were in progress at the time of the crash. The redo log size determines how long a crash recovery takes and how frequently dirty pages must be flushed.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <!-- Buffer Pool -->
+      <rect x="30" y="30" width="200" height="240" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="130" y="52" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">Buffer Pool</text>
+      <rect x="48" y="62" width="164" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="130" y="80" text-anchor="middle" font-size="10" fill="#14532d">LRU page list (cold/hot)</text>
+      <rect x="48" y="100" width="164" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="130" y="118" text-anchor="middle" font-size="10" fill="#14532d">Flush list (dirty pages)</text>
+      <rect x="48" y="138" width="164" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="130" y="156" text-anchor="middle" font-size="10" fill="#14532d">Free list</text>
+      <rect x="48" y="176" width="164" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="130" y="194" text-anchor="middle" font-size="10" fill="#14532d">Doublewrite buffer</text>
+      <rect x="48" y="214" width="164" height="28" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="130" y="232" text-anchor="middle" font-size="10" fill="#14532d">Change buffer</text>
+
+      <!-- Redo Log -->
+      <ellipse cx="430" cy="90" rx="110" ry="55" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="430" y="82" text-anchor="middle" font-size="12" font-weight="700" fill="#c2410c">Redo Log</text>
+      <text x="430" y="100" text-anchor="middle" font-size="10" fill="#57534e">(ring buffer, WAL)</text>
+
+      <!-- Clustered Index on disk -->
+      <rect x="360" y="190" width="200" height="80" rx="8" fill="#e7e5e4" stroke="#57534e" stroke-width="2"/>
+      <text x="460" y="218" text-anchor="middle" font-size="12" font-weight="700" fill="#57534e">Clustered Index</text>
+      <text x="460" y="238" text-anchor="middle" font-size="10" fill="#57534e">B+tree leaf = full row data</text>
+      <text x="460" y="256" text-anchor="middle" font-size="10" fill="#57534e">ordered by PRIMARY KEY</text>
+
+      <!-- arrows -->
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <!-- write path: buffer pool → redo log -->
+      <path d="M230,90 Q300,50 320,80" stroke="#c2410c" stroke-width="2" fill="none" marker-end="url(#arr2)"/>
+      <text x="272" y="52" font-size="9" fill="#c2410c" text-anchor="middle">WAL first</text>
+      <!-- flush to disk -->
+      <path d="M230,200 Q290,200 360,220" stroke="#16a34a" stroke-width="2" fill="none" marker-end="url(#arr2)"/>
+      <text x="295" y="195" font-size="9" fill="#16a34a" text-anchor="middle">checkpoint flush</text>
+      <!-- redo log → disk on crash -->
+      <path d="M430,145 L430,190" stroke="#c2410c" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#arr2)"/>
+      <text x="450" y="172" font-size="9" fill="#c2410c">crash recovery</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       3. CONCURRENCY CONTROL
+       ═══════════════════════════════════════════════════ -->
+  <h2>Concurrency Control</h2>
+  <p>MySQL implements concurrency control through a hierarchy of locks. At the coarsest level, a table lock blocks all readers and writers; at the finest level, InnoDB's row locks allow many concurrent readers on the same table. The tradeoff is overhead: row locks require more memory and CPU to acquire and release, but they dramatically reduce contention under mixed OLTP workloads.</p>
+
+  <h3>Read/Write Locks</h3>
+  <p>A <strong>shared (read) lock</strong> can be held by multiple threads simultaneously — many readers can proceed in parallel. An <strong>exclusive (write) lock</strong> is held by only one thread and blocks all other readers and writers. InnoDB acquires row-level exclusive locks implicitly on <code>UPDATE</code>, <code>DELETE</code>, and <code>INSERT … ON DUPLICATE KEY UPDATE</code>. Explicit shared locks are requested with <code>SELECT … LOCK IN SHARE MODE</code>; explicit exclusive locks with <code>SELECT … FOR UPDATE</code>.</p>
+
+  <h3>Lock Granularity</h3>
+  <p>InnoDB supports three lock granularities: <strong>row locks</strong> on individual index records, <strong>gap locks</strong> on the gap between index records (important for preventing phantom reads in REPEATABLE READ), and <strong>next-key locks</strong> (row lock + gap lock on the preceding gap). Gap locks exist only in REPEATABLE READ and are released when the isolation level is set to READ COMMITTED.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <!-- Title -->
+      <text x="350" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">Read/Write Lock Compatibility Matrix</text>
+
+      <!-- Matrix headers -->
+      <text x="250" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#57534e">Shared (S) held</text>
+      <text x="450" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#57534e">Exclusive (X) held</text>
+
+      <!-- Row: S request -->
+      <rect x="80" y="62" width="150" height="40" rx="4" fill="#e7e5e4" stroke="#57534e"/>
+      <text x="155" y="86" text-anchor="middle" font-size="11" fill="#57534e">Req: Shared (S)</text>
+      <rect x="175" y="62" width="150" height="40" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="250" y="82" text-anchor="middle" font-size="13" font-weight="700" fill="#16a34a">✓ Compatible</text>
+      <text x="250" y="97" text-anchor="middle" font-size="9" fill="#16a34a">both proceed</text>
+      <rect x="375" y="62" width="150" height="40" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="450" y="82" text-anchor="middle" font-size="13" font-weight="700" fill="#c2410c">✗ Blocked</text>
+      <text x="450" y="97" text-anchor="middle" font-size="9" fill="#c2410c">wait for X release</text>
+
+      <!-- Row: X request -->
+      <rect x="80" y="112" width="150" height="40" rx="4" fill="#e7e5e4" stroke="#57534e"/>
+      <text x="155" y="136" text-anchor="middle" font-size="11" fill="#57534e">Req: Exclusive (X)</text>
+      <rect x="175" y="112" width="150" height="40" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="250" y="132" text-anchor="middle" font-size="13" font-weight="700" fill="#c2410c">✗ Blocked</text>
+      <text x="250" y="147" text-anchor="middle" font-size="9" fill="#c2410c">wait for all S release</text>
+      <rect x="375" y="112" width="150" height="40" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="450" y="132" text-anchor="middle" font-size="13" font-weight="700" fill="#c2410c">✗ Blocked</text>
+      <text x="450" y="147" text-anchor="middle" font-size="9" fill="#c2410c">wait for X release</text>
+
+      <!-- Granularity ladder -->
+      <text x="350" y="178" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">Lock Granularity (coarse → fine)</text>
+      <rect x="100" y="186" width="100" height="30" rx="4" fill="#c2410c"/>
+      <text x="150" y="205" text-anchor="middle" font-size="10" fill="#ffffff">Table Lock</text>
+      <line x1="200" y1="201" x2="240" y2="201" stroke="#57534e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="240" y="186" width="100" height="30" rx="4" fill="#fb923c"/>
+      <text x="290" y="205" text-anchor="middle" font-size="10" fill="#ffffff">Page Lock</text>
+      <line x1="340" y1="201" x2="380" y2="201" stroke="#57534e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="380" y="186" width="100" height="30" rx="4" fill="#16a34a"/>
+      <text x="430" y="205" text-anchor="middle" font-size="10" fill="#ffffff">Row Lock</text>
+      <line x1="480" y1="201" x2="520" y2="201" stroke="#57534e" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <rect x="520" y="186" width="120" height="30" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="580" y="205" text-anchor="middle" font-size="10" fill="#14532d">Gap / Next-Key</text>
+      <text x="350" y="245" text-anchor="middle" font-size="10" fill="#57534e">InnoDB default: row-level locking with next-key locks in REPEATABLE READ</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       4. TRANSACTIONS
+       ═══════════════════════════════════════════════════ -->
+  <h2>Transactions</h2>
+  <p>Transactions package multiple SQL statements into a single atomic unit. InnoDB is fully ACID compliant: <strong>Atomicity</strong> (all-or-nothing), <strong>Consistency</strong> (schema constraints are enforced), <strong>Isolation</strong> (concurrent transactions behave as if serialized), and <strong>Durability</strong> (committed data survives crashes). The redo log and undo log together implement atomicity and durability; locking and MVCC implement isolation.</p>
+
+  <h3>Isolation Levels</h3>
+  <p>SQL-92 defines four isolation levels, each relaxing isolation constraints for better concurrency. MySQL defaults to <strong>REPEATABLE READ</strong> — a pragmatic balance that prevents dirty and non-repeatable reads while allowing phantom reads in theory (though InnoDB's next-key locks largely prevent them even at this level).</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <!-- Isolation level ladder -->
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Isolation Levels — Strictness Ladder</text>
+      <!-- vertical spine -->
+      <line x1="180" y1="40" x2="180" y2="280" stroke="#e7e5e4" stroke-width="2"/>
+      <!-- labels left -->
+      <text x="170" y="55" text-anchor="end" font-size="10" fill="#57534e">most</text>
+      <text x="170" y="67" text-anchor="end" font-size="10" fill="#57534e">concurrent</text>
+      <text x="170" y="270" text-anchor="end" font-size="10" fill="#57534e">most</text>
+      <text x="170" y="282" text-anchor="end" font-size="10" fill="#57534e">isolated</text>
+      <!-- levels -->
+      <!-- READ UNCOMMITTED -->
+      <rect x="190" y="42" width="460" height="46" rx="6" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+      <text x="210" y="62" font-size="12" font-weight="700" fill="#c2410c">READ UNCOMMITTED</text>
+      <text x="210" y="80" font-size="10" fill="#57534e">dirty reads ✓ · non-repeatable reads ✓ · phantom reads ✓  — almost never used in production</text>
+      <!-- READ COMMITTED -->
+      <rect x="190" y="100" width="460" height="46" rx="6" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="210" y="120" font-size="12" font-weight="700" fill="#c2410c">READ COMMITTED</text>
+      <text x="210" y="138" font-size="10" fill="#57534e">dirty reads ✗ · non-repeatable reads ✓ · phantom reads ✓  — common in OLTP (Oracle default)</text>
+      <!-- REPEATABLE READ — MySQL default -->
+      <rect x="190" y="158" width="460" height="46" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2.5"/>
+      <text x="210" y="178" font-size="12" font-weight="700" fill="#14532d">REPEATABLE READ ← MySQL default</text>
+      <text x="210" y="196" font-size="10" fill="#57534e">dirty reads ✗ · non-repeatable reads ✗ · phantom reads ✗*  — InnoDB next-key locks prevent phantoms</text>
+      <!-- SERIALIZABLE -->
+      <rect x="190" y="216" width="460" height="46" rx="6" fill="#e7e5e4" stroke="#57534e" stroke-width="1.5"/>
+      <text x="210" y="236" font-size="12" font-weight="700" fill="#57534e">SERIALIZABLE</text>
+      <text x="210" y="254" font-size="10" fill="#57534e">full isolation — all SELECTs become LOCK IN SHARE MODE — significant throughput penalty</text>
+      <!-- arrows between levels -->
+      <text x="185" y="100" text-anchor="middle" font-size="18" fill="#c2410c">↓</text>
+      <text x="185" y="158" text-anchor="middle" font-size="18" fill="#c2410c">↓</text>
+      <text x="185" y="216" text-anchor="middle" font-size="18" fill="#c2410c">↓</text>
+      <text x="350" y="295" text-anchor="middle" font-size="9" fill="#57534e">* InnoDB next-key locking prevents most phantom reads even in REPEATABLE READ</text>
+    </svg>
+  </div>
+
+  <h3>Deadlock Cycle</h3>
+  <p>A deadlock occurs when two (or more) transactions each hold a lock the other needs. InnoDB detects cycles in the wait-for graph and automatically kills the transaction with the least amount of undo work, rolling it back. The victim receives error 1213. Well-designed applications always retry on deadlock. You can monitor deadlocks via <code>SHOW ENGINE INNODB STATUS</code> and the <code>innodb_deadlock_detect</code> variable.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="arr5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#c2410c"/>
+        </marker>
+        <marker id="arr5g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Deadlock Cycle — Two-Transaction Wait-For Graph</text>
+      <!-- Txn A -->
+      <rect x="100" y="60" width="160" height="60" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="180" y="85" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">Transaction A</text>
+      <text x="180" y="103" text-anchor="middle" font-size="10" fill="#57534e">holds lock on Row 1</text>
+      <!-- Txn B -->
+      <rect x="440" y="60" width="160" height="60" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="520" y="85" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">Transaction B</text>
+      <text x="520" y="103" text-anchor="middle" font-size="10" fill="#57534e">holds lock on Row 2</text>
+      <!-- Row 1 -->
+      <rect x="130" y="170" width="120" height="36" rx="6" fill="#bbf7d0" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="190" y="192" text-anchor="middle" font-size="11" fill="#14532d">Row 1</text>
+      <!-- Row 2 -->
+      <rect x="450" y="170" width="120" height="36" rx="6" fill="#bbf7d0" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="510" y="192" text-anchor="middle" font-size="11" fill="#14532d">Row 2</text>
+      <!-- A holds Row1 -->
+      <line x1="190" y1="120" x2="190" y2="170" stroke="#16a34a" stroke-width="2" marker-end="url(#arr5g)"/>
+      <!-- B holds Row2 -->
+      <line x1="510" y1="120" x2="510" y2="170" stroke="#16a34a" stroke-width="2" marker-end="url(#arr5g)"/>
+      <!-- A waits for Row2 -->
+      <path d="M260,85 Q350,140 450,188" stroke="#c2410c" stroke-width="2" fill="none" stroke-dasharray="6,3" marker-end="url(#arr5)"/>
+      <text x="355" y="142" font-size="9" fill="#c2410c" text-anchor="middle">A waits for Row 2</text>
+      <!-- B waits for Row1 -->
+      <path d="M440,103 Q350,160 250,188" stroke="#c2410c" stroke-width="2" fill="none" stroke-dasharray="6,3" marker-end="url(#arr5)"/>
+      <text x="348" y="175" font-size="9" fill="#c2410c" text-anchor="middle">B waits for Row 1</text>
+      <!-- Deadlock label -->
+      <text x="350" y="60" text-anchor="middle" font-size="11" fill="#c2410c" font-weight="700">⇒ DEADLOCK — InnoDB kills the smaller txn (victim)</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       5. MVCC
+       ═══════════════════════════════════════════════════ -->
+  <h2>MVCC</h2>
+  <p>Multi-Version Concurrency Control (MVCC) is InnoDB's answer to the classic readers-block-writers problem. Instead of taking shared locks, readers access a <em>consistent snapshot</em> of the data as it existed at the start of their transaction. Writers proceed concurrently by creating new versions of modified rows in the undo log. Readers compare version timestamps against their own <em>read view</em> to determine which row version is visible.</p>
+  <p>Every InnoDB row has two hidden system columns: <code>DB_TRX_ID</code> (the transaction ID of the last writer) and <code>DB_ROLL_PTR</code> (a pointer into the undo log chain for that row). A read view records the lowest and highest active transaction IDs at snapshot creation time. If a row's <code>DB_TRX_ID</code> is newer than the snapshot, InnoDB follows the undo log chain backwards until it finds a version the transaction can see.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="arr6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">MVCC Version Chain via Undo Log</text>
+      <!-- Current row in buffer pool -->
+      <rect x="30" y="50" width="200" height="64" rx="6" fill="#c2410c"/>
+      <text x="130" y="70" text-anchor="middle" font-size="11" font-weight="700" fill="#fff7ed">Current Row (data page)</text>
+      <text x="130" y="88" text-anchor="middle" font-size="10" fill="#fed7aa">trx_id=105  val='Charlie'</text>
+      <text x="130" y="104" text-anchor="middle" font-size="10" fill="#fed7aa">roll_ptr ──────────────→</text>
+
+      <!-- Undo log v2 -->
+      <rect x="280" y="50" width="180" height="64" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
+      <text x="370" y="70" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">Undo Record v2</text>
+      <text x="370" y="88" text-anchor="middle" font-size="10" fill="#57534e">trx_id=102  val='Bob'</text>
+      <text x="370" y="104" text-anchor="middle" font-size="10" fill="#57534e">roll_ptr ──────────→</text>
+
+      <!-- Undo log v1 -->
+      <rect x="510" y="50" width="160" height="64" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="590" y="70" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Undo Record v1</text>
+      <text x="590" y="88" text-anchor="middle" font-size="10" fill="#57534e">trx_id=98   val='Alice'</text>
+      <text x="590" y="104" text-anchor="middle" font-size="10" fill="#57534e">roll_ptr = NULL (oldest)</text>
+
+      <!-- arrows between versions -->
+      <line x1="230" y1="82" x2="280" y2="82" stroke="#57534e" stroke-width="1.5" marker-end="url(#arr6)"/>
+      <line x1="460" y1="82" x2="510" y2="82" stroke="#57534e" stroke-width="1.5" marker-end="url(#arr6)"/>
+
+      <!-- Read View A (snapshot at trx 100) -->
+      <rect x="30" y="160" width="200" height="72" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="130" y="180" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Read View A</text>
+      <text x="130" y="198" text-anchor="middle" font-size="10" fill="#57534e">snapshot_trx = 100</text>
+      <text x="130" y="214" text-anchor="middle" font-size="10" fill="#57534e">visible: trx_id ≤ 100</text>
+      <text x="130" y="228" text-anchor="middle" font-size="10" fill="#16a34a">sees val='Alice' (trx 98)</text>
+
+      <!-- Read View B (snapshot at trx 103) -->
+      <rect x="280" y="160" width="200" height="72" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="380" y="180" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Read View B</text>
+      <text x="380" y="198" text-anchor="middle" font-size="10" fill="#57534e">snapshot_trx = 103</text>
+      <text x="380" y="214" text-anchor="middle" font-size="10" fill="#57534e">visible: trx_id ≤ 103</text>
+      <text x="380" y="228" text-anchor="middle" font-size="10" fill="#16a34a">sees val='Bob' (trx 102)</text>
+
+      <!-- Current reader -->
+      <rect x="510" y="160" width="160" height="72" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="590" y="180" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">Current Reader</text>
+      <text x="590" y="198" text-anchor="middle" font-size="10" fill="#57534e">snapshot_trx = 110</text>
+      <text x="590" y="214" text-anchor="middle" font-size="10" fill="#57534e">visible: trx_id ≤ 110</text>
+      <text x="590" y="228" text-anchor="middle" font-size="10" fill="#16a34a">sees val='Charlie'(105)</text>
+
+      <!-- connect views to chain -->
+      <line x1="130" y1="160" x2="130" y2="114" stroke="#16a34a" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr6)"/>
+      <line x1="380" y1="160" x2="380" y2="114" stroke="#16a34a" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr6)"/>
+      <line x1="590" y1="160" x2="590" y2="114" stroke="#c2410c" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr6)"/>
+
+      <text x="350" y="268" text-anchor="middle" font-size="9" fill="#57534e">Each reader follows the undo chain backwards until finding a version with trx_id ≤ snapshot_trx</text>
+    </svg>
+  </div>
+
+  <p>MVCC has a crucial operational implication: <strong>long-running transactions accumulate undo log</strong>. The purge thread cannot remove old undo records as long as any open read view might still need them. A transaction open for hours can cause the undo tablespace to grow dramatically and degrade performance of all subsequent queries that must traverse the extended undo chain. This is why monitoring <code>INFORMATION_SCHEMA.INNODB_TRX</code> for long-running transactions is a production necessity.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       6. REPLICATION OVERVIEW
+       ═══════════════════════════════════════════════════ -->
+  <h2>Replication Overview</h2>
+  <p>MySQL replication propagates changes from a source (primary) to one or more replicas using the binary log (binlog). The binlog records all committed data-changing events in either <em>statement</em>, <em>row</em>, or <em>mixed</em> format. Replicas maintain a relay log — a local copy of the binlog — and apply events using one or more parallel SQL threads. This asynchronous pipeline is the backbone of MySQL high availability and read scaling.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="arr7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Replication Pipeline — Binlog to Replica Apply</text>
+
+      <!-- Source -->
+      <rect x="30" y="50" width="170" height="140" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="115" y="72" text-anchor="middle" font-size="12" font-weight="700" fill="#14532d">Source (Primary)</text>
+      <rect x="50" y="84" width="130" height="30" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="115" y="103" text-anchor="middle" font-size="10" fill="#14532d">Transaction commits</text>
+      <rect x="50" y="124" width="130" height="30" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="115" y="143" text-anchor="middle" font-size="10" fill="#14532d">Write to Binlog</text>
+      <rect x="50" y="164" width="130" height="18" rx="4" fill="#16a34a"/>
+      <text x="115" y="177" text-anchor="middle" font-size="9" fill="#ffffff">Dump Thread (sends events)</text>
+
+      <!-- arrow: source → network -->
+      <line x1="200" y1="172" x2="260" y2="172" stroke="#c2410c" stroke-width="2" marker-end="url(#arr7)"/>
+      <text x="230" y="165" font-size="9" fill="#c2410c" text-anchor="middle">TCP</text>
+
+      <!-- Network cloud -->
+      <ellipse cx="295" cy="172" rx="35" ry="22" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="295" y="176" text-anchor="middle" font-size="9" fill="#c2410c">network</text>
+
+      <!-- arrow: network → replica -->
+      <line x1="330" y1="172" x2="390" y2="172" stroke="#c2410c" stroke-width="2" marker-end="url(#arr7)"/>
+
+      <!-- Replica -->
+      <rect x="390" y="50" width="280" height="200" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="530" y="72" text-anchor="middle" font-size="12" font-weight="700" fill="#c2410c">Replica</text>
+      <rect x="410" y="84" width="240" height="30" rx="4" fill="#fff7ed" stroke="#fb923c" stroke-width="1"/>
+      <text x="530" y="103" text-anchor="middle" font-size="10" fill="#57534e">IO Thread: receives events</text>
+      <rect x="410" y="124" width="240" height="30" rx="4" fill="#fff7ed" stroke="#fb923c" stroke-width="1"/>
+      <text x="530" y="143" text-anchor="middle" font-size="10" fill="#57534e">Writes to Relay Log</text>
+      <rect x="410" y="164" width="240" height="30" rx="4" fill="#fff7ed" stroke="#fb923c" stroke-width="1"/>
+      <text x="530" y="183" text-anchor="middle" font-size="10" fill="#57534e">SQL Thread(s): apply events</text>
+      <rect x="410" y="204" width="240" height="30" rx="4" fill="#bbf7d0" stroke="#16a34a" stroke-width="1"/>
+      <text x="530" y="223" text-anchor="middle" font-size="10" fill="#14532d">Replica data updated</text>
+
+      <!-- Replication lag label -->
+      <text x="350" y="268" text-anchor="middle" font-size="10" fill="#57534e">Replication lag = source binlog position − replica SQL thread position</text>
+    </svg>
+  </div>
+
+  <p>Chapter 9 covers replication in depth. For now, the key architectural points are: (1) replication is <em>asynchronous by default</em> — the source does not wait for the replica to acknowledge a transaction before committing; (2) semi-synchronous replication adds a one-ack guarantee from at least one replica before returning to the client; (3) Group Replication / InnoDB Cluster provides synchronous majority-quorum writes for true fault tolerance.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       TABLE: Isolation Levels
+       ═══════════════════════════════════════════════════ -->
+  <h2>Transaction Isolation Levels Reference</h2>
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Isolation Level</th>
+        <th>Dirty Read</th>
+        <th>Non-Repeatable Read</th>
+        <th>Phantom Read</th>
+        <th>Typical Use Case</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>READ UNCOMMITTED</code></td>
+        <td>Possible</td>
+        <td>Possible</td>
+        <td>Possible</td>
+        <td>Rarely used; approximate analytics where stale reads are acceptable</td>
+      </tr>
+      <tr>
+        <td><code>READ COMMITTED</code></td>
+        <td>Prevented</td>
+        <td>Possible</td>
+        <td>Possible</td>
+        <td>High-concurrency OLTP (Oracle/PostgreSQL default); short lock duration</td>
+      </tr>
+      <tr>
+        <td><code>REPEATABLE READ</code></td>
+        <td>Prevented</td>
+        <td>Prevented</td>
+        <td>Prevented*</td>
+        <td>MySQL default; most OLTP workloads; consistent snapshot reads</td>
+      </tr>
+      <tr>
+        <td><code>SERIALIZABLE</code></td>
+        <td>Prevented</td>
+        <td>Prevented</td>
+        <td>Prevented</td>
+        <td>Financial audits, strict correctness requirements; low throughput</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="font-size:.82rem;color:#57534e;">* InnoDB next-key locking prevents phantom reads even at REPEATABLE READ, which is stronger than the SQL-92 standard requires.</p>
+
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch08 · Query Performance Optimization — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch08 · Query Performance Optimization</h1>
+  <p class="lead">A slow query is almost always doing too much work — reading rows it doesn't need, accessing columns it doesn't use, or forcing the server to materialise an intermediate result set it could have avoided. EXPLAIN is your microscope.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Why Are Queries Slow</h2>
+
+  <p>Query response time is the sum of all time spent: waiting for a lock, waiting for I/O, CPU processing rows, sending bytes over the network. At any moment, a query is either executing (using resources) or waiting (blocked). The majority of production query performance problems fall into two categories of data access waste: fetching too many rows, and fetching too many columns.</p>
+
+  <h3>Fetching Too Many Rows</h3>
+  <p>The optimizer estimates how many rows must be examined to return the result. A ratio of rows_examined to rows_returned above 10:1 is a signal that the query is doing excessive work. Common causes: missing WHERE clause index, non-sargable predicate (e.g. <code>WHERE YEAR(created_at) = 2024</code> prevents range scan use), or a JOIN ordering that starts with the large table instead of the selective one.</p>
+
+  <h3>Fetching Too Many Columns</h3>
+  <p><code>SELECT *</code> is the most common culprit. Retrieving all columns forces MySQL to access the full clustered index row for every matched row, even when a covering index on the queried columns would have been sufficient. It also increases network transfer, increases serialisation cost at the application layer, and blocks covering-index optimisations. Always name the columns you need explicitly.</p>
+
+  <p>Other anti-patterns: using <code>DISTINCT</code> unnecessarily (forces deduplication of the entire result set), large <code>LIMIT 1 OFFSET 100000</code> (must scan and discard 100 000 rows), and <code>ORDER BY RAND()</code> (materialises and sorts the full table).</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>EXPLAIN Anatomy</h2>
+
+  <p><code>EXPLAIN</code> (or <code>EXPLAIN FORMAT=JSON</code> / <code>EXPLAIN ANALYZE</code> in MySQL 8.0) describes the execution plan the optimizer chose. Reading EXPLAIN output fluently is the single most important query-tuning skill. Each row in EXPLAIN output represents one access operation in the query plan; complex JOINs and subqueries produce multiple rows.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="10.5">
+      <text x="350" y="18" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">EXPLAIN Output — Key Columns Decoded</text>
+      <!-- header row -->
+      <rect x="10" y="28" width="680" height="22" rx="2" fill="#14532d"/>
+      <text x="25" y="43" fill="#bbf7d0" font-weight="700">id</text>
+      <text x="60" y="43" fill="#bbf7d0" font-weight="700">select_type</text>
+      <text x="160" y="43" fill="#bbf7d0" font-weight="700">table</text>
+      <text x="225" y="43" fill="#bbf7d0" font-weight="700">type</text>
+      <text x="285" y="43" fill="#bbf7d0" font-weight="700">possible_keys</text>
+      <text x="395" y="43" fill="#bbf7d0" font-weight="700">key</text>
+      <text x="445" y="43" fill="#bbf7d0" font-weight="700">rows</text>
+      <text x="495" y="43" fill="#bbf7d0" font-weight="700">filtered</text>
+      <text x="555" y="43" fill="#bbf7d0" font-weight="700">Extra</text>
+      <!-- row 1 good -->
+      <rect x="10" y="50" width="680" height="22" rx="0" fill="#f0fdf4"/>
+      <text x="25" y="65" fill="#14532d">1</text>
+      <text x="60" y="65" fill="#14532d">SIMPLE</text>
+      <text x="160" y="65" fill="#14532d">orders</text>
+      <text x="225" y="65" fill="#16a34a" font-weight="700">ref</text>
+      <text x="285" y="65" fill="#14532d">idx_uid</text>
+      <text x="395" y="65" fill="#16a34a">idx_uid</text>
+      <text x="445" y="65" fill="#14532d">12</text>
+      <text x="495" y="65" fill="#14532d">100.00</text>
+      <text x="555" y="65" fill="#16a34a">Using index</text>
+      <!-- row 2 medium -->
+      <rect x="10" y="72" width="680" height="22" rx="0" fill="#fff"/>
+      <text x="25" y="87" fill="#14532d">1</text>
+      <text x="60" y="87" fill="#14532d">SIMPLE</text>
+      <text x="160" y="87" fill="#14532d">users</text>
+      <text x="225" y="87" fill="#c2410c" font-weight="700">ALL</text>
+      <text x="285" y="87" fill="#57534e">NULL</text>
+      <text x="395" y="87" fill="#57534e">NULL</text>
+      <text x="445" y="87" fill="#c2410c">1 250 000</text>
+      <text x="495" y="87" fill="#c2410c">10.00</text>
+      <text x="555" y="87" fill="#c2410c">Using where</text>
+      <!-- annotations -->
+      <!-- id -->
+      <line x1="35" y1="112" x2="35" y2="145" stroke="#57534e" stroke-width="1"/>
+      <rect x="10" y="145" width="130" height="50" rx="3" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="75" y="160" text-anchor="middle" fill="#c2410c" font-size="9" font-weight="700">id</text>
+      <text x="75" y="174" text-anchor="middle" fill="#57534e" font-size="9">Step number; same id =</text>
+      <text x="75" y="186" text-anchor="middle" fill="#57534e" font-size="9">same SELECT level</text>
+      <!-- type -->
+      <line x1="250" y1="94" x2="250" y2="145" stroke="#57534e" stroke-width="1"/>
+      <rect x="185" y="145" width="130" height="50" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="250" y="160" text-anchor="middle" fill="#c2410c" font-size="9" font-weight="700">type ← MOST IMPORTANT</text>
+      <text x="250" y="174" text-anchor="middle" fill="#57534e" font-size="9">Best: system/const/eq_ref/ref</text>
+      <text x="250" y="186" text-anchor="middle" fill="#57534e" font-size="9">Worst: index / ALL = full scan</text>
+      <!-- key -->
+      <line x1="410" y1="94" x2="410" y2="145" stroke="#57534e" stroke-width="1"/>
+      <rect x="360" y="145" width="110" height="50" rx="3" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="415" y="160" text-anchor="middle" fill="#14532d" font-size="9" font-weight="700">key</text>
+      <text x="415" y="174" text-anchor="middle" fill="#57534e" font-size="9">Index actually used.</text>
+      <text x="415" y="186" text-anchor="middle" fill="#57534e" font-size="9">NULL = no index!</text>
+      <!-- rows -->
+      <line x1="460" y1="94" x2="460" y2="145" stroke="#57534e" stroke-width="1"/>
+      <rect x="480" y="145" width="110" height="50" rx="3" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="535" y="160" text-anchor="middle" fill="#14532d" font-size="9" font-weight="700">rows × filtered</text>
+      <text x="535" y="174" text-anchor="middle" fill="#57534e" font-size="9">Est. rows examined ×</text>
+      <text x="535" y="186" text-anchor="middle" fill="#57534e" font-size="9">% kept after WHERE</text>
+      <!-- Extra annotation -->
+      <line x1="610" y1="112" x2="610" y2="208" stroke="#57534e" stroke-width="1"/>
+      <rect x="590" y="208" width="100" height="80" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="640" y="224" text-anchor="middle" fill="#c2410c" font-size="9" font-weight="700">Extra</text>
+      <text x="640" y="238" text-anchor="middle" fill="#16a34a" font-size="9">Using index =</text>
+      <text x="640" y="250" text-anchor="middle" fill="#16a34a" font-size="9">covering ✓</text>
+      <text x="640" y="264" text-anchor="middle" fill="#c2410c" font-size="9">Using filesort =</text>
+      <text x="640" y="276" text-anchor="middle" fill="#c2410c" font-size="9">no index for ORDER</text>
+      <text x="640" y="287" text-anchor="middle" fill="#c2410c" font-size="9">Using tmp table ✗</text>
+      <!-- bottom tip -->
+      <text x="350" y="308" text-anchor="middle" fill="#57534e" font-size="10">EXPLAIN ANALYZE (MySQL 8.0+) adds actual row counts and timings: compare estimated vs actual rows to spot bad statistics</text>
+    </svg>
+  </div>
+
+  <p>The <code>type</code> column is the single most informative field. It describes the access method from most efficient to least. Understanding what each value means is a prerequisite for interpreting any EXPLAIN output.</p>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>type value</th>
+        <th>What it means</th>
+        <th>Typical rows examined</th>
+        <th>Verdict</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>system</code></td><td>Table has exactly 1 row (constant)</td><td>1</td><td>Best possible</td></tr>
+      <tr><td><code>const</code></td><td>At most 1 row via PK or unique index equality</td><td>1</td><td>Excellent</td></tr>
+      <tr><td><code>eq_ref</code></td><td>1 row from joined table via unique/PK index</td><td>1 per outer row</td><td>Excellent for JOINs</td></tr>
+      <tr><td><code>ref</code></td><td>Non-unique index equality; multiple rows possible</td><td>Low (indexed)</td><td>Good</td></tr>
+      <tr><td><code>ref_or_null</code></td><td>Like ref but also matches NULL values</td><td>Low + nulls</td><td>Acceptable</td></tr>
+      <tr><td><code>range</code></td><td>Index range scan (BETWEEN, IN, &gt;, &lt;)</td><td>Fraction of table</td><td>Acceptable</td></tr>
+      <tr><td><code>index_merge</code></td><td>Multiple indexes merged via union/intersection</td><td>Varies</td><td>Marginal; consider composite index</td></tr>
+      <tr><td><code>index</code></td><td>Full index scan — all leaf pages read in order</td><td>All index rows</td><td>Slow for large indexes</td></tr>
+      <tr><td><code>ALL</code></td><td>Full table scan — every row in clustered index</td><td>All table rows</td><td>Worst — add an index</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Query Execution Pipeline</h2>
+
+  <p>Understanding the lifecycle of a query from SQL string to result rows helps you diagnose problems at the right layer. Each stage has different failure modes and optimisation levers.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 120" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="18" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Query Execution Pipeline</text>
+      <!-- stages -->
+      <rect x="10" y="30" width="100" height="50" rx="4" fill="#14532d"/>
+      <text x="60" y="52" text-anchor="middle" fill="#fff" font-weight="700">Parse</text>
+      <text x="60" y="68" text-anchor="middle" fill="#bbf7d0" font-size="9">SQL → AST</text>
+      <line x1="110" y1="55" x2="130" y2="55" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="126,51 134,55 126,59" fill="#16a34a"/>
+      <rect x="130" y="30" width="100" height="50" rx="4" fill="#16a34a"/>
+      <text x="180" y="52" text-anchor="middle" fill="#fff" font-weight="700">Rewrite</text>
+      <text x="180" y="68" text-anchor="middle" fill="#bbf7d0" font-size="9">subq → joins</text>
+      <line x1="230" y1="55" x2="250" y2="55" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="246,51 254,55 246,59" fill="#16a34a"/>
+      <rect x="250" y="30" width="100" height="50" rx="4" fill="#c2410c"/>
+      <text x="300" y="52" text-anchor="middle" fill="#fff" font-weight="700">Optimize</text>
+      <text x="300" y="68" text-anchor="middle" fill="#fff7ed" font-size="9">cost model</text>
+      <line x1="350" y1="55" x2="370" y2="55" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="366,51 374,55 366,59" fill="#c2410c"/>
+      <rect x="370" y="30" width="100" height="50" rx="4" fill="#fb923c"/>
+      <text x="420" y="52" text-anchor="middle" fill="#fff" font-weight="700">Execute</text>
+      <text x="420" y="68" text-anchor="middle" fill="#fff7ed" font-size="9">storage engine</text>
+      <line x1="470" y1="55" x2="490" y2="55" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="486,51 494,55 486,59" fill="#c2410c"/>
+      <rect x="490" y="30" width="100" height="50" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="540" y="52" text-anchor="middle" fill="#14532d" font-weight="700">Return</text>
+      <text x="540" y="68" text-anchor="middle" fill="#14532d" font-size="9">result set</text>
+      <line x1="590" y1="55" x2="610" y2="55" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="606,51 614,55 606,59" fill="#16a34a"/>
+      <rect x="610" y="30" width="80" height="50" rx="4" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="650" y="52" text-anchor="middle" fill="#14532d" font-weight="700">Client</text>
+      <text x="650" y="68" text-anchor="middle" fill="#14532d" font-size="9">rows / error</text>
+      <!-- label below -->
+      <text x="300" y="103" text-anchor="middle" fill="#57534e" font-size="10">Optimize: uses statistics, index metadata, join ordering heuristics, cost model</text>
+    </svg>
+  </div>
+
+  <p>The <strong>parse</strong> stage tokenises the SQL string, checks syntax, and builds an abstract syntax tree. Parse errors surface here. <strong>Rewrite</strong> transforms the AST: correlated subqueries may be rewritten as joins, constant propagation simplifies predicates. <strong>Optimize</strong> is the most complex stage — it evaluates candidate execution plans using a cost model (I/O cost + CPU cost), considers available indexes, estimates row counts via statistics, and chooses the lowest-cost plan. The optimizer is cost-based but imperfect; it can make suboptimal choices when statistics are stale or the cost model underestimates random I/O.</p>
+
+  <p><strong>Execute</strong> calls the storage engine API to fetch rows, applies WHERE filters that could not be pushed into the index (post-filter), sorts if necessary, and assembles the result set. <strong>Return</strong> streams rows back to the client — for large result sets, the client buffer matters. <code>mysql_use_result()</code> streams rows; <code>mysql_store_result()</code> buffers the entire result in client memory.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>JOIN Algorithms</h2>
+
+  <p>MySQL's join execution has evolved significantly. Understanding the available join algorithms helps diagnose why a particular multi-table query is slow and how to index or rewrite it.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="18" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">MySQL JOIN Algorithms</text>
+      <!-- NLJ -->
+      <rect x="15" y="30" width="200" height="230" rx="5" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <rect x="15" y="30" width="200" height="25" rx="5" fill="#14532d"/>
+      <text x="115" y="47" text-anchor="middle" fill="#fff" font-weight="700">Nested Loop Join</text>
+      <text x="115" y="72" text-anchor="middle" fill="#14532d" font-size="10">for each row in outer:</text>
+      <text x="115" y="87" text-anchor="middle" fill="#14532d" font-size="10">  probe inner with index</text>
+      <rect x="30" y="97" width="80" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="70" y="114" text-anchor="middle" fill="#14532d" font-size="10">outer table</text>
+      <rect x="130" y="97" width="70" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="165" y="114" text-anchor="middle" fill="#14532d" font-size="10">inner+index</text>
+      <line x1="110" y1="109" x2="130" y2="109" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="126,105 134,109 126,113" fill="#16a34a"/>
+      <text x="115" y="145" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">Complexity: O(outer × log N)</text>
+      <text x="115" y="162" text-anchor="middle" fill="#16a34a" font-size="10">Best when inner has index</text>
+      <text x="115" y="177" text-anchor="middle" fill="#c2410c" font-size="10">Falls back to ALL scan if</text>
+      <text x="115" y="192" text-anchor="middle" fill="#c2410c" font-size="10">inner has no suitable index</text>
+      <text x="115" y="217" text-anchor="middle" fill="#57534e" font-size="9">Default algorithm pre-8.0</text>
+      <text x="115" y="232" text-anchor="middle" fill="#57534e" font-size="9">Still used with good indexes</text>
+      <!-- Hash Join -->
+      <rect x="245" y="30" width="200" height="230" rx="5" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <rect x="245" y="30" width="200" height="25" rx="5" fill="#c2410c"/>
+      <text x="345" y="47" text-anchor="middle" fill="#fff" font-weight="700">Hash Join (MySQL 8.0+)</text>
+      <text x="345" y="72" text-anchor="middle" fill="#57534e" font-size="10">Phase 1: build hash table</text>
+      <text x="345" y="87" text-anchor="middle" fill="#57534e" font-size="10">Phase 2: probe with outer</text>
+      <rect x="260" y="97" width="80" height="25" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="300" y="114" text-anchor="middle" fill="#c2410c" font-size="10">build: smaller table</text>
+      <rect x="355" y="97" width="75" height="25" rx="3" fill="#fb923c"/>
+      <text x="392" y="114" text-anchor="middle" fill="#fff" font-size="10">hash table</text>
+      <line x1="340" y1="109" x2="355" y2="109" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="351,105 359,109 351,113" fill="#c2410c"/>
+      <text x="345" y="148" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">Complexity: O(build + probe)</text>
+      <text x="345" y="165" text-anchor="middle" fill="#c2410c" font-size="10">No index needed on join key</text>
+      <text x="345" y="182" text-anchor="middle" fill="#c2410c" font-size="10">Ideal for large table JOINs</text>
+      <text x="345" y="199" text-anchor="middle" fill="#16a34a" font-size="10">Uses join_buffer_size RAM</text>
+      <text x="345" y="217" text-anchor="middle" fill="#57534e" font-size="9">Spills to disk if buffer full</text>
+      <text x="345" y="232" text-anchor="middle" fill="#57534e" font-size="9">Default when no index avail</text>
+      <!-- Index Merge -->
+      <rect x="475" y="30" width="210" height="230" rx="5" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <rect x="475" y="30" width="210" height="25" rx="5" fill="#16a34a"/>
+      <text x="580" y="47" text-anchor="middle" fill="#fff" font-weight="700">Index Merge</text>
+      <text x="580" y="72" text-anchor="middle" fill="#14532d" font-size="10">2+ index scans, merge results</text>
+      <rect x="490" y="85" width="80" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="530" y="102" text-anchor="middle" fill="#14532d" font-size="10">idx_a scan</text>
+      <rect x="590" y="85" width="80" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="630" y="102" text-anchor="middle" fill="#14532d" font-size="10">idx_b scan</text>
+      <line x1="530" y1="110" x2="580" y2="130" stroke="#16a34a" stroke-width="1.2"/>
+      <line x1="630" y1="110" x2="580" y2="130" stroke="#16a34a" stroke-width="1.2"/>
+      <rect x="540" y="130" width="80" height="25" rx="3" fill="#14532d"/>
+      <text x="580" y="147" text-anchor="middle" fill="#fff" font-size="10">union / intersect</text>
+      <text x="580" y="175" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">type=index_merge in EXPLAIN</text>
+      <text x="580" y="192" text-anchor="middle" fill="#57534e" font-size="10">Better: one composite index</text>
+      <text x="580" y="209" text-anchor="middle" fill="#57534e" font-size="10">Avoid: high overhead merging</text>
+      <text x="580" y="232" text-anchor="middle" fill="#57534e" font-size="9">Signal to redesign indexes</text>
+      <!-- bottom note -->
+      <text x="350" y="275" text-anchor="middle" fill="#57534e" font-size="10">MySQL 8.0 chooses hash join automatically for equi-joins without index. Use EXPLAIN to verify algorithm selected.</text>
+    </svg>
+  </div>
+
+  <p>In MySQL 8.0, the hash join replaces the old Block Nested Loop (BNL) algorithm for equi-joins that lack a usable index. The build phase constructs an in-memory hash table from the smaller table using <code>join_buffer_size</code>. If the hash table doesn't fit in memory, MySQL spills to disk using temporary files — a scenario to avoid. The probe phase scans the outer table, probing the hash table for each row. Unlike NLJ, hash join does not require indexes on the join columns, making it resilient to missing index configurations while still outperforming BNL.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Optimizer Limitations</h2>
+
+  <p>MySQL's optimizer is sophisticated but has known limitations worth understanding so you can work around them.</p>
+
+  <h3>UNION and Subquery Materialisation</h3>
+  <p>UNION ALL appends result sets with no deduplication cost. UNION (without ALL) must deduplicate, which involves sorting or hashing the entire result — often expensive for large UNION arms. Correlated subqueries in WHERE clauses are re-evaluated once per outer row, even if the subquery result is constant. Rewriting as a JOIN or using a derived table (subquery in FROM clause) often produces a better plan.</p>
+
+  <h3>No Parallel Query Execution</h3>
+  <p>MySQL's InnoDB does not support intra-query parallelism (no parallel scan, no parallel hash join, no parallel sort). Each query executes single-threaded. For analytical workloads that need parallelism, consider MySQL HeatWave, ClickHouse, or an OLAP columnar store. The only MySQL-level parallelism available is at the connection level: multiple concurrent queries on separate connections.</p>
+
+  <h3>Row-Locking Interaction</h3>
+  <p>The optimizer does not account for lock contention when choosing plans. A plan that accesses rows in a different order from concurrent write transactions can cause deadlocks or increased lock wait time. Index range scans acquire gap locks in addition to row locks; full table scans escalate to a table-level intent lock. Sometimes adding an index not only speeds the query but also reduces locking scope, improving concurrency.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="18" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Query Optimizer Cost Model — Index Dive vs Statistics Estimate</text>
+      <!-- two paths -->
+      <!-- index dive path -->
+      <rect x="30" y="35" width="290" height="170" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <rect x="30" y="35" width="290" height="26" rx="6" fill="#14532d"/>
+      <text x="175" y="52" text-anchor="middle" fill="#fff" font-weight="700">Index Dive (accurate)</text>
+      <text x="175" y="80" text-anchor="middle" fill="#57534e" font-size="10">Optimizer descends B-tree to count</text>
+      <text x="175" y="95" text-anchor="middle" fill="#57534e" font-size="10">actual matching rows per IN() value</text>
+      <rect x="50" y="108" width="250" height="30" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="175" y="127" text-anchor="middle" fill="#14532d" font-size="10">WHERE status IN ('a','b','c') → 3 dives</text>
+      <text x="175" y="155" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">Accurate row estimate</text>
+      <text x="175" y="170" text-anchor="middle" fill="#16a34a" font-size="10">Good plan choice</text>
+      <text x="175" y="193" text-anchor="middle" fill="#c2410c" font-size="9">Cost: O(values × tree_height) at plan time</text>
+      <!-- statistics estimate path -->
+      <rect x="380" y="35" width="290" height="170" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <rect x="380" y="35" width="290" height="26" rx="6" fill="#c2410c"/>
+      <text x="525" y="52" text-anchor="middle" fill="#fff" font-weight="700">Statistics Estimate (fast)</text>
+      <text x="525" y="80" text-anchor="middle" fill="#57534e" font-size="10">Uses sampled histogram from</text>
+      <text x="525" y="95" text-anchor="middle" fill="#57534e" font-size="10">innodb_stats_persistent_sample_pages</text>
+      <rect x="400" y="108" width="250" height="30" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="525" y="127" text-anchor="middle" fill="#c2410c" font-size="10">Cardinality: index has 10 000 distinct values</text>
+      <text x="525" y="155" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">May be stale / inaccurate</text>
+      <text x="525" y="170" text-anchor="middle" fill="#c2410c" font-size="10">Can choose wrong plan</text>
+      <text x="525" y="193" text-anchor="middle" fill="#16a34a" font-size="9">Fix: ANALYZE TABLE to refresh stats</text>
+      <!-- middle label -->
+      <text x="350" y="125" text-anchor="middle" fill="#57534e" font-size="12">vs</text>
+      <!-- bottom note -->
+      <text x="350" y="222" text-anchor="middle" fill="#57534e" font-size="10">eq_range_index_dive_limit controls when MySQL switches from index dives to statistics (default: 200 values)</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Optimizing Specific Patterns</h2>
+
+  <h3>COUNT Queries</h3>
+  <p><code>COUNT(*)</code> counts all rows including NULLs. <code>COUNT(column)</code> counts non-NULL values only — subtly different semantics. For InnoDB, <code>COUNT(*)</code> on a table without a WHERE clause requires a full index scan (there is no stored row count). For large tables, use the approximate <code>information_schema.TABLES.TABLE_ROWS</code>, or maintain a separate counter table updated transactionally.</p>
+
+  <h3>GROUP BY and Aggregation</h3>
+  <p>If the GROUP BY columns match a leading prefix of an available index, MySQL can produce the grouped result by walking the index in order — no sort or temporary table needed (<code>Extra: Using index</code>). Without such an index, MySQL must materialise the full result set into a temporary table and sort it — <code>Extra: Using temporary; Using filesort</code> — a potentially enormous cost for large tables.</p>
+
+  <h3>LIMIT and OFFSET Pagination</h3>
+  <p>Deep pagination with <code>LIMIT 20 OFFSET 100000</code> is a well-known MySQL performance trap. MySQL must scan and discard 100 000 rows to reach the desired page. The solution is keyset pagination (also called cursor pagination): record the last-seen value of the sort key from the previous page and use it as a WHERE predicate: <code>WHERE id &gt; :last_id ORDER BY id LIMIT 20</code>. This converts an O(offset) scan into an O(1) index seek regardless of page depth.</p>
+
+  <h3>Covering Index Tricks</h3>
+  <p>A covering index can be used as a deferred join target. Rather than fetching full rows from a wide table for a paginated query, first use a covering index to retrieve just the primary keys that match the predicate and pagination, then join back to the full table for those exact rows. This pattern is called a "late row lookup" or "deferred join":</p>
+  <pre><code>SELECT * FROM orders
+  JOIN (
+    SELECT id FROM orders
+    WHERE status = 'shipped'
+    ORDER BY created_at DESC
+    LIMIT 20 OFFSET 0
+  ) AS ids USING (id);</code></pre>
+  <p>The inner query uses a covering index on <code>(status, created_at, id)</code> to fetch 20 primary keys cheaply; the outer join then fetches the full row for only those 20 IDs via the clustered index.</p>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

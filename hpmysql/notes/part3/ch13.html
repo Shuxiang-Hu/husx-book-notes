@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch13 · Compliance with MySQL — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</span></a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch13 · Compliance with MySQL</h1>
+  <p class="lead">Compliance is not a checkbox activity imposed from outside engineering — it is a set of database controls that, when implemented thoughtfully, also improve security, auditability, and operational discipline for the MySQL systems you already run.</p>
+
+  <!-- ── Section 1: What Is Compliance ─────────────────────────────── -->
+  <h2>What Is Compliance and Why It Matters</h2>
+  <p>Compliance frameworks are structured sets of requirements that organizations must satisfy to demonstrate that they protect sensitive data, control access appropriately, maintain detailed records of data operations, and can recover from failures in a verifiable way. For database engineers, compliance frameworks translate into concrete technical controls: encryption keys must be rotated, user privileges must be scoped to least-privilege, every table-level access must be logged, and backups must be verifiable and retained for a defined period.</p>
+  <p>The four frameworks most commonly encountered in MySQL environments are SOC 2 (Service Organization Controls, Trust Service Criteria), PCI-DSS (Payment Card Industry Data Security Standard), GDPR (General Data Protection Regulation), and HIPAA (Health Insurance Portability and Accountability Act). Each emerged from a different industry and threat model, but their database-level requirements converge significantly: data encryption at rest and in transit, access control with documented privilege grants, comprehensive audit logging, and documented backup and recovery procedures.</p>
+  <p>The key insight the book emphasizes is that compliance requirements are <em>floor constraints</em>, not a ceiling. A MySQL deployment that satisfies PCI-DSS requirements for encryption and auditing is also a more secure and operationally rigorous deployment. Engineering teams that treat compliance as an adversarial imposition tend to implement controls that are brittle or superficial. Teams that internalize compliance requirements as engineering standards tend to build systems that are easier to reason about, audit, and operate.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 320" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="320" rx="6" fill="#f0fdf4"/>
+
+      <!-- Title -->
+      <text x="350" y="26" font-size="11" fill="#14532d" text-anchor="middle" font-weight="700">Compliance Frameworks → Database Controls Mapping</text>
+
+      <!-- Framework row headers -->
+      <rect x="20"  y="42" width="120" height="32" rx="3" fill="#14532d"/>
+      <text x="80"  y="63" font-size="9" fill="white" text-anchor="middle" font-weight="700">Framework</text>
+
+      <rect x="150" y="42" width="120" height="32" rx="3" fill="#c2410c"/>
+      <text x="210" y="58" font-size="9" fill="white" text-anchor="middle" font-weight="700">SOC 2</text>
+      <text x="210" y="70" font-size="8" fill="#fff7ed" text-anchor="middle">Trust Services</text>
+
+      <rect x="280" y="42" width="120" height="32" rx="3" fill="#c2410c"/>
+      <text x="340" y="58" font-size="9" fill="white" text-anchor="middle" font-weight="700">PCI-DSS</text>
+      <text x="340" y="70" font-size="8" fill="#fff7ed" text-anchor="middle">Card Data</text>
+
+      <rect x="410" y="42" width="120" height="32" rx="3" fill="#c2410c"/>
+      <text x="470" y="58" font-size="9" fill="white" text-anchor="middle" font-weight="700">GDPR</text>
+      <text x="470" y="70" font-size="8" fill="#fff7ed" text-anchor="middle">EU Personal Data</text>
+
+      <rect x="540" y="42" width="140" height="32" rx="3" fill="#c2410c"/>
+      <text x="610" y="58" font-size="9" fill="white" text-anchor="middle" font-weight="700">HIPAA</text>
+      <text x="610" y="70" font-size="8" fill="#fff7ed" text-anchor="middle">Health Records</text>
+
+      <!-- Control rows -->
+      <!-- Encryption at rest -->
+      <rect x="20"  y="84" width="120" height="44" rx="2" fill="#f0fdf4" stroke="#bbf7d0"/>
+      <text x="80"  y="102" font-size="8" fill="#14532d" text-anchor="middle" font-weight="700">Encryption</text>
+      <text x="80"  y="116" font-size="8" fill="#57534e" text-anchor="middle">at rest + in transit</text>
+
+      <rect x="150" y="84" width="120" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="210" y="104" font-size="9" fill="#14532d" text-anchor="middle">TLS required</text>
+      <text x="210" y="117" font-size="8" fill="#57534e" text-anchor="middle">AES-256 at rest</text>
+
+      <rect x="280" y="84" width="120" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="340" y="104" font-size="9" fill="#14532d" text-anchor="middle">Mandatory</text>
+      <text x="340" y="117" font-size="8" fill="#57534e" text-anchor="middle">Req 3 &amp; 4 (PAN)</text>
+
+      <rect x="410" y="84" width="120" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="470" y="104" font-size="9" fill="#14532d" text-anchor="middle">Art. 32 required</text>
+      <text x="470" y="117" font-size="8" fill="#57534e" text-anchor="middle">pseudonymization</text>
+
+      <rect x="540" y="84" width="140" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="610" y="104" font-size="9" fill="#14532d" text-anchor="middle">AES-256 ePHI</text>
+      <text x="610" y="117" font-size="8" fill="#57534e" text-anchor="middle">§164.312(a)(2)(iv)</text>
+
+      <!-- Access Control -->
+      <rect x="20"  y="138" width="120" height="44" rx="2" fill="#f0fdf4" stroke="#bbf7d0"/>
+      <text x="80"  y="156" font-size="8" fill="#14532d" text-anchor="middle" font-weight="700">Access Control</text>
+      <text x="80"  y="170" font-size="8" fill="#57534e" text-anchor="middle">least privilege</text>
+
+      <rect x="150" y="138" width="120" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="210" y="158" font-size="9" fill="#c2410c" text-anchor="middle">Logical access</text>
+      <text x="210" y="171" font-size="8" fill="#57534e" text-anchor="middle">CC6.1 criterion</text>
+
+      <rect x="280" y="138" width="120" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="340" y="158" font-size="9" fill="#c2410c" text-anchor="middle">Req 7: minimal</text>
+      <text x="340" y="171" font-size="8" fill="#57534e" text-anchor="middle">access per role</text>
+
+      <rect x="410" y="138" width="120" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="470" y="158" font-size="9" fill="#c2410c" text-anchor="middle">Data minimization</text>
+      <text x="470" y="171" font-size="8" fill="#57534e" text-anchor="middle">Art. 25 by design</text>
+
+      <rect x="540" y="138" width="140" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="610" y="158" font-size="9" fill="#c2410c" text-anchor="middle">Role-based access</text>
+      <text x="610" y="171" font-size="8" fill="#57534e" text-anchor="middle">§164.312(a)(1)</text>
+
+      <!-- Audit Logging -->
+      <rect x="20"  y="192" width="120" height="44" rx="2" fill="#f0fdf4" stroke="#bbf7d0"/>
+      <text x="80"  y="210" font-size="8" fill="#14532d" text-anchor="middle" font-weight="700">Audit Logging</text>
+      <text x="80"  y="224" font-size="8" fill="#57534e" text-anchor="middle">who, what, when</text>
+
+      <rect x="150" y="192" width="120" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="210" y="212" font-size="9" fill="#14532d" text-anchor="middle">CC7.2: monitor</text>
+      <text x="210" y="225" font-size="8" fill="#57534e" text-anchor="middle">anomalous activity</text>
+
+      <rect x="280" y="192" width="120" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="340" y="212" font-size="9" fill="#14532d" text-anchor="middle">Req 10: all access</text>
+      <text x="340" y="225" font-size="8" fill="#57534e" text-anchor="middle">to cardholder data</text>
+
+      <rect x="410" y="192" width="120" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="470" y="212" font-size="9" fill="#14532d" text-anchor="middle">Art. 30: processing</text>
+      <text x="470" y="225" font-size="8" fill="#57534e" text-anchor="middle">records required</text>
+
+      <rect x="540" y="192" width="140" height="44" rx="2" fill="#dcfce7" stroke="#bbf7d0"/>
+      <text x="610" y="212" font-size="9" fill="#14532d" text-anchor="middle">Audit controls</text>
+      <text x="610" y="225" font-size="8" fill="#57534e" text-anchor="middle">§164.312(b)</text>
+
+      <!-- Backup retention -->
+      <rect x="20"  y="246" width="120" height="44" rx="2" fill="#f0fdf4" stroke="#bbf7d0"/>
+      <text x="80"  y="264" font-size="8" fill="#14532d" text-anchor="middle" font-weight="700">Backup Retention</text>
+      <text x="80"  y="278" font-size="8" fill="#57534e" text-anchor="middle">verified recovery</text>
+
+      <rect x="150" y="246" width="120" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="210" y="266" font-size="9" fill="#c2410c" text-anchor="middle">A1.3: backup</text>
+      <text x="210" y="279" font-size="8" fill="#57534e" text-anchor="middle">tested regularly</text>
+
+      <rect x="280" y="246" width="120" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="340" y="266" font-size="9" fill="#c2410c" text-anchor="middle">Req 12.10: min</text>
+      <text x="340" y="279" font-size="8" fill="#57534e" text-anchor="middle">12-month retention</text>
+
+      <rect x="410" y="246" width="120" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="470" y="266" font-size="9" fill="#c2410c" text-anchor="middle">Art. 17: erasure</text>
+      <text x="470" y="279" font-size="8" fill="#57534e" text-anchor="middle">must be possible</text>
+
+      <rect x="540" y="246" width="140" height="44" rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="610" y="266" font-size="9" fill="#c2410c" text-anchor="middle">Contingency plan</text>
+      <text x="610" y="279" font-size="8" fill="#57534e" text-anchor="middle">§164.312(c)(1)</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 2: Secrets Management ───────────────────────────────── -->
+  <h2>Secrets Management</h2>
+  <p>A secret is any credential or key whose exposure would compromise the confidentiality of data: MySQL user passwords, TLS certificate private keys, encryption key material for InnoDB tablespace encryption, API tokens used in ETL pipelines. The anti-pattern that the chapter addresses explicitly is <em>static secrets in config files</em>: a <code>my.cnf</code> or environment variable containing a hardcoded password that is committed to a repository or visible on a VM's filesystem.</p>
+  <p>The modern solution is a secrets management service such as HashiCorp Vault or a cloud-native equivalent (AWS Secrets Manager, Google Secret Manager, Azure Key Vault). These services provide centralized storage of secrets with versioning, access policies enforced by identity (IAM role, Kubernetes service account, TLS certificate), and automatic rotation. MySQL credentials managed by Vault can be issued as dynamic secrets: Vault generates a fresh username/password pair on each request with a TTL of minutes or hours, creates the user in MySQL, and automatically revokes it when the TTL expires or when the application explicitly releases it. An attacker who obtains a dynamic credential has a very narrow window before it becomes invalid.</p>
+  <p>For InnoDB tablespace encryption, the encryption key must itself be managed by an external key management service (KMS). MySQL 8.0 supports the keyring plugin architecture with backends for Vault (<code>keyring_vault</code>), AWS KMS (<code>component_keyring_aws</code>), and HashiCorp KMS. The master key used to encrypt InnoDB's per-tablespace data encryption keys is stored in the KMS, not on the MySQL host. This means that even if an attacker obtains a raw copy of the InnoDB data files, they cannot decrypt them without the master key.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="300" rx="6" fill="#f0fdf4"/>
+
+      <!-- KMS / Vault box (center authority) -->
+      <rect x="260" y="110" width="180" height="70" rx="6" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="133" font-size="11" fill="white" text-anchor="middle" font-weight="700">Vault / KMS</text>
+      <text x="350" y="150" font-size="9" fill="#bbf7d0" text-anchor="middle">dynamic secrets · key material</text>
+      <text x="350" y="165" font-size="9" fill="#bbf7d0" text-anchor="middle">policies · audit log · TTL</text>
+
+      <!-- Application -->
+      <rect x="60" y="20" width="180" height="50" rx="5" fill="#c2410c" stroke="#fb923c"/>
+      <text x="150" y="42" font-size="10" fill="white" text-anchor="middle" font-weight="700">Application Service</text>
+      <text x="150" y="58" font-size="8" fill="#fff7ed" text-anchor="middle">requests MySQL credential on startup</text>
+
+      <!-- Arrow: App → Vault (request) -->
+      <line x1="200" y1="70" x2="310" y2="130" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="310,130 300,121 309,118" fill="#c2410c"/>
+      <text x="218" y="96" font-size="8" fill="#c2410c">auth (IAM role /</text>
+      <text x="218" y="108" font-size="8" fill="#c2410c">service account)</text>
+
+      <!-- Arrow: Vault → App (credential) -->
+      <line x1="295" y1="118" x2="195" y2="73" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="5,2"/>
+      <polygon points="195,73 205,80 198,68" fill="#16a34a"/>
+      <text x="208" y="130" font-size="8" fill="#16a34a">dynamic cred</text>
+      <text x="208" y="142" font-size="8" fill="#16a34a">TTL: 1 hour</text>
+
+      <!-- Vault → MySQL (create user) -->
+      <line x1="440" y1="145" x2="540" y2="120" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="540,120 528,122 534,112" fill="#16a34a"/>
+      <text x="462" y="108" font-size="8" fill="#16a34a">CREATE USER vault_xyz</text>
+      <text x="462" y="120" font-size="8" fill="#16a34a">IDENTIFIED BY '...'</text>
+
+      <!-- MySQL box -->
+      <rect x="540" y="88" width="140" height="70" rx="5" fill="#14532d" stroke="#16a34a"/>
+      <text x="610" y="110" font-size="10" fill="white" text-anchor="middle" font-weight="700">MySQL</text>
+      <text x="610" y="126" font-size="8" fill="#bbf7d0" text-anchor="middle">dynamic user created</text>
+      <text x="610" y="140" font-size="8" fill="#bbf7d0" text-anchor="middle">by Vault on request</text>
+
+      <!-- Vault → MySQL (revoke after TTL) -->
+      <line x1="490" y1="165" x2="545" y2="165" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <polygon points="545,165 533,159 533,171" fill="#c2410c"/>
+      <text x="462" y="178" font-size="8" fill="#c2410c">DROP USER vault_xyz</text>
+      <text x="462" y="190" font-size="8" fill="#c2410c">after TTL expiry</text>
+
+      <!-- Rotation cycle label -->
+      <rect x="60" y="195" width="580" height="52" rx="4" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="350" y="215" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">InnoDB Encryption Key Rotation</text>
+      <text x="350" y="230" font-size="8" fill="#57534e" text-anchor="middle">ALTER INSTANCE ROTATE INNODB MASTER KEY → KMS generates new master key → re-encrypts DEKs in place</text>
+      <text x="350" y="244" font-size="8" fill="#57534e" text-anchor="middle">Old key retained in KMS until all tablespace headers updated · Zero-downtime rotation · Audit event logged</text>
+
+      <!-- App → MySQL direct (using dynamic cred) -->
+      <line x1="240" y1="70" x2="555" y2="105" stroke="#57534e" stroke-width="1" stroke-dasharray="3,3"/>
+      <text x="380" y="78" font-size="8" fill="#57534e">connects with dynamic credential</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 3: Role-Based Access Control ──────────────────────── -->
+  <h2>Role-Based Access Control</h2>
+  <p>MySQL 8.0 introduced native role support, bringing MySQL's privilege model in line with the RBAC (Role-Based Access Control) model used by enterprise identity systems. A role is a named collection of privileges. Users are granted roles rather than individual privileges, and roles can be nested (a role can include other roles). The effective privilege set for a session is the union of all privileges granted to the user directly, plus all privileges granted through roles that are active in the current session.</p>
+  <p>The least-privilege principle requires that each MySQL account holds exactly the privileges required for its function and no more. An application account that only reads from the <code>orders</code> table should have <code>SELECT</code> on that table only. A DBA account that performs schema migrations should have <code>ALTER</code>, <code>CREATE</code>, <code>DROP</code>, and <code>INDEX</code> but not <code>SUPER</code> or <code>FILE</code>. An ETL account that writes to a staging schema should have <code>INSERT</code>, <code>UPDATE</code> on staging tables but not on production tables.</p>
+  <p>The chapter recommends modeling your MySQL privilege architecture as a hierarchy of roles before creating any user accounts. Start by enumerating the access patterns: application read, application write, reporting read, migration DBA, backup service, replication replica, monitoring agent. Create a role for each pattern. Assign the minimum required privileges to each role. Then create user accounts and grant roles. Avoid granting privileges directly to user accounts; this makes the privilege model auditable because all access is traceable through the role graph.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="330" rx="6" fill="#f0fdf4"/>
+
+      <!-- Top-level roles -->
+      <rect x="20"  y="14" width="150" height="44" rx="4" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="95"  y="34" font-size="9" fill="white" text-anchor="middle" font-weight="700">role_app_read</text>
+      <text x="95"  y="50" font-size="8" fill="#bbf7d0" text-anchor="middle">SELECT on app.*</text>
+
+      <rect x="190" y="14" width="150" height="44" rx="4" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="265" y="34" font-size="9" fill="white" text-anchor="middle" font-weight="700">role_app_write</text>
+      <text x="265" y="50" font-size="8" fill="#bbf7d0" text-anchor="middle">INSERT, UPDATE, DELETE</text>
+
+      <rect x="360" y="14" width="150" height="44" rx="4" fill="#c2410c" stroke="#fb923c" stroke-width="2"/>
+      <text x="435" y="34" font-size="9" fill="white" text-anchor="middle" font-weight="700">role_dba_migrate</text>
+      <text x="435" y="50" font-size="8" fill="#fff7ed" text-anchor="middle">ALTER, CREATE, DROP</text>
+
+      <rect x="530" y="14" width="150" height="44" rx="4" fill="#57534e" stroke="#e7e5e4" stroke-width="2"/>
+      <text x="605" y="34" font-size="9" fill="white" text-anchor="middle" font-weight="700">role_monitoring</text>
+      <text x="605" y="50" font-size="8" fill="#e7e5e4" text-anchor="middle">PROCESS, REPLICATION CLIENT</text>
+
+      <!-- Composite role -->
+      <rect x="190" y="90" width="150" height="44" rx="4" fill="#166534" stroke="#16a34a"/>
+      <text x="265" y="110" font-size="9" fill="white" text-anchor="middle" font-weight="700">role_app_rw</text>
+      <text x="265" y="124" font-size="8" fill="#bbf7d0" text-anchor="middle">includes: read + write</text>
+
+      <!-- Arrows from base roles to composite -->
+      <line x1="95"  y1="58" x2="230" y2="90" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="230,90 222,80 231,78" fill="#16a34a"/>
+      <line x1="265" y1="58" x2="265" y2="90" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="265,90 259,78 271,78" fill="#16a34a"/>
+
+      <!-- Users inheriting roles -->
+      <!-- user: api_service -->
+      <rect x="20"  y="172" width="150" height="54" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="95"  y="192" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">api_service@%</text>
+      <text x="95"  y="207" font-size="8" fill="#57534e" text-anchor="middle">GRANT role_app_read</text>
+      <text x="95"  y="219" font-size="8" fill="#57534e" text-anchor="middle">password: dynamic (Vault)</text>
+
+      <!-- user: api_worker -->
+      <rect x="190" y="172" width="150" height="54" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="265" y="192" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">api_worker@%</text>
+      <text x="265" y="207" font-size="8" fill="#57534e" text-anchor="middle">GRANT role_app_rw</text>
+      <text x="265" y="219" font-size="8" fill="#57534e" text-anchor="middle">password: dynamic</text>
+
+      <!-- user: dba_deploy -->
+      <rect x="360" y="172" width="150" height="54" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="435" y="192" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">dba_deploy@mgmt</text>
+      <text x="435" y="207" font-size="8" fill="#57534e" text-anchor="middle">GRANT role_dba_migrate</text>
+      <text x="435" y="219" font-size="8" fill="#57534e" text-anchor="middle">MFA required · SSH only</text>
+
+      <!-- user: prom_exporter -->
+      <rect x="530" y="172" width="150" height="54" rx="4" fill="#fff7ed" stroke="#57534e"/>
+      <text x="605" y="192" font-size="9" fill="#57534e" text-anchor="middle" font-weight="700">prom_exporter@%</text>
+      <text x="605" y="207" font-size="8" fill="#57534e" text-anchor="middle">GRANT role_monitoring</text>
+      <text x="605" y="219" font-size="8" fill="#57534e" text-anchor="middle">read-only · no data access</text>
+
+      <!-- Arrows from roles to users -->
+      <line x1="95"  y1="58"  x2="95"  y2="172" stroke="#16a34a" stroke-width="1" stroke-dasharray="4,3"/>
+      <polygon points="95,172 89,160 101,160" fill="#16a34a"/>
+      <line x1="265" y1="134" x2="265" y2="172" stroke="#16a34a" stroke-width="1" stroke-dasharray="4,3"/>
+      <polygon points="265,172 259,160 271,160" fill="#16a34a"/>
+      <line x1="435" y1="58"  x2="435" y2="172" stroke="#c2410c" stroke-width="1" stroke-dasharray="4,3"/>
+      <polygon points="435,172 429,160 441,160" fill="#c2410c"/>
+      <line x1="605" y1="58"  x2="605" y2="172" stroke="#57534e" stroke-width="1" stroke-dasharray="4,3"/>
+      <polygon points="605,172 599,160 611,160" fill="#57534e"/>
+
+      <!-- Bottom principle note -->
+      <rect x="20" y="248" width="660" height="64" rx="4" fill="#f0fdf4" stroke="#bbf7d0"/>
+      <text x="350" y="268" font-size="9" fill="#14532d" text-anchor="middle" font-weight="700">Least-Privilege Implementation Checklist</text>
+      <text x="350" y="284" font-size="8" fill="#57534e" text-anchor="middle">1. Never GRANT ALL PRIVILEGES to application accounts  ·  2. No user with SUPER in production (use SYSTEM_VARIABLES_ADMIN selectively)</text>
+      <text x="350" y="298" font-size="8" fill="#57534e" text-anchor="middle">3. Separate accounts per service — shared credentials make breach attribution impossible</text>
+      <text x="350" y="310" font-size="8" fill="#57534e" text-anchor="middle">4. Review SHOW GRANTS quarterly  ·  5. Disable anonymous accounts  ·  6. Expire root password on managed services</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 4: Separation of Roles and Data ───────────────────── -->
+  <h2>Separation of Roles and Data</h2>
+  <p>Separation of duties (SOD) requires that no single account or person has the combined ability to both initiate and approve a sensitive operation. In database terms this means that the account used by an application to write business data should not also have the ability to modify the schema, read backup files, or access the credentials of other users. The DBA account that performs schema migrations should not be the same account used by the application at runtime.</p>
+  <p>Multi-tenant systems face an additional challenge: data isolation between tenants. In a SaaS database where customer A and customer B share the same MySQL instance, a bug in the ORM layer or an incorrect WHERE clause could expose customer A's data to customer B. MySQL provides several isolation strategies: separate schemas per tenant (easy to implement, difficult to maintain at thousands of tenants), separate MySQL users per tenant with row-security enforced via views and stored procedures, or application-layer tenant ID filtering enforced at the ORM level. The book's recommendation is to use separate schemas per tenant for high-value, regulated data (financial records, PHI), and application-layer filtering for high-cardinality tenants at lower sensitivity levels.</p>
+  <p>Column-level encryption provides an additional isolation layer for the most sensitive fields — social security numbers, payment card numbers, health record identifiers. MySQL 8.0's keyring-based InnoDB encryption operates at the tablespace level; column-level encryption requires application-level AES encryption using <code>AES_ENCRYPT()</code> / <code>AES_DECRYPT()</code> MySQL functions or application code, with keys stored separately from the database host. This means the data in those columns is unreadable even to a DBA with full SELECT privileges.</p>
+
+  <!-- ── Section 5: Audit Logging Pipeline ─────────────────────────── -->
+  <h2>Audit Logging Pipeline</h2>
+  <p>Audit logging captures a record of who accessed what data, when, and what they did. For compliance purposes, the audit log must be tamper-evident (an attacker who compromises MySQL should not be able to erase their tracks from the audit record), must capture the information required by the framework (PCI-DSS requires logging of all access to cardholder data, including reads), and must be retained for the required period (PCI-DSS requires 12 months).</p>
+  <p>MySQL's enterprise audit plugin (<code>audit_log</code>) is the standard mechanism. It generates a stream of audit events — connection events, query events, table-access events — in a configurable format (JSON or XML). The audit plugin supports filtering: you can exclude high-volume system accounts (monitoring agents, connection health-checkers) from the audit stream while capturing all activity by application and DBA accounts. This is critical because an unfiltered audit log on a busy MySQL instance can generate tens of gigabytes of data per hour, creating both storage and performance overhead.</p>
+  <p>The audit log must not remain on the MySQL host. An audit log that lives on the same disk as the data it is auditing can be deleted or modified by anyone with MySQL-level access. The production pattern is: MySQL audit plugin writes to a local file, a log shipper (Filebeat, Fluentd, or a systemd service) reads from that file and forwards records to a centralized, append-only log store (S3 with Object Lock, Elasticsearch, Splunk, Google Chronicle). The centralized store should have access controls that prevent the MySQL service account from deleting or modifying records.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="290" rx="6" fill="#f0fdf4"/>
+
+      <!-- MySQL with audit plugin -->
+      <rect x="20" y="100" width="160" height="80" rx="5" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="100" y="122" font-size="10" fill="white" text-anchor="middle" font-weight="700">MySQL Server</text>
+      <text x="100" y="138" font-size="8" fill="#bbf7d0" text-anchor="middle">audit_log plugin enabled</text>
+      <text x="100" y="152" font-size="8" fill="#bbf7d0" text-anchor="middle">filter: exclude monitoring</text>
+      <text x="100" y="166" font-size="8" fill="#86efac" text-anchor="middle">format: JSON</text>
+
+      <!-- Audit log file -->
+      <rect x="20" y="200" width="160" height="50" rx="4" fill="#166534" stroke="#16a34a"/>
+      <text x="100" y="222" font-size="9" fill="white" text-anchor="middle" font-weight="700">/var/log/mysql/audit.log</text>
+      <text x="100" y="238" font-size="8" fill="#bbf7d0" text-anchor="middle">local file · append-only mode</text>
+      <line x1="100" y1="180" x2="100" y2="200" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="100,200 94,188 106,188" fill="#16a34a"/>
+
+      <!-- Arrow: log file → shipper -->
+      <line x1="180" y1="225" x2="240" y2="225" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="240,225 228,219 228,231" fill="#c2410c"/>
+
+      <!-- Log shipper -->
+      <rect x="240" y="195" width="160" height="60" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="320" y="218" font-size="9" fill="white" text-anchor="middle" font-weight="700">Log Shipper</text>
+      <text x="320" y="233" font-size="8" fill="#fff7ed" text-anchor="middle">Filebeat / Fluentd</text>
+      <text x="320" y="248" font-size="8" fill="#fff7ed" text-anchor="middle">tail + forward · backpressure</text>
+
+      <!-- Arrow: shipper → SIEM -->
+      <line x1="400" y1="225" x2="470" y2="225" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="470,225 458,219 458,231" fill="#c2410c"/>
+
+      <!-- Filter / enrichment -->
+      <rect x="240" y="100" width="160" height="60" rx="4" fill="#57534e" stroke="#e7e5e4"/>
+      <text x="320" y="122" font-size="9" fill="white" text-anchor="middle" font-weight="700">Filter / Enrichment</text>
+      <text x="320" y="138" font-size="8" fill="#e7e5e4" text-anchor="middle">drop system accounts</text>
+      <text x="320" y="152" font-size="8" fill="#e7e5e4" text-anchor="middle">add hostname, env tag</text>
+      <line x1="320" y1="160" x2="320" y2="195" stroke="#57534e" stroke-width="1.5"/>
+      <polygon points="320,195 314,183 326,183" fill="#57534e"/>
+      <!-- connect MySQL → filter -->
+      <line x1="180" y1="140" x2="240" y2="130" stroke="#57534e" stroke-width="1.5" stroke-dasharray="4,2"/>
+
+      <!-- SIEM / Log store -->
+      <rect x="470" y="100" width="210" height="160" rx="5" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="575" y="124" font-size="10" fill="white" text-anchor="middle" font-weight="700">Centralized Log Store</text>
+      <text x="575" y="142" font-size="9" fill="#bbf7d0" text-anchor="middle">Elasticsearch / Splunk</text>
+      <text x="575" y="158" font-size="9" fill="#bbf7d0" text-anchor="middle">S3 Object Lock (WORM)</text>
+      <text x="575" y="178" font-size="8" fill="#86efac" text-anchor="middle">Retention: 12 months (PCI)</text>
+      <text x="575" y="193" font-size="8" fill="#86efac" text-anchor="middle">Access: read-only for MySQL svc acct</text>
+      <text x="575" y="208" font-size="8" fill="#86efac" text-anchor="middle">Alerts: login from unknown IP</text>
+      <text x="575" y="223" font-size="8" fill="#86efac" text-anchor="middle">Alerts: SELECT on sensitive tables</text>
+      <text x="575" y="238" font-size="8" fill="#86efac" text-anchor="middle">Alerts: GRANT privilege events</text>
+
+      <!-- Line from shipper to SIEM -->
+      <line x1="400" y1="200" x2="470" y2="180" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="470,180 460,175 462,186" fill="#c2410c"/>
+
+      <!-- Top label: query events -->
+      <text x="100" y="28" font-size="9" fill="#57534e" text-anchor="middle">DBA runs: DROP TABLE</text>
+      <text x="100" y="42" font-size="9" fill="#57534e" text-anchor="middle">App queries: SELECT * FROM users</text>
+      <line x1="100" y1="46" x2="100" y2="100" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <polygon points="100,100 94,88 106,88" fill="#c2410c"/>
+    </svg>
+  </div>
+
+  <p>Alerting rules on the SIEM complete the pipeline. Common high-signal audit alerts include: any <code>GRANT</code> or <code>REVOKE</code> statement (privilege changes must be pre-approved in change management), any login from an IP address outside the known application network range, any <code>DROP TABLE</code> or <code>TRUNCATE</code> on production schemas, and any <code>SELECT</code> on tables containing PII or payment card data by accounts not in the approved reporting list.</p>
+
+  <!-- ── Section 6: Tracking Changes and Backup for Compliance ──────── -->
+  <h2>Tracking Changes and Backup for Compliance</h2>
+  <p>Beyond real-time audit logging, compliance frameworks require the ability to reconstruct what the database contained at any point in the past — to respond to regulatory investigations, to demonstrate that a breach was contained within a specific time window, or to verify that personal data was erased as required by GDPR's right to erasure. Two complementary mechanisms provide this capability: point-in-time recovery (PITR) and change data capture (CDC).</p>
+  <p>PITR — the combination of a full base backup and a complete binary log archive — allows restoring the database to any second within the retention window. For compliance purposes, the binary logs are part of the audit record: they are a precise, ordered, verifiable log of every write operation that changed the database. Binary log files should be treated as compliance artifacts: stored in append-only object storage, access-logged, and retained for the same duration as the audit log.</p>
+  <p>CDC systems such as Debezium read the MySQL binary log and emit a structured event stream (typically to Kafka) representing every row-level change. This stream serves multiple compliance purposes: it enables a near-real-time view of who changed what data, it can be used to implement data lineage tracking, and it allows selective replay of changes to verify the integrity of a restored backup. For GDPR erasure verification, a CDC stream can confirm that a DELETE event for a specific user ID was propagated to all downstream systems within the required timeframe.</p>
+  <p>Backup verification is a critical but frequently skipped compliance control. A backup that has never been restored may be corrupted, incomplete, or use an incompatible format. Compliance frameworks require not just that backups exist but that they are demonstrably recoverable. The recommended pattern is an automated weekly restore pipeline: a backup is restored to an isolated validation instance, a checksum comparison is performed against the production data using tools like <code>pt-table-checksum</code>, and the validation result is recorded in the compliance record. The validation run also exercises the recovery procedure, reducing MTTR when a real recovery is needed.</p>
+
+  <!-- ── Compliance Frameworks Table ──────────────────────────────── -->
+  <h2>Compliance Requirements Summary</h2>
+  <p>The table below maps the four primary compliance frameworks to their concrete MySQL control requirements across four control domains. Where frameworks share a requirement, the specific controlling clause or article is cited for reference during audits.</p>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Control Domain</th>
+        <th>SOC 2</th>
+        <th>PCI-DSS v4</th>
+        <th>GDPR</th>
+        <th>HIPAA Security Rule</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Data Encryption</strong></td>
+        <td>CC6.7: all transmissions of sensitive data over public networks must be encrypted; TLS 1.2+ required; encryption key management documented</td>
+        <td>Req 3.5: protect primary account numbers (PAN) with strong cryptography; Req 4.2.1: TLS for all cardholder data transmissions; AES-256 or RSA-2048 minimum</td>
+        <td>Art. 32: implement appropriate technical measures including encryption; pseudonymization recommended for non-operational storage; no specific algorithm mandated but AES-256 is standard</td>
+        <td>§164.312(a)(2)(iv): encryption/decryption mechanism for ePHI where reasonable; §164.312(e)(2)(ii): encryption in transit; AES-256 per NIST recommendation</td>
+      </tr>
+      <tr>
+        <td><strong>Access Control</strong></td>
+        <td>CC6.1: logical access to data restricted to authorized users; CC6.2: privileged access managed and reviewed; access provisioning follows documented policy; quarterly access reviews</td>
+        <td>Req 7: restrict access to system components and cardholder data to only those individuals whose job requires it; Req 8.2: unique user IDs for all users; no shared credentials; MFA for all non-console admin access</td>
+        <td>Art. 25: data protection by design — access minimization; Art. 32: access control as an appropriate technical measure; DPA (Data Protection Authority) may audit access logs; consent records must be access-controlled</td>
+        <td>§164.312(a)(1): access control standard — unique user identification, emergency access procedure, automatic logoff; §164.308(a)(4): information access management; role-based access required</td>
+      </tr>
+      <tr>
+        <td><strong>Audit Logging</strong></td>
+        <td>CC7.2: monitor system components for anomalies; CC4.1: COSO principle — relevant information captured; logs must be immutable and available for audit; log retention typically 12 months for SOC 2</td>
+        <td>Req 10.2: implement audit logs to capture all individual user access to cardholder data, all actions by root/admin, all access to audit trails, invalid logical access attempts; Req 10.5: secure audit logs against modification; 12-month minimum retention with 3 months immediately available</td>
+        <td>Art. 30: records of processing activities — nature, purpose, categories of data, retention periods; Art. 33: 72-hour breach notification requires that you can reconstruct what happened; DPO must have access to processing records</td>
+        <td>§164.312(b): audit control standard — hardware, software, procedural mechanisms to record activity in information systems containing ePHI; §164.308(a)(1): risk analysis must include review of audit logs; no specific retention period in HIPAA but 6 years is typical for documentation</td>
+      </tr>
+      <tr>
+        <td><strong>Backup Retention</strong></td>
+        <td>A1.3 (availability criterion): backup and recovery procedures tested periodically; recovery time objective (RTO) documented; backup integrity verified; retention period per data classification policy</td>
+        <td>Req 12.3.3: cryptographic cipher suites reviewed at least once every 12 months; no specific backup retention requirement in PCI-DSS itself, but audit log retention (12 months) is required; backup media must be physically secured (Req 9.5)</td>
+        <td>Art. 17: right to erasure — backups must be capable of having specific individual's data removed or the backup schedule must ensure erasure propagates within the retention window; backup retention policy must be documented and proportionate to processing purpose</td>
+        <td>§164.308(a)(7): contingency plan — data backup plan, disaster recovery plan, emergency mode operation; §164.312(c)(1): integrity — backups must be verified against tampering; documentation must be retained for 6 years per §164.316(b)(2)</td>
+      </tr>
+    </tbody>
+  </table>
+
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

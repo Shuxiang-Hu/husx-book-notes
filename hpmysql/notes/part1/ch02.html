@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch02 · Monitoring in a Reliability Engineering World — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch02 · Monitoring in a Reliability Engineering World</h1>
+  <p class="lead">Effective MySQL observability begins by framing the database as a service with formal reliability targets — SLIs, SLOs, and SLAs — then instrumenting the four golden signals to detect degradation before users do.</p>
+
+  <!-- ═══════════════════════════════════════════════════
+       1. SLI / SLO / SLA HIERARCHY
+       ═══════════════════════════════════════════════════ -->
+  <h2>SLI / SLO / SLA Hierarchy</h2>
+  <p>The reliability engineering vocabulary borrowed from Google SRE gives teams a precise shared language for discussing database health. A <strong>Service Level Indicator (SLI)</strong> is a specific, quantifiable measurement — for example, the 99th-percentile query latency measured over a rolling 5-minute window. A <strong>Service Level Objective (SLO)</strong> is the internal target your team commits to: "p99 query latency &lt; 50 ms, 99.9% of the time over a 30-day window." A <strong>Service Level Agreement (SLA)</strong> is the external, contractual promise to customers — often slightly looser than your SLO, to give the team headroom.</p>
+  <p>The hierarchy flows outward: concrete SLI measurements roll up into SLO burn-rate alerts, which inform the SLA you can honestly guarantee to customers. Breaking this chain — agreeing to an SLA without first defining measurable SLIs and achievable SLOs — is the original sin of reliability engineering.</p>
+  <p>For MySQL specifically, the most common SLIs are: query latency percentiles (p50, p95, p99), error rate (connection refused + query errors / total queries), throughput (queries per second), and availability (fraction of 1-second windows where the server accepted connections).</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">SLI → SLO → SLA — The Reliability Hierarchy</text>
+
+      <!-- Customer happiness (outermost) -->
+      <rect x="40" y="42" width="620" height="236" rx="12" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="350" y="64" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">Customer / Business — SLA (contractual promise)</text>
+      <text x="350" y="80" text-anchor="middle" font-size="10" fill="#57534e">"99.9% availability · p99 queries &lt; 100 ms over any calendar month"</text>
+
+      <!-- SLO layer -->
+      <rect x="80" y="94" width="540" height="176" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="350" y="115" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Engineering Team — SLO (internal target)</text>
+      <text x="350" y="131" text-anchor="middle" font-size="10" fill="#57534e">"p99 query latency &lt; 50 ms · error rate &lt; 0.1% — 30-day rolling window"</text>
+
+      <!-- SLI layer -->
+      <rect x="120" y="146" width="460" height="112" rx="8" fill="#bbf7d0" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="168" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">SLI — Measured Signals</text>
+      <!-- SLI boxes -->
+      <rect x="138" y="180" width="90" height="60" rx="6" fill="#14532d"/>
+      <text x="183" y="205" text-anchor="middle" font-size="9" font-weight="700" fill="#bbf7d0">Latency</text>
+      <text x="183" y="220" text-anchor="middle" font-size="8" fill="#86efac">p50/p95/p99</text>
+      <text x="183" y="233" text-anchor="middle" font-size="8" fill="#86efac">query duration</text>
+
+      <rect x="248" y="180" width="90" height="60" rx="6" fill="#14532d"/>
+      <text x="293" y="205" text-anchor="middle" font-size="9" font-weight="700" fill="#bbf7d0">Throughput</text>
+      <text x="293" y="220" text-anchor="middle" font-size="8" fill="#86efac">QPS, TPS</text>
+      <text x="293" y="233" text-anchor="middle" font-size="8" fill="#86efac">com_select/s</text>
+
+      <rect x="358" y="180" width="90" height="60" rx="6" fill="#c2410c"/>
+      <text x="403" y="205" text-anchor="middle" font-size="9" font-weight="700" fill="#fff7ed">Error Rate</text>
+      <text x="403" y="220" text-anchor="middle" font-size="8" fill="#fed7aa">conn refused</text>
+      <text x="403" y="233" text-anchor="middle" font-size="8" fill="#fed7aa">query errors</text>
+
+      <rect x="468" y="180" width="90" height="60" rx="6" fill="#c2410c"/>
+      <text x="513" y="205" text-anchor="middle" font-size="9" font-weight="700" fill="#fff7ed">Availability</text>
+      <text x="513" y="220" text-anchor="middle" font-size="8" fill="#fed7aa">uptime fraction</text>
+      <text x="513" y="233" text-anchor="middle" font-size="8" fill="#fed7aa">heartbeat check</text>
+
+      <!-- upward arrows from SLI → SLO → SLA -->
+      <line x1="350" y1="146" x2="350" y2="132" stroke="#16a34a" stroke-width="1.5" marker-end="url(#a)"/>
+      <line x1="350" y1="94" x2="350" y2="82" stroke="#fb923c" stroke-width="1.5" marker-end="url(#a)"/>
+      <text x="360" y="142" font-size="9" fill="#16a34a">aggregate</text>
+      <text x="360" y="92" font-size="9" fill="#fb923c">defines</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       2. FOUR GOLDEN SIGNALS
+       ═══════════════════════════════════════════════════ -->
+  <h2>Four Golden Signals</h2>
+  <p>Google's SRE book identifies four universal signals applicable to any serving system. For MySQL, each maps directly to specific metrics:</p>
+  <ul>
+    <li><strong>Latency</strong> — How long individual queries take. Track p50, p95, p99, and max. Distinguish successful query latency from error latency (errors can be fast but masked failures).</li>
+    <li><strong>Traffic</strong> — Volume of demand. For MySQL: QPS broken down by statement type (<code>Com_select</code>, <code>Com_insert</code>, <code>Com_update</code>, <code>Com_delete</code>), connections per second, active threads.</li>
+    <li><strong>Errors</strong> — Rate of failed requests. Connection errors (<code>Connection_errors_max_connections</code>), aborted clients, query errors from the error log.</li>
+    <li><strong>Saturation</strong> — How "full" the service is. CPU utilization, InnoDB buffer pool hit rate (a falling hit rate signals memory saturation), disk I/O utilization, replication lag.</li>
+  </ul>
+  <p>These four signals form a minimal complete monitoring dashboard. If all four are green, almost all user-visible problems are covered. Teams that instrument only throughput and uptime miss the most common class of MySQL incident: the latency spike that leaves the database technically "up" but user-facing timeouts exploding.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Four Golden Signals for MySQL</text>
+
+      <!-- LATENCY -->
+      <rect x="30" y="40" width="150" height="120" rx="8" fill="#14532d"/>
+      <text x="105" y="68" text-anchor="middle" font-size="12" font-weight="700" fill="#bbf7d0">Latency</text>
+      <line x1="55" y1="80" x2="175" y2="80" stroke="#bbf7d0" stroke-width="0.5" stroke-dasharray="2,2"/>
+      <text x="105" y="97" text-anchor="middle" font-size="9" fill="#86efac">Query duration</text>
+      <text x="105" y="112" text-anchor="middle" font-size="9" fill="#86efac">p50 / p95 / p99</text>
+      <text x="105" y="127" text-anchor="middle" font-size="9" fill="#6ee7b7">slow_query_log</text>
+      <text x="105" y="142" text-anchor="middle" font-size="9" fill="#6ee7b7">perf_schema events</text>
+      <text x="105" y="157" text-anchor="middle" font-size="9" fill="#4ade80">alert: p99 &gt; 50ms</text>
+
+      <!-- TRAFFIC -->
+      <rect x="198" y="40" width="150" height="120" rx="8" fill="#14532d"/>
+      <text x="273" y="68" text-anchor="middle" font-size="12" font-weight="700" fill="#bbf7d0">Traffic</text>
+      <line x1="223" y1="80" x2="343" y2="80" stroke="#bbf7d0" stroke-width="0.5" stroke-dasharray="2,2"/>
+      <text x="273" y="97" text-anchor="middle" font-size="9" fill="#86efac">QPS / TPS</text>
+      <text x="273" y="112" text-anchor="middle" font-size="9" fill="#86efac">Com_select/insert</text>
+      <text x="273" y="127" text-anchor="middle" font-size="9" fill="#6ee7b7">Connections/s</text>
+      <text x="273" y="142" text-anchor="middle" font-size="9" fill="#6ee7b7">Threads_running</text>
+      <text x="273" y="157" text-anchor="middle" font-size="9" fill="#4ade80">alert: threads &gt; 200</text>
+
+      <!-- ERRORS -->
+      <rect x="366" y="40" width="150" height="120" rx="8" fill="#c2410c"/>
+      <text x="441" y="68" text-anchor="middle" font-size="12" font-weight="700" fill="#fff7ed">Errors</text>
+      <line x1="391" y1="80" x2="511" y2="80" stroke="#fff7ed" stroke-width="0.5" stroke-dasharray="2,2"/>
+      <text x="441" y="97" text-anchor="middle" font-size="9" fill="#fef3c7">Connection refused</text>
+      <text x="441" y="112" text-anchor="middle" font-size="9" fill="#fef3c7">Aborted_clients</text>
+      <text x="441" y="127" text-anchor="middle" font-size="9" fill="#fed7aa">Aborted_connects</text>
+      <text x="441" y="142" text-anchor="middle" font-size="9" fill="#fed7aa">error_log entries</text>
+      <text x="441" y="157" text-anchor="middle" font-size="9" fill="#ffedd5">alert: err rate &gt; 0.1%</text>
+
+      <!-- SATURATION -->
+      <rect x="534" y="40" width="150" height="120" rx="8" fill="#c2410c"/>
+      <text x="609" y="68" text-anchor="middle" font-size="12" font-weight="700" fill="#fff7ed">Saturation</text>
+      <line x1="559" y1="80" x2="679" y2="80" stroke="#fff7ed" stroke-width="0.5" stroke-dasharray="2,2"/>
+      <text x="609" y="97" text-anchor="middle" font-size="9" fill="#fef3c7">CPU utilization</text>
+      <text x="609" y="112" text-anchor="middle" font-size="9" fill="#fef3c7">BP hit rate &lt; 99%?</text>
+      <text x="609" y="127" text-anchor="middle" font-size="9" fill="#fed7aa">Disk I/O util%</text>
+      <text x="609" y="142" text-anchor="middle" font-size="9" fill="#fed7aa">Replication lag</text>
+      <text x="609" y="157" text-anchor="middle" font-size="9" fill="#ffedd5">alert: CPU &gt; 85%</text>
+
+      <!-- Bottom: convergence arrow to SLO -->
+      <line x1="105" y1="160" x2="350" y2="235" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="273" y1="160" x2="350" y2="235" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="441" y1="160" x2="350" y2="235" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <line x1="609" y1="160" x2="350" y2="235" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <rect x="240" y="236" width="220" height="40" rx="8" fill="#14532d"/>
+      <text x="350" y="258" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">SLO Burn-Rate Alert</text>
+      <text x="350" y="273" text-anchor="middle" font-size="9" fill="#86efac">page on fire · notify on warn</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       3. DEFINING WHAT TO MEASURE
+       ═══════════════════════════════════════════════════ -->
+  <h2>Defining What to Measure</h2>
+  <p>Averages lie. A workload with 99% of queries completing in 1 ms and 1% timing out at 30 seconds shows an "average latency" of about 300 ms — technically true but operationally misleading. Percentile-based histograms reveal the true latency distribution and are the correct tool for measuring MySQL query performance.</p>
+  <p>The authors recommend instrumenting three percentile thresholds: <strong>p50</strong> (median — typical user experience), <strong>p95</strong> (near-worst-case most users see), and <strong>p99</strong> (SLO-relevant threshold — the worst 1 in 100 queries). Some teams also track p999 for especially latency-sensitive services. MySQL 8.0's Performance Schema exposes per-digest histogram data via <code>events_statements_histogram_by_digest</code>, removing the need for application-side instrumentation.</p>
+  <p>When choosing SLI thresholds, start from the user's tolerance, not from what the system currently achieves. If a human notices latency above 100 ms, your p99 SLO should be 50 ms with a 50% headroom buffer, not 95 ms because "that's where the data clusters."</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Query Latency Distribution — p50 / p95 / p99 Histogram</text>
+      <!-- Axes -->
+      <line x1="70" y1="240" x2="660" y2="240" stroke="#57534e" stroke-width="1.5"/>
+      <line x1="70" y1="40" x2="70" y2="240" stroke="#57534e" stroke-width="1.5"/>
+      <text x="365" y="268" text-anchor="middle" font-size="10" fill="#57534e">Query Latency (ms)</text>
+      <text x="30" y="145" text-anchor="middle" font-size="10" fill="#57534e" transform="rotate(-90,30,145)">Frequency</text>
+
+      <!-- Histogram bars (log-normal shape) -->
+      <rect x="80"  y="220" width="28" height="20"  rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <rect x="112" y="185" width="28" height="55"  rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <rect x="144" y="130" width="28" height="110" rx="2" fill="#16a34a" stroke="#14532d"/>
+      <rect x="176" y="100" width="28" height="140" rx="2" fill="#16a34a" stroke="#14532d"/>
+      <rect x="208" y="90"  width="28" height="150" rx="2" fill="#16a34a" stroke="#14532d"/>
+      <rect x="240" y="80"  width="28" height="160" rx="2" fill="#16a34a" stroke="#14532d"/>
+      <rect x="272" y="88"  width="28" height="152" rx="2" fill="#16a34a" stroke="#14532d"/>
+      <rect x="304" y="110" width="28" height="130" rx="2" fill="#16a34a" stroke="#14532d"/>
+      <rect x="336" y="140" width="28" height="100" rx="2" fill="#16a34a" stroke="#14532d"/>
+      <rect x="368" y="172" width="28" height="68"  rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <rect x="400" y="200" width="28" height="40"  rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <rect x="432" y="218" width="28" height="22"  rx="2" fill="#bbf7d0" stroke="#16a34a"/>
+      <rect x="464" y="226" width="28" height="14"  rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <rect x="496" y="230" width="28" height="10"  rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <rect x="528" y="233" width="28" height="7"   rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <rect x="560" y="235" width="28" height="5"   rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <rect x="592" y="236" width="28" height="4"   rx="2" fill="#fff7ed" stroke="#fb923c"/>
+      <rect x="624" y="237" width="28" height="3"   rx="2" fill="#fff7ed" stroke="#fb923c"/>
+
+      <!-- x-axis labels -->
+      <text x="96"  y="255" text-anchor="middle" font-size="8" fill="#57534e">0</text>
+      <text x="192" y="255" text-anchor="middle" font-size="8" fill="#57534e">5</text>
+      <text x="288" y="255" text-anchor="middle" font-size="8" fill="#57534e">10</text>
+      <text x="384" y="255" text-anchor="middle" font-size="8" fill="#57534e">15</text>
+      <text x="480" y="255" text-anchor="middle" font-size="8" fill="#57534e">20</text>
+      <text x="576" y="255" text-anchor="middle" font-size="8" fill="#57534e">30</text>
+      <text x="648" y="255" text-anchor="middle" font-size="8" fill="#57534e">50ms</text>
+
+      <!-- Percentile markers -->
+      <line x1="256" y1="40" x2="256" y2="240" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="258" y="55" font-size="9" fill="#16a34a" font-weight="700">p50 ≈ 9ms</text>
+      <line x1="416" y1="40" x2="416" y2="240" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="418" y="55" font-size="9" fill="#fb923c" font-weight="700">p95 ≈ 17ms</text>
+      <line x1="528" y1="40" x2="528" y2="240" stroke="#c2410c" stroke-width="2" stroke-dasharray="5,3"/>
+      <text x="530" y="55" font-size="9" fill="#c2410c" font-weight="700">p99 ≈ 28ms</text>
+
+      <!-- SLO line -->
+      <line x1="576" y1="40" x2="576" y2="240" stroke="#c2410c" stroke-width="2"/>
+      <text x="578" y="70" font-size="9" fill="#c2410c" font-weight="700">SLO: 50ms</text>
+
+      <!-- Long tail annotation -->
+      <text x="640" y="200" text-anchor="end" font-size="9" fill="#c2410c">long tail</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       4. PROACTIVE MONITORING
+       ═══════════════════════════════════════════════════ -->
+  <h2>Proactive Monitoring</h2>
+  <p>Reactive monitoring — paging when users complain — is a sign of an immature operations practice. Proactive monitoring fires alerts based on <em>burn rate</em>: how fast you are consuming your error budget relative to the SLO window. A 14× burn rate alert fires when the system is consuming error budget fourteen times faster than the 30-day budget allows — which corresponds to exhausting a month's budget in about 51 hours if left unchecked.</p>
+  <p>Google's multiwindow, multi-burn-rate alerting strategy pairs a long window (1 hour) with a short window (5 minutes) at each severity level. The long window prevents spurious pages from brief spikes; the short window ensures rapid detection of sustained degradation. This dual-window approach is directly applicable to MySQL SLO alerting on query latency, error rate, and availability.</p>
+  <p>For MySQL specifically, proactive signals include: rising <code>Threads_running</code> (approaching <code>max_connections</code>), increasing <code>innodb_row_lock_waits</code>, the undo log tablespace growing (long-running transactions), and replication lag trending upward before it becomes a crisis.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <defs>
+        <marker id="b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#57534e"/>
+        </marker>
+        <marker id="bg" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
+        </marker>
+      </defs>
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Proactive Monitoring — Alerting Feedback Loop</text>
+
+      <!-- MySQL Server -->
+      <rect x="30" y="60" width="140" height="60" rx="8" fill="#14532d"/>
+      <text x="100" y="88" text-anchor="middle" font-size="11" font-weight="700" fill="#bbf7d0">MySQL</text>
+      <text x="100" y="105" text-anchor="middle" font-size="9" fill="#86efac">emits metrics</text>
+
+      <!-- Metrics collection -->
+      <rect x="240" y="60" width="140" height="60" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="310" y="86" text-anchor="middle" font-size="11" font-weight="700" fill="#14532d">Prometheus</text>
+      <text x="310" y="102" text-anchor="middle" font-size="9" fill="#57534e">scrape + TSDB store</text>
+
+      <!-- Alertmanager -->
+      <rect x="450" y="60" width="140" height="60" rx="8" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="520" y="86" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">Alertmanager</text>
+      <text x="520" y="102" text-anchor="middle" font-size="9" fill="#57534e">route · silence · page</text>
+
+      <!-- Alert condition check -->
+      <rect x="240" y="175" width="220" height="52" rx="8" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+      <text x="350" y="197" text-anchor="middle" font-size="11" font-weight="700" fill="#c2410c">PromQL Burn-Rate Rule</text>
+      <text x="350" y="215" text-anchor="middle" font-size="9" fill="#57534e">rate(errors[5m]) / rate(requests[5m]) &gt; 14×</text>
+
+      <!-- Remediation -->
+      <rect x="240" y="248" width="220" height="25" rx="6" fill="#14532d"/>
+      <text x="350" y="265" text-anchor="middle" font-size="10" fill="#bbf7d0">On-call engineer · runbook · fix</text>
+
+      <!-- arrows -->
+      <line x1="170" y1="90" x2="240" y2="90" stroke="#16a34a" stroke-width="2" marker-end="url(#bg)"/>
+      <text x="205" y="84" font-size="9" fill="#16a34a" text-anchor="middle">scrape</text>
+      <line x1="380" y1="90" x2="450" y2="90" stroke="#c2410c" stroke-width="2" marker-end="url(#b)"/>
+      <text x="415" y="84" font-size="9" fill="#c2410c" text-anchor="middle">fire alert</text>
+      <line x1="310" y1="120" x2="310" y2="175" stroke="#fb923c" stroke-width="1.5" marker-end="url(#b)"/>
+      <text x="316" y="152" font-size="9" fill="#57534e">evaluate</text>
+      <line x1="350" y1="227" x2="350" y2="248" stroke="#c2410c" stroke-width="1.5" marker-end="url(#b)"/>
+      <!-- feedback loop back to MySQL -->
+      <path d="M240,261 Q80,261 80,140 Q80,120 100,120" stroke="#16a34a" stroke-width="1.5" fill="none" stroke-dasharray="5,3" marker-end="url(#bg)"/>
+      <text x="72" y="200" font-size="9" fill="#16a34a" transform="rotate(-90,72,200)">feedback / tune</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       5. LONG-TERM PERFORMANCE MEASUREMENT
+       ═══════════════════════════════════════════════════ -->
+  <h2>Long-Term Performance Measurement</h2>
+  <p>Short-window alerting catches incidents; long-window trend analysis prevents them. By graphing capacity metrics over weeks and months — buffer pool hit rate, QPS growth, slave lag trend, disk utilization growth rate — teams can project when the next capacity cliff will occur and provision before it hits.</p>
+  <p>Common long-term metrics to track in MySQL: (1) <strong>QPS growth rate</strong> — project when you will need the next read replica; (2) <strong>Data file growth</strong> — project when you need to expand disk; (3) <strong>Replication lag baseline</strong> — rising baselines indicate that the replica apply thread is falling behind write throughput; (4) <strong>Buffer pool eviction rate</strong> — a rising eviction rate means the working set is outgrowing memory.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#14532d">Capacity Trend — QPS Growth &amp; Projection Line</text>
+
+      <!-- Axes -->
+      <line x1="70" y1="220" x2="660" y2="220" stroke="#57534e" stroke-width="1.5"/>
+      <line x1="70" y1="40" x2="70" y2="220" stroke="#57534e" stroke-width="1.5"/>
+      <text x="365" y="245" text-anchor="middle" font-size="10" fill="#57534e">Time (weeks)</text>
+      <text x="28" y="135" text-anchor="middle" font-size="10" fill="#57534e" transform="rotate(-90,28,135)">QPS</text>
+
+      <!-- x labels -->
+      <text x="70"  y="233" text-anchor="middle" font-size="8" fill="#57534e">W0</text>
+      <text x="152" y="233" text-anchor="middle" font-size="8" fill="#57534e">W2</text>
+      <text x="234" y="233" text-anchor="middle" font-size="8" fill="#57534e">W4</text>
+      <text x="316" y="233" text-anchor="middle" font-size="8" fill="#57534e">W6</text>
+      <text x="398" y="233" text-anchor="middle" font-size="8" fill="#57534e">W8</text>
+      <text x="480" y="233" text-anchor="middle" font-size="8" fill="#57534e">W10</text>
+      <text x="562" y="233" text-anchor="middle" font-size="8" fill="#57534e">W12</text>
+      <text x="644" y="233" text-anchor="middle" font-size="8" fill="#57534e">W14→</text>
+
+      <!-- y labels -->
+      <text x="62" y="220" text-anchor="end" font-size="8" fill="#57534e">0</text>
+      <text x="62" y="170" text-anchor="end" font-size="8" fill="#57534e">2k</text>
+      <text x="62" y="120" text-anchor="end" font-size="8" fill="#57534e">4k</text>
+      <text x="62" y="70"  text-anchor="end" font-size="8" fill="#57534e">6k</text>
+      <line x1="70" y1="170" x2="660" y2="170" stroke="#e7e5e4" stroke-width="0.5"/>
+      <line x1="70" y1="120" x2="660" y2="120" stroke="#e7e5e4" stroke-width="0.5"/>
+      <line x1="70" y1="70"  x2="660" y2="70"  stroke="#e7e5e4" stroke-width="0.5"/>
+
+      <!-- Actual QPS line (observed data) -->
+      <polyline points="70,210 152,205 234,196 316,182 398,165 480,150 562,138" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linejoin="round"/>
+      <!-- dots on observed -->
+      <circle cx="70"  cy="210" r="3" fill="#16a34a"/>
+      <circle cx="152" cy="205" r="3" fill="#16a34a"/>
+      <circle cx="234" cy="196" r="3" fill="#16a34a"/>
+      <circle cx="316" cy="182" r="3" fill="#16a34a"/>
+      <circle cx="398" cy="165" r="3" fill="#16a34a"/>
+      <circle cx="480" cy="150" r="3" fill="#16a34a"/>
+      <circle cx="562" cy="138" r="3" fill="#16a34a"/>
+
+      <!-- Projection line (dashed orange) -->
+      <polyline points="562,138 644,122" fill="none" stroke="#c2410c" stroke-width="2" stroke-dasharray="6,4"/>
+      <circle cx="644" cy="122" r="3" fill="#c2410c" stroke="none"/>
+
+      <!-- Capacity limit -->
+      <line x1="70" y1="75" x2="660" y2="75" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="662" y="78" font-size="9" fill="#c2410c">capacity limit</text>
+
+      <!-- Predicted breach marker -->
+      <line x1="620" y1="40" x2="620" y2="220" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="622" y="52" font-size="9" fill="#fb923c">predicted</text>
+      <text x="622" y="64" font-size="9" fill="#fb923c">breach ≈W15</text>
+
+      <!-- Legend -->
+      <line x1="80" y1="50" x2="110" y2="50" stroke="#16a34a" stroke-width="2"/>
+      <text x="115" y="54" font-size="9" fill="#16a34a">observed QPS</text>
+      <line x1="200" y1="50" x2="230" y2="50" stroke="#c2410c" stroke-width="2" stroke-dasharray="5,3"/>
+      <text x="235" y="54" font-size="9" fill="#c2410c">projection</text>
+    </svg>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       6. MONITORING TOOLS
+       ═══════════════════════════════════════════════════ -->
+  <h2>Monitoring Tools</h2>
+  <p>The MySQL monitoring ecosystem has matured considerably. The authors recommend choosing a tool that can collect per-digest query latency histograms (not just server-level averages), persist raw data for trend analysis, and integrate with your existing alerting pipeline. No single tool excels at everything — most production environments combine two or three.</p>
+
+  <h3>Prometheus + mysqld_exporter</h3>
+  <p>The open-source standard. The mysqld_exporter scrapes MySQL's <code>SHOW GLOBAL STATUS</code>, <code>SHOW SLAVE STATUS</code>, and Performance Schema tables, exposing them as Prometheus metrics. Query-level granularity requires pairing with a digest table scraper or the PMM Query Analytics component. Grafana dashboards provide visualization. Total cost: infrastructure only. Scales to any number of MySQL instances with a single Prometheus cluster.</p>
+
+  <h3>Percona Monitoring and Management (PMM)</h3>
+  <p>PMM is Percona's batteries-included MySQL observability platform. It ships pre-built Grafana dashboards, a Query Analytics UI for per-digest latency analysis, and integrates with both MySQL and MongoDB. PMM uses the slow query log or Performance Schema as its query data source. It is the most MySQL-specific option in the ecosystem and the best default choice for teams without dedicated monitoring engineers.</p>
+
+  <h3>Datadog</h3>
+  <p>Datadog's MySQL integration combines infrastructure-level metrics (server status variables, replication lag) with the Database Monitoring (DBM) add-on, which collects per-query execution plans and wait event data from Performance Schema. DBM costs extra but eliminates the need to maintain self-hosted monitoring infrastructure. Best for teams already standardized on Datadog for their broader observability stack.</p>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Tool</th>
+        <th>Type</th>
+        <th>MySQL-Specific Features</th>
+        <th>Cost</th>
+        <th>Best For</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Prometheus + mysqld_exporter</td>
+        <td>Open source time-series</td>
+        <td>Server metrics, replication lag; needs extra setup for query-level</td>
+        <td>Free (infra only)</td>
+        <td>Teams with existing Prometheus; cost-sensitive environments</td>
+      </tr>
+      <tr>
+        <td>Percona PMM</td>
+        <td>Open source / hosted</td>
+        <td>Query Analytics, per-digest histograms, InnoDB deep metrics</td>
+        <td>Free (self-hosted) / $$ hosted</td>
+        <td>Dedicated MySQL teams wanting a full-featured out-of-box solution</td>
+      </tr>
+      <tr>
+        <td>Datadog DBM</td>
+        <td>SaaS</td>
+        <td>Per-query execution plans, wait events, live session analysis</td>
+        <td>$$ per host per month</td>
+        <td>Orgs standardized on Datadog wanting zero monitoring infrastructure</td>
+      </tr>
+      <tr>
+        <td>AWS CloudWatch (RDS)</td>
+        <td>Managed cloud</td>
+        <td>RDS-specific metrics, Enhanced Monitoring, Performance Insights</td>
+        <td>Free tier + $ per metric</td>
+        <td>RDS / Aurora shops; tight AWS integration; limited query-level detail</td>
+      </tr>
+    </tbody>
+  </table>
+
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

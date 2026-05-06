@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch07 · Indexing for High Performance — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch07 · Indexing for High Performance</h1>
+  <p class="lead">Indexes are the single most powerful tool available for query performance — a well-designed index can eliminate millions of row reads; a missing or wrong index can turn a sub-millisecond query into a multi-second table scan.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>B-Tree Index Internals</h2>
+
+  <p>The dominant index structure in MySQL (InnoDB's B+Tree) organises sorted key values in a balanced tree where all data lives in the leaf nodes and all internal nodes are purely routing nodes. A search starts at the root page, follows one pointer per level down through branch pages, and arrives at a leaf page containing the target key alongside either the actual row data (clustered index) or a bookmark to the clustered index (secondary index).</p>
+
+  <p>Each page in InnoDB is 16 KB by default. A root or branch page holds hundreds to thousands of key-pointer pairs; a leaf page holds key-value pairs or key-row-data pairs. Because the tree is balanced, every search path has the same depth — typically 2–4 levels for tables up to hundreds of millions of rows. This makes point lookups and range scans predictable in cost. Crucially, leaf pages are doubly-linked in key order, so a range scan that finds the start point can then page-walk right without revisiting the tree.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">B+Tree Index — Root → Branch → Leaf Page Structure</text>
+      <!-- ROOT -->
+      <rect x="255" y="35" width="190" height="44" rx="4" fill="#14532d"/>
+      <text x="350" y="53" text-anchor="middle" fill="#fff" font-weight="700">ROOT PAGE</text>
+      <text x="350" y="68" text-anchor="middle" fill="#bbf7d0" font-size="10">keys: [500 | 1000] → 3 child ptrs</text>
+      <!-- branch left -->
+      <rect x="60" y="115" width="170" height="44" rx="4" fill="#16a34a"/>
+      <text x="145" y="133" text-anchor="middle" fill="#fff" font-weight="700">BRANCH PAGE</text>
+      <text x="145" y="148" text-anchor="middle" fill="#bbf7d0" font-size="10">keys: [200 | 350] → 3 ptrs</text>
+      <!-- branch mid -->
+      <rect x="265" y="115" width="170" height="44" rx="4" fill="#16a34a"/>
+      <text x="350" y="133" text-anchor="middle" fill="#fff" font-weight="700">BRANCH PAGE</text>
+      <text x="350" y="148" text-anchor="middle" fill="#bbf7d0" font-size="10">keys: [600 | 800] → 3 ptrs</text>
+      <!-- branch right -->
+      <rect x="470" y="115" width="170" height="44" rx="4" fill="#16a34a"/>
+      <text x="555" y="133" text-anchor="middle" fill="#fff" font-weight="700">BRANCH PAGE</text>
+      <text x="555" y="148" text-anchor="middle" fill="#bbf7d0" font-size="10">keys: [1100 | 1500]</text>
+      <!-- arrows root -> branches -->
+      <line x1="310" y1="79" x2="200" y2="115" stroke="#bbf7d0" stroke-width="1.5"/>
+      <polygon points="197,111 204,116 200,121" fill="#bbf7d0"/>
+      <line x1="350" y1="79" x2="350" y2="115" stroke="#bbf7d0" stroke-width="1.5"/>
+      <polygon points="346,111 354,111 350,117" fill="#bbf7d0"/>
+      <line x1="390" y1="79" x2="500" y2="115" stroke="#bbf7d0" stroke-width="1.5"/>
+      <polygon points="498,111 505,116 501,121" fill="#bbf7d0"/>
+      <!-- leaf pages -->
+      <rect x="20" y="210" width="140" height="55" rx="4" fill="#bbf7d0" stroke="#16a34a" stroke-width="2"/>
+      <text x="90" y="228" text-anchor="middle" fill="#14532d" font-weight="700">LEAF PAGE</text>
+      <text x="90" y="243" text-anchor="middle" fill="#14532d" font-size="10">[100,row | 150,row |</text>
+      <text x="90" y="256" text-anchor="middle" fill="#14532d" font-size="10"> 190,row | 200,row]</text>
+      <rect x="180" y="210" width="140" height="55" rx="4" fill="#bbf7d0" stroke="#16a34a" stroke-width="2"/>
+      <text x="250" y="228" text-anchor="middle" fill="#14532d" font-weight="700">LEAF PAGE</text>
+      <text x="250" y="243" text-anchor="middle" fill="#14532d" font-size="10">[210,row | 280,row |</text>
+      <text x="250" y="256" text-anchor="middle" fill="#14532d" font-size="10"> 340,row | 350,row]</text>
+      <rect x="340" y="210" width="140" height="55" rx="4" fill="#bbf7d0" stroke="#16a34a" stroke-width="2"/>
+      <text x="410" y="228" text-anchor="middle" fill="#14532d" font-weight="700">LEAF PAGE</text>
+      <text x="410" y="243" text-anchor="middle" fill="#14532d" font-size="10">[360,row | 420,row |</text>
+      <text x="410" y="256" text-anchor="middle" fill="#14532d" font-size="10"> 490,row | 500,row]</text>
+      <rect x="500" y="210" width="140" height="55" rx="4" fill="#bbf7d0" stroke="#16a34a" stroke-width="2"/>
+      <text x="570" y="228" text-anchor="middle" fill="#14532d" font-weight="700">LEAF PAGE</text>
+      <text x="570" y="243" text-anchor="middle" fill="#14532d" font-size="10">[510,row | 600,row |</text>
+      <text x="570" y="256" text-anchor="middle" fill="#14532d" font-size="10"> 750,row | 800,row]</text>
+      <!-- branch → leaf arrows (sample) -->
+      <line x1="120" y1="159" x2="90" y2="210" stroke="#16a34a" stroke-width="1.2"/>
+      <polygon points="87,206 93,211 89,216" fill="#16a34a"/>
+      <line x1="170" y1="159" x2="250" y2="210" stroke="#16a34a" stroke-width="1.2"/>
+      <polygon points="247,206 254,210 249,215" fill="#16a34a"/>
+      <line x1="330" y1="159" x2="410" y2="210" stroke="#16a34a" stroke-width="1.2"/>
+      <polygon points="407,206 413,210 408,215" fill="#16a34a"/>
+      <line x1="370" y1="159" x2="570" y2="210" stroke="#16a34a" stroke-width="1.2"/>
+      <polygon points="567,206 572,210 568,215" fill="#16a34a"/>
+      <!-- doubly-linked leaf chain -->
+      <line x1="160" y1="237" x2="180" y2="237" stroke="#c2410c" stroke-width="2"/>
+      <line x1="320" y1="237" x2="340" y2="237" stroke="#c2410c" stroke-width="2"/>
+      <line x1="480" y1="237" x2="500" y2="237" stroke="#c2410c" stroke-width="2"/>
+      <text x="350" y="282" text-anchor="middle" fill="#c2410c" font-size="10">← leaf pages doubly-linked for range scans →</text>
+      <text x="350" y="300" text-anchor="middle" fill="#57534e" font-size="10">Clustered index: leaf holds actual row data · Secondary index: leaf holds PK bookmark</text>
+      <text x="350" y="318" text-anchor="middle" fill="#57534e" font-size="10">Typical height: 2–4 levels for tables up to ~500M rows with default 16 KB pages</text>
+    </svg>
+  </div>
+
+  <p>B-Tree indexes support equality lookups, range scans, ORDER BY (if the index matches the sort key), and prefix matching on string columns. They do NOT support arbitrary substring searches (<code>LIKE '%foo%'</code> requires a full-text index or an external search engine) and do not accelerate predicates on the trailing columns of a composite index when a leading column has an unbound range.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Types of Indexes</h2>
+
+  <p>MySQL supports four index types, each optimised for a different data access pattern.</p>
+
+  <p><strong>B-Tree</strong> is the default and covers the vast majority of OLTP use cases: equality, range, prefix, and sort. InnoDB uses B+Tree (all data in leaves) rather than the pure B-Tree used in some academic texts.</p>
+
+  <p><strong>Hash indexes</strong> are available in the MEMORY storage engine and as an adaptive structure inside InnoDB (Adaptive Hash Index, AHI). The AHI automatically builds in-memory hash entries for hot leaf pages — you cannot create a hash index explicitly in InnoDB. Hash indexes give O(1) equality lookups but cannot serve range scans, ORDER BY, or prefix matches.</p>
+
+  <p><strong>Full-text indexes</strong> tokenise text content into an inverted index mapping each word to the list of documents containing it. Queries use <code>MATCH() AGAINST()</code> syntax. Full-text indexes in InnoDB support natural language mode, boolean mode (including proximity operators), and query expansion. They are not suitable for short token lookups (use B-Tree for exact column matches) and are eventually-consistent by default — changes are applied in the background.</p>
+
+  <p><strong>Spatial (R-Tree) indexes</strong> partition two-dimensional geometric data using a minimum bounding rectangle hierarchy. <code>ST_Within()</code>, <code>ST_Distance_Sphere()</code> and similar spatial functions can utilise these indexes. They require <code>GEOMETRY</code> or <code>POINT</code> column types and a <code>SPATIAL INDEX</code> declaration.</p>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Index Type</th>
+        <th>Internal Structure</th>
+        <th>Best Use Case</th>
+        <th>Limitations</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>B-Tree</strong> (default)</td>
+        <td>Balanced B+Tree, sorted leaf pages linked list</td>
+        <td>Equality, range, prefix, ORDER BY, covering</td>
+        <td>Not useful for arbitrary substrings, full-text relevance</td>
+      </tr>
+      <tr>
+        <td><strong>Hash</strong> (MEMORY / AHI)</td>
+        <td>In-memory hash table, key → pointer</td>
+        <td>Exact equality lookups (O(1))</td>
+        <td>No range, no sort, no prefix; MEMORY engine only (explicit)</td>
+      </tr>
+      <tr>
+        <td><strong>Full-Text</strong> (InnoDB)</td>
+        <td>Inverted index: word → docid list</td>
+        <td>Natural language search, boolean operators</td>
+        <td>Eventually consistent, poor for short exact matches</td>
+      </tr>
+      <tr>
+        <td><strong>Spatial / R-Tree</strong></td>
+        <td>R-Tree with minimum bounding rectangles</td>
+        <td>Geospatial proximity, within-polygon queries</td>
+        <td>GEOMETRY columns only, limited operator support</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Clustered vs Secondary Index</h2>
+
+  <p>InnoDB organises every table as a <em>clustered index</em> — the primary key IS the table. The leaf pages of the primary key B+Tree contain the full row data in primary-key order. This is fundamentally different from MyISAM, where the data file is a heap and all indexes (including the primary key) are separate structures that point into the heap.</p>
+
+  <p>The consequence: primary key range scans in InnoDB are highly I/O efficient because related rows are physically co-located in sorted order. A scan of <code>WHERE id BETWEEN 1000 AND 2000</code> reads a contiguous sequence of leaf pages. This is called <em>clustering</em>.</p>
+
+  <p>Secondary indexes do NOT store row data. Their leaf nodes contain the index key columns plus the primary key value (the "bookmark"). Querying a secondary index that does not cover all requested columns requires a <em>bookmark lookup</em> — a second B-Tree traversal into the clustered index for each matched row. This is the "double-tree" cost of secondary indexes.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Clustered vs Secondary Index — InnoDB Row Access Paths</text>
+      <!-- clustered index tree (left) -->
+      <rect x="30" y="40" width="280" height="220" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="170" y="60" text-anchor="middle" fill="#14532d" font-weight="700">PRIMARY KEY (Clustered)</text>
+      <rect x="110" y="70" width="120" height="30" rx="3" fill="#14532d"/>
+      <text x="170" y="90" text-anchor="middle" fill="#fff" font-size="10">root: [500 | 1000]</text>
+      <line x1="150" y1="100" x2="90" y2="125" stroke="#bbf7d0" stroke-width="1.5"/>
+      <line x1="190" y1="100" x2="250" y2="125" stroke="#bbf7d0" stroke-width="1.5"/>
+      <rect x="45" y="125" width="115" height="55" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="102" y="143" text-anchor="middle" fill="#14532d" font-size="10">leaf: pk=101</text>
+      <text x="102" y="156" text-anchor="middle" fill="#14532d" font-size="10">name="Alice"</text>
+      <text x="102" y="169" text-anchor="middle" fill="#14532d" font-size="10">email="a@e.com"</text>
+      <rect x="175" y="125" width="115" height="55" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="232" y="143" text-anchor="middle" fill="#14532d" font-size="10">leaf: pk=200</text>
+      <text x="232" y="156" text-anchor="middle" fill="#14532d" font-size="10">name="Bob"</text>
+      <text x="232" y="169" text-anchor="middle" fill="#14532d" font-size="10">email="b@e.com"</text>
+      <text x="170" y="205" text-anchor="middle" fill="#16a34a" font-size="10">Full row data in leaf pages</text>
+      <text x="170" y="220" text-anchor="middle" fill="#16a34a" font-size="10">Rows sorted by PK — clustered</text>
+      <text x="170" y="243" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">PRIMARY KEY scan = seq I/O</text>
+      <!-- secondary index tree (right) -->
+      <rect x="390" y="40" width="280" height="220" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="530" y="60" text-anchor="middle" fill="#c2410c" font-weight="700">SECONDARY INDEX (name)</text>
+      <rect x="470" y="70" width="120" height="30" rx="3" fill="#c2410c"/>
+      <text x="530" y="90" text-anchor="middle" fill="#fff" font-size="10">root: ["M"]</text>
+      <line x1="510" y1="100" x2="465" y2="125" stroke="#fb923c" stroke-width="1.5"/>
+      <line x1="550" y1="100" x2="595" y2="125" stroke="#fb923c" stroke-width="1.5"/>
+      <rect x="415" y="125" width="115" height="55" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="472" y="143" text-anchor="middle" fill="#c2410c" font-size="10">leaf: "Alice" → pk=101</text>
+      <text x="472" y="158" text-anchor="middle" fill="#c2410c" font-size="10">"Bob"   → pk=200</text>
+      <text x="472" y="173" text-anchor="middle" fill="#c2410c" font-size="10">(no row data!)</text>
+      <rect x="545" y="125" width="115" height="55" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="602" y="143" text-anchor="middle" fill="#c2410c" font-size="10">leaf: "Zara" → pk=900</text>
+      <text x="602" y="158" text-anchor="middle" fill="#c2410c" font-size="10">(no row data!)</text>
+      <text x="530" y="205" text-anchor="middle" fill="#c2410c" font-size="10">Only key + PK bookmark</text>
+      <text x="530" y="220" text-anchor="middle" fill="#c2410c" font-size="10">Extra lookup → clustered tree</text>
+      <text x="530" y="243" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">= bookmark lookup overhead</text>
+      <!-- middle arrow between trees -->
+      <line x1="310" y1="155" x2="390" y2="155" stroke="#57534e" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <polygon points="386,151 394,155 386,159" fill="#57534e"/>
+      <text x="350" y="148" text-anchor="middle" fill="#57534e" font-size="10">lookup</text>
+      <!-- bottom note -->
+      <text x="350" y="278" text-anchor="middle" fill="#57534e" font-size="10">Bookmark lookup: for each matching secondary-index leaf, traverse PK tree again — random I/O if uncached</text>
+      <text x="350" y="295" text-anchor="middle" fill="#57534e" font-size="10">Covering index avoids this: leaf contains all needed columns → no second traversal</text>
+    </svg>
+  </div>
+
+  <p>The primary key choice matters immensely. A monotonically increasing integer PK (like an auto-increment) means new rows always append to the rightmost leaf page — minimal page splits. A UUID primary key distributes inserts randomly across all leaf pages, causing frequent page splits, high buffer pool fragmentation, and much worse sequential scan performance.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Covering Indexes</h2>
+
+  <p>A covering index is any index whose leaf nodes contain all the columns needed to satisfy a query — so MySQL never needs to follow a bookmark back to the clustered index. This is the most impactful single index optimisation technique available. <code>EXPLAIN</code> shows <code>Using index</code> in the Extra column when a covering index is used.</p>
+
+  <p>Consider <code>SELECT user_id, status, created_at FROM orders WHERE user_id = 42 AND status = 'paid'</code>. A composite index on <code>(user_id, status, created_at)</code> covers this query completely: the leaf nodes contain all three requested columns, no row lookup needed. The query cost drops from O(matching_rows) random I/Os to O(1) tree traversal plus a short leaf scan.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Covering Index — Index-Only Scan vs Bookmark Lookup</text>
+      <!-- without covering -->
+      <rect x="20" y="35" width="310" height="210" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+      <text x="175" y="55" text-anchor="middle" fill="#c2410c" font-weight="700">WITHOUT covering index</text>
+      <rect x="40" y="65" width="270" height="25" rx="3" fill="#c2410c"/>
+      <text x="175" y="82" text-anchor="middle" fill="#fff" font-size="10">Secondary index (user_id)</text>
+      <rect x="40" y="98" width="270" height="25" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="175" y="115" text-anchor="middle" fill="#c2410c" font-size="10">leaf: user_id=42 → pk=1001, 1002, 1003 …</text>
+      <line x1="175" y1="123" x2="175" y2="148" stroke="#c2410c" stroke-width="2" stroke-dasharray="4,2"/>
+      <polygon points="171,144 179,144 175,150" fill="#c2410c"/>
+      <text x="175" y="143" text-anchor="end" fill="#c2410c" font-size="9">bookmark lookup ×N</text>
+      <rect x="40" y="150" width="270" height="25" rx="3" fill="#fb923c"/>
+      <text x="175" y="167" text-anchor="middle" fill="#fff" font-size="10">Clustered index traversal ×N (random I/O!)</text>
+      <rect x="40" y="183" width="270" height="25" rx="3" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="175" y="200" text-anchor="middle" fill="#c2410c" font-size="10">fetch status, created_at from full row</text>
+      <text x="175" y="228" text-anchor="middle" fill="#c2410c" font-size="10" font-weight="700">Extra = Using index condition (NOT covered)</text>
+      <!-- with covering -->
+      <rect x="370" y="35" width="310" height="210" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+      <text x="525" y="55" text-anchor="middle" fill="#14532d" font-weight="700">WITH covering index</text>
+      <rect x="390" y="65" width="270" height="25" rx="3" fill="#14532d"/>
+      <text x="525" y="82" text-anchor="middle" fill="#fff" font-size="10">INDEX (user_id, status, created_at)</text>
+      <rect x="390" y="98" width="270" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="525" y="115" text-anchor="middle" fill="#14532d" font-size="10">leaf: user_id=42, status='paid', created=…</text>
+      <rect x="390" y="131" width="270" height="25" rx="3" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="525" y="148" text-anchor="middle" fill="#14532d" font-size="10">ALL needed columns in index leaf</text>
+      <text x="525" y="173" text-anchor="middle" fill="#16a34a" font-size="10">No clustered index traversal needed</text>
+      <text x="525" y="190" text-anchor="middle" fill="#16a34a" font-size="10">Sequential leaf scan only</text>
+      <text x="525" y="228" text-anchor="middle" fill="#16a34a" font-size="10" font-weight="700">Extra = Using index (covered!)</text>
+      <!-- vs divider -->
+      <text x="350" y="145" text-anchor="middle" fill="#57534e" font-size="12">vs</text>
+      <text x="350" y="265" text-anchor="middle" fill="#57534e" font-size="10">Covering indexes eliminate random I/O — most impactful for high-cardinality secondary lookups</text>
+    </svg>
+  </div>
+
+  <p>Covering indexes are most valuable when the query matches many rows via the secondary index but those rows are spread throughout the clustered index. The classic example is a reporting query that filters on a non-primary-key column (e.g. <code>status = 'pending'</code>) and retrieves a few additional columns. Without a covering index, each matched row causes a random I/O to the clustered index. With a covering index including those columns, the query reads only the (smaller) secondary index leaf pages sequentially.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Multicolumn Index Design</h2>
+
+  <p>A composite (multicolumn) index on <code>(a, b, c)</code> is sorted first by <code>a</code>, then by <code>b</code> within each <code>a</code> value, then by <code>c</code> within each <code>(a, b)</code> pair. This physical ordering determines which predicates can use the index and how efficiently.</p>
+
+  <p>The <strong>leftmost prefix rule</strong>: the optimizer can use any leading prefix of the index columns. An index on <code>(a, b, c)</code> can serve queries filtering on <code>a</code>, on <code>(a, b)</code>, or on <code>(a, b, c)</code>. It cannot serve a query filtering only on <code>b</code> or only on <code>c</code> without also filtering on <code>a</code>.</p>
+
+  <p>The column ordering principle for composite indexes: <strong>equality predicates first, then range predicates, then sort columns</strong>. If a query is <code>WHERE user_id = 42 AND created_at &gt; '2024-01-01' ORDER BY created_at</code>, the ideal index is <code>(user_id, created_at)</code> — the equality column first dramatically narrows the range, and created_at can serve both the range filter and the ORDER BY.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 290" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', monospace" font-size="11">
+      <text x="350" y="20" text-anchor="middle" fill="#14532d" font-size="13" font-weight="700">Multicolumn Index Column-Order Decision Tree</text>
+      <!-- start -->
+      <rect x="270" y="32" width="160" height="32" rx="16" fill="#14532d"/>
+      <text x="350" y="52" text-anchor="middle" fill="#fff" font-weight="700">New composite index?</text>
+      <line x1="350" y1="64" x2="350" y2="90" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="346,86 354,86 350,92" fill="#16a34a"/>
+      <!-- equality cols first -->
+      <rect x="220" y="92" width="260" height="30" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="111" text-anchor="middle" fill="#14532d">1. Equality columns first (highest selectivity)</text>
+      <line x1="350" y1="122" x2="350" y2="148" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="346,144 354,144 350,150" fill="#16a34a"/>
+      <!-- range col -->
+      <rect x="220" y="150" width="260" height="30" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="169" text-anchor="middle" fill="#14532d">2. Range predicate column next</text>
+      <line x1="350" y1="180" x2="350" y2="206" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="346,202 354,202 350,208" fill="#16a34a"/>
+      <!-- sort col -->
+      <rect x="220" y="208" width="260" height="30" rx="4" fill="#bbf7d0" stroke="#16a34a"/>
+      <text x="350" y="227" text-anchor="middle" fill="#14532d">3. ORDER BY column last (if same ASC/DESC)</text>
+      <line x1="350" y1="238" x2="350" y2="258" stroke="#16a34a" stroke-width="1.5"/>
+      <!-- result box -->
+      <rect x="230" y="258" width="240" height="22" rx="4" fill="#14532d"/>
+      <text x="350" y="273" text-anchor="middle" fill="#fff" font-size="10">Composite index (eq, range, sort)</text>
+      <!-- side annotations -->
+      <rect x="10" y="92" width="190" height="165" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/>
+      <text x="105" y="110" text-anchor="middle" fill="#14532d" font-weight="700">Example</text>
+      <text x="105" y="128" text-anchor="middle" fill="#57534e" font-size="10">WHERE country = 'US'</text>
+      <text x="105" y="143" text-anchor="middle" fill="#57534e" font-size="10">AND status = 'active'</text>
+      <text x="105" y="158" text-anchor="middle" fill="#57534e" font-size="10">AND created &gt; '2024-01'</text>
+      <text x="105" y="173" text-anchor="middle" fill="#57534e" font-size="10">ORDER BY created</text>
+      <text x="105" y="193" text-anchor="middle" fill="#c2410c" font-size="10">→ (country, status, created)</text>
+      <text x="105" y="210" text-anchor="middle" fill="#57534e" font-size="9">equality: country, status</text>
+      <text x="105" y="224" text-anchor="middle" fill="#57534e" font-size="9">range + sort: created</text>
+      <text x="105" y="243" text-anchor="middle" fill="#16a34a" font-size="9">ORDER BY served by index!</text>
+      <!-- side notes right -->
+      <rect x="500" y="92" width="190" height="165" rx="5" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="595" y="110" text-anchor="middle" fill="#c2410c" font-weight="700">Common Mistakes</text>
+      <text x="595" y="128" text-anchor="middle" fill="#57534e" font-size="10">Putting low-cardinality</text>
+      <text x="595" y="143" text-anchor="middle" fill="#57534e" font-size="10">col first (e.g. status)</text>
+      <text x="595" y="163" text-anchor="middle" fill="#57534e" font-size="10">Range col before all</text>
+      <text x="595" y="178" text-anchor="middle" fill="#57534e" font-size="10">equality cols → stops</text>
+      <text x="595" y="193" text-anchor="middle" fill="#57534e" font-size="10">using subsequent cols</text>
+      <text x="595" y="213" text-anchor="middle" fill="#57534e" font-size="10">Too many columns in</text>
+      <text x="595" y="228" text-anchor="middle" fill="#57534e" font-size="10">index → write overhead</text>
+      <text x="595" y="243" text-anchor="middle" fill="#57534e" font-size="10">with no query benefit</text>
+    </svg>
+  </div>
+
+  <p>Selectivity is a secondary consideration for ordering equality columns among themselves. A highly selective column (one that eliminates most rows) should generally come first among the equality predicates. However, if multiple queries share the index and have different equality columns, sometimes a lower-selectivity column must come first to serve both queries. Index design is ultimately a workload analysis exercise, not just a mechanical rule application.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <h2>Index Maintenance</h2>
+
+  <p>Indexes degrade over time through two primary mechanisms: <em>fragmentation</em> and <em>stale statistics</em>. Understanding both is essential for maintaining predictable query performance in production.</p>
+
+  <h3>Fragmentation</h3>
+  <p>When rows are inserted or updated in non-sequential primary key order, InnoDB must split leaf pages to maintain sorted order. A page split takes a full leaf page and moves half its entries to a newly allocated page, leaving both pages half-empty. Over time, a heavily-written table can have leaf pages that are only 50–70% full — this means more pages (more I/O) to scan the same number of rows. <code>OPTIMIZE TABLE</code> rebuilds the clustered index in sorted order, defragmenting the data. On InnoDB this is equivalent to <code>ALTER TABLE ... ENGINE=InnoDB</code>, which is an online operation in MySQL 8.0 using <code>ALGORITHM=INPLACE</code>.</p>
+
+  <h3>Statistics and ANALYZE TABLE</h3>
+  <p>The optimizer uses index statistics (cardinality estimates) to choose between available indexes and to estimate the cost of different join orders. InnoDB maintains these statistics via background sampling of leaf pages. After large bulk inserts, deletions, or data distribution shifts, statistics can become stale and cause the optimizer to choose suboptimal plans. Running <code>ANALYZE TABLE tablename</code> triggers a fresh statistics sample without locking. The <code>innodb_stats_persistent</code> system variable controls whether statistics are persisted across restarts (default: on in 5.6+). For tables with wildly non-uniform data distributions, <code>innodb_stats_persistent_sample_pages</code> can be increased to sample more leaf pages and produce more accurate estimates.</p>
+
+  <p>Index maintenance tasks to schedule: weekly <code>ANALYZE TABLE</code> on high-DML tables; monthly review of <code>sys.schema_unused_indexes</code> and <code>sys.schema_redundant_indexes</code> to prune indexes that cost writes but benefit no queries.</p>
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>

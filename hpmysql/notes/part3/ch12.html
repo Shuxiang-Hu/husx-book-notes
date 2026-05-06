@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch12 · MySQL in the Cloud — HPMySQL Notes</title>
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+<nav id="sidebar">
+  <div class="sb-brand">
+    <a href="../index.html">HPMySQL Notes</a>
+    <div class="byline">Botros &amp; Tinley — Reading Notes</div>
+  </div>
+  <div class="sb-part p1">Part I · Foundations</div>
+  <a href="../part1/ch01.html" class="sb-ch"><span class="n">01</span>MySQL Architecture</a>
+  <a href="../part1/ch02.html" class="sb-ch"><span class="n">02</span>Monitoring &amp; SLOs</a>
+  <a href="../part1/ch03.html" class="sb-ch"><span class="n">03</span>Performance Schema</a>
+  <div class="sb-part p2">Part II · Performance Tuning</div>
+  <a href="../part2/ch04.html" class="sb-ch"><span class="n">04</span>OS &amp; Hardware</a>
+  <a href="../part2/ch05.html" class="sb-ch"><span class="n">05</span>Server Settings</a>
+  <a href="../part2/ch06.html" class="sb-ch"><span class="n">06</span>Schema Design</a>
+  <a href="../part2/ch07.html" class="sb-ch"><span class="n">07</span>Indexing</a>
+  <a href="../part2/ch08.html" class="sb-ch"><span class="n">08</span>Query Optimization</a>
+  <div class="sb-part p3">Part III · Operations at Scale</div>
+  <a href="../part3/ch09.html" class="sb-ch"><span class="n">09</span>Replication</a>
+  <a href="../part3/ch10.html" class="sb-ch"><span class="n">10</span>Backup &amp; Recovery</a>
+  <a href="../part3/ch11.html" class="sb-ch"><span class="n">11</span>Scaling MySQL</a>
+  <a href="../part3/ch12.html" class="sb-ch"><span class="n">12</span>MySQL in the Cloud</a>
+  <a href="../part3/ch13.html" class="sb-ch"><span class="n">13</span>Compliance</a>
+</nav>
+
+<main id="main">
+  <h1>Ch12 · MySQL in the Cloud</h1>
+  <p class="lead">Cloud MySQL deployments span a wide spectrum from fully managed services that abstract away the OS entirely to self-hosted instances on VMs where every kernel parameter is yours to tune — each point on that spectrum involves genuine trade-offs between operational control and engineering leverage.</p>
+
+  <!-- ── Section 1: Managed vs Self-Hosted ───────────────────────────── -->
+  <h2>Managed vs Self-Hosted Trade-offs</h2>
+  <p>The fundamental choice when deploying MySQL in a cloud environment is how much of the operational stack you want to own. Self-hosted MySQL on a cloud VM gives you complete control: you choose the OS, compile MySQL from source if you wish, configure every InnoDB parameter, manage your own HA with Orchestrator or MHA, and build custom backup pipelines. In exchange you carry the full operational burden — patching, failover automation, replication monitoring, capacity planning, and upgrade management all fall to your team.</p>
+  <p>Managed database services — Amazon RDS, Amazon Aurora, Google Cloud SQL, Azure Database for MySQL — handle OS patching, storage provisioning, automated backups, and often automated failover. The service SLA backs availability; you pay a markup over raw compute cost for the abstraction. The tradeoff is reduced visibility: you cannot access the OS, cannot tune OS-level parameters like <code>transparent_huge_pages</code> or <code>NUMA interleaving</code>, and are constrained to the MySQL versions and configuration parameters the provider exposes via a parameter group API.</p>
+  <p>The chapter's key insight is that the managed vs self-hosted decision should be made per-workload, not per-company. A reporting database with moderate traffic and no unusual tuning requirements is an excellent candidate for a managed service. A latency-critical OLTP cluster at 100 k+ TPS with custom InnoDB patches may require self-hosted VMs to extract every microsecond of performance.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="280" rx="6" fill="#f0fdf4"/>
+
+      <!-- Spectrum bar -->
+      <defs>
+        <linearGradient id="spectrumGrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stop-color="#c2410c"/>
+          <stop offset="50%"  stop-color="#f0fdf4"/>
+          <stop offset="100%" stop-color="#14532d"/>
+        </linearGradient>
+      </defs>
+      <rect x="60" y="118" width="580" height="28" rx="4" fill="url(#spectrumGrad)" opacity="0.8"/>
+      <text x="350" y="136" font-size="10" fill="#14532d" text-anchor="middle" font-weight="700">CONTROL ← → CONVENIENCE</text>
+
+      <!-- Left axis label -->
+      <text x="60" y="112" font-size="10" fill="#c2410c" font-weight="700">More Control</text>
+      <!-- Right axis label -->
+      <text x="640" y="112" font-size="10" fill="#14532d" font-weight="700" text-anchor="end">More Convenience</text>
+
+      <!-- Options on spectrum -->
+      <!-- Bare metal / on-prem -->
+      <line x1="90" y1="146" x2="90" y2="175" stroke="#c2410c" stroke-width="2"/>
+      <rect x="25" y="175" width="130" height="72" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="90" y="194" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">Bare-metal / on-prem</text>
+      <text x="90" y="208" font-size="8" fill="#57534e" text-anchor="middle">Full kernel control</text>
+      <text x="90" y="220" font-size="8" fill="#57534e" text-anchor="middle">Custom InnoDB builds</text>
+      <text x="90" y="232" font-size="8" fill="#57534e" text-anchor="middle">100% ops burden</text>
+      <text x="90" y="244" font-size="8" fill="#57534e" text-anchor="middle">No cloud SLA</text>
+
+      <!-- VM self-hosted -->
+      <line x1="230" y1="146" x2="230" y2="175" stroke="#fb923c" stroke-width="2"/>
+      <rect x="160" y="175" width="140" height="72" rx="4" fill="#fff7ed" stroke="#fb923c"/>
+      <text x="230" y="194" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">VM Self-Hosted</text>
+      <text x="230" y="208" font-size="8" fill="#57534e" text-anchor="middle">OS tuning available</text>
+      <text x="230" y="220" font-size="8" fill="#57534e" text-anchor="middle">Any MySQL version</text>
+      <text x="230" y="232" font-size="8" fill="#57534e" text-anchor="middle">Custom HA tooling</text>
+      <text x="230" y="244" font-size="8" fill="#57534e" text-anchor="middle">High ops effort</text>
+
+      <!-- RDS MySQL -->
+      <line x1="400" y1="146" x2="400" y2="175" stroke="#16a34a" stroke-width="2"/>
+      <rect x="325" y="175" width="150" height="72" rx="4" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="400" y="194" font-size="9" fill="#14532d" text-anchor="middle" font-weight="700">Amazon RDS MySQL</text>
+      <text x="400" y="208" font-size="8" fill="#57534e" text-anchor="middle">Managed patching</text>
+      <text x="400" y="220" font-size="8" fill="#57534e" text-anchor="middle">Multi-AZ failover</text>
+      <text x="400" y="232" font-size="8" fill="#57534e" text-anchor="middle">Limited OS access</text>
+      <text x="400" y="244" font-size="8" fill="#57534e" text-anchor="middle">Standard MySQL</text>
+
+      <!-- Aurora / Cloud SQL -->
+      <line x1="590" y1="146" x2="590" y2="175" stroke="#14532d" stroke-width="2"/>
+      <rect x="510" y="175" width="160" height="72" rx="4" fill="#f0fdf4" stroke="#14532d"/>
+      <text x="590" y="194" font-size="9" fill="#14532d" text-anchor="middle" font-weight="700">Aurora / Cloud SQL</text>
+      <text x="590" y="208" font-size="8" fill="#57534e" text-anchor="middle">Custom storage engine</text>
+      <text x="590" y="220" font-size="8" fill="#57534e" text-anchor="middle">Auto failover &lt;30s</text>
+      <text x="590" y="232" font-size="8" fill="#57534e" text-anchor="middle">Proprietary features</text>
+      <text x="590" y="244" font-size="8" fill="#57534e" text-anchor="middle">Highest convenience</text>
+
+      <!-- Arrow labels top -->
+      <text x="350" y="28" font-size="10" fill="#57534e" text-anchor="middle" font-weight="700">Cloud MySQL Deployment Spectrum</text>
+      <text x="350" y="46" font-size="9" fill="#57534e" text-anchor="middle">Choose per workload — not per company</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 2: Amazon Aurora ────────────────────────────────────── -->
+  <h2>Amazon Aurora for MySQL</h2>
+  <p>Amazon Aurora is not simply RDS with a better SLA — it is a fundamentally different storage architecture. Aurora decouples compute (the MySQL-compatible server process) from storage (a proprietary distributed log-structured storage service). The storage layer spans 6 copies of your data across 3 Availability Zones: 2 copies per AZ. Writes are acknowledged once 4 of 6 copies have durably received the redo log record. Reads require only 3 of 6 copies to be available. This quorum design tolerates an entire AZ outage for both reads and writes, and tolerates 2-copy failures for writes.</p>
+  <p>Because Aurora storage is a distributed log, Aurora does not write the double-write buffer that InnoDB normally uses on local disk to prevent partial page writes. The log-structured storage makes partial writes impossible by construction. Aurora can therefore achieve higher write throughput than standard InnoDB on equivalent compute because the critical write path is shorter: only redo log records flow over the network to the storage service, not full pages. Aurora measures this as "log record writes" vs the full page writes of standard InnoDB.</p>
+  <p>Aurora supports up to 15 read replicas, all sharing the same underlying storage. Unlike standard MySQL asynchronous replication where replicas re-execute binlog events, Aurora replicas simply apply redo log records from the shared storage. Replica lag is typically under 10–20 milliseconds rather than the seconds-to-minutes range common with MySQL async replication under write pressure.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="380" rx="6" fill="#f0fdf4"/>
+
+      <!-- Writer endpoint -->
+      <rect x="220" y="12" width="120" height="38" rx="4" fill="#c2410c" stroke="#fb923c"/>
+      <text x="280" y="28" font-size="9" fill="white" text-anchor="middle" font-weight="700">Writer Endpoint</text>
+      <text x="280" y="42" font-size="8" fill="#fff7ed" text-anchor="middle">single writer instance</text>
+
+      <!-- Reader endpoint -->
+      <rect x="380" y="12" width="120" height="38" rx="4" fill="#16a34a" stroke="#bbf7d0"/>
+      <text x="440" y="28" font-size="9" fill="white" text-anchor="middle" font-weight="700">Reader Endpoint</text>
+      <text x="440" y="42" font-size="8" fill="#dcfce7" text-anchor="middle">round-robin across readers</text>
+
+      <!-- Writer instance -->
+      <line x1="280" y1="50" x2="280" y2="88" stroke="#c2410c" stroke-width="1.5"/>
+      <polygon points="280,88 274,76 286,76" fill="#c2410c"/>
+      <rect x="180" y="88" width="200" height="48" rx="4" fill="#14532d" stroke="#16a34a"/>
+      <text x="280" y="108" font-size="10" fill="white" text-anchor="middle" font-weight="700">Aurora Writer (Primary)</text>
+      <text x="280" y="124" font-size="8" fill="#bbf7d0" text-anchor="middle">MySQL 8.0 compatible · handles all writes</text>
+
+      <!-- Reader instances -->
+      <line x1="440" y1="50" x2="440" y2="88" stroke="#16a34a" stroke-width="1.5"/>
+      <polygon points="440,88 434,76 446,76" fill="#16a34a"/>
+      <rect x="380" y="88" width="120" height="48" rx="4" fill="#166534" stroke="#16a34a"/>
+      <text x="440" y="108" font-size="9" fill="white" text-anchor="middle" font-weight="700">Reader 1</text>
+      <text x="440" y="122" font-size="8" fill="#bbf7d0" text-anchor="middle">lag &lt; 20 ms</text>
+
+      <rect x="522" y="88" width="120" height="48" rx="4" fill="#166534" stroke="#16a34a"/>
+      <text x="582" y="108" font-size="9" fill="white" text-anchor="middle" font-weight="700">Reader 2</text>
+      <text x="582" y="122" font-size="8" fill="#bbf7d0" text-anchor="middle">lag &lt; 20 ms</text>
+
+      <!-- redo log arrows down to storage -->
+      <text x="280" y="158" font-size="8" fill="#c2410c" text-anchor="middle">redo log records only</text>
+      <line x1="280" y1="136" x2="280" y2="185" stroke="#c2410c" stroke-width="2" stroke-dasharray="5,3"/>
+      <polygon points="280,185 274,173 286,173" fill="#c2410c"/>
+
+      <!-- Shared storage service -->
+      <rect x="60" y="185" width="580" height="80" rx="6" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="350" y="208" font-size="12" fill="white" text-anchor="middle" font-weight="700">Aurora Distributed Storage Service</text>
+      <text x="350" y="224" font-size="9" fill="#bbf7d0" text-anchor="middle">6 copies across 3 AZs (2 per AZ) · Write quorum: 4/6 · Read quorum: 3/6</text>
+      <text x="350" y="240" font-size="9" fill="#bbf7d0" text-anchor="middle">Log-structured · No double-write buffer · Auto-healing storage nodes</text>
+      <text x="350" y="256" font-size="9" fill="#86efac" text-anchor="middle">Max 128 TiB per cluster · Grows in 10 GiB increments automatically</text>
+
+      <!-- AZ breakdown -->
+      <rect x="80"  y="278" width="160" height="60" rx="4" fill="#166534" stroke="#bbf7d0"/>
+      <text x="160" y="296" font-size="9" fill="white" text-anchor="middle" font-weight="700">AZ-1</text>
+      <text x="160" y="310" font-size="8" fill="#bbf7d0" text-anchor="middle">Copy 1 + Copy 2</text>
+      <text x="160" y="324" font-size="8" fill="#86efac" text-anchor="middle">storage node pair</text>
+
+      <rect x="270" y="278" width="160" height="60" rx="4" fill="#166534" stroke="#bbf7d0"/>
+      <text x="350" y="296" font-size="9" fill="white" text-anchor="middle" font-weight="700">AZ-2</text>
+      <text x="350" y="310" font-size="8" fill="#bbf7d0" text-anchor="middle">Copy 3 + Copy 4</text>
+      <text x="350" y="324" font-size="8" fill="#86efac" text-anchor="middle">storage node pair</text>
+
+      <rect x="460" y="278" width="160" height="60" rx="4" fill="#166534" stroke="#bbf7d0"/>
+      <text x="540" y="296" font-size="9" fill="white" text-anchor="middle" font-weight="700">AZ-3</text>
+      <text x="540" y="310" font-size="8" fill="#bbf7d0" text-anchor="middle">Copy 5 + Copy 6</text>
+      <text x="540" y="324" font-size="8" fill="#86efac" text-anchor="middle">storage node pair</text>
+
+      <!-- Quorum annotation -->
+      <text x="350" y="358" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">Write ack after 4/6 durable · Tolerate full AZ loss + 1 additional copy failure</text>
+    </svg>
+  </div>
+
+  <p>Aurora failover is substantially faster than RDS Multi-AZ: typically 15–30 seconds for a promotion to complete, because no data needs to be replicated to the new primary — it already shares the same storage. The book notes that Aurora is not the right choice for every workload: its proprietary storage engine means that migrating away from Aurora is more complex than migrating between standard MySQL instances, and the per-IO pricing model can be surprisingly expensive for high-IOPS workloads compared to provisioned IOPS on standard RDS.</p>
+
+  <!-- ── Section 3: GCP Cloud SQL ────────────────────────────────────── -->
+  <h2>GCP Cloud SQL</h2>
+  <p>Google Cloud SQL for MySQL is a fully managed relational database service built on standard MySQL (not a custom storage engine). Cloud SQL manages instance provisioning, storage auto-resize, automated backups, point-in-time recovery via binary log replay, and OS/engine patching. Unlike Aurora, Cloud SQL uses standard MySQL replication under the hood — a standby replica receives binlog events from the primary and applies them asynchronously, then a managed failover mechanism promotes the standby when the primary becomes unavailable.</p>
+  <p>The key Cloud SQL HA mechanism is the regional instance configuration: the primary and the standby are placed in different zones within the same region, connected by a synchronous replication mechanism for the write-ahead log. Cloud SQL uses a combination of disk-level replication and MySQL binlog to ensure the standby is always within one transaction of the primary. Failover is automated and typically completes in 60–120 seconds, which is slower than Aurora but acceptable for most workloads.</p>
+  <p>Cloud SQL Proxy is the recommended connection method: it provides IAM-based authentication, automatic TLS, and eliminates the need to whitelist IP addresses. The proxy runs as a sidecar on the application host (or as a Kubernetes sidecar container) and forwards connections to the Cloud SQL instance over a secure channel authenticated with a service account. This is particularly important in containerized environments where IP addresses are ephemeral.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 310" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="310" rx="6" fill="#f0fdf4"/>
+
+      <!-- App with Cloud SQL Proxy -->
+      <rect x="240" y="14" width="220" height="50" rx="5" fill="#14532d" stroke="#16a34a"/>
+      <text x="350" y="34" font-size="10" fill="white" text-anchor="middle" font-weight="700">Application + Cloud SQL Proxy</text>
+      <text x="350" y="48" font-size="8" fill="#bbf7d0" text-anchor="middle">IAM auth · auto TLS · no IP whitelisting</text>
+      <text x="350" y="60" font-size="8" fill="#86efac" text-anchor="middle">sidecar or VM process</text>
+
+      <!-- Arrow to Primary -->
+      <line x1="300" y1="64" x2="210" y2="115" stroke="#c2410c" stroke-width="2"/>
+      <polygon points="210,115 213,103 222,109" fill="#c2410c"/>
+      <text x="218" y="95" font-size="8" fill="#c2410c" font-weight="700">writes + reads</text>
+
+      <!-- Cloud SQL Primary (Zone A) -->
+      <rect x="60" y="115" width="280" height="80" rx="5" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="200" y="138" font-size="11" fill="white" text-anchor="middle" font-weight="700">Cloud SQL Primary</text>
+      <text x="200" y="154" font-size="9" fill="#bbf7d0" text-anchor="middle">MySQL 8.0 · Zone A</text>
+      <text x="200" y="169" font-size="8" fill="#86efac" text-anchor="middle">managed backup · 7-day PITR binlog retention</text>
+      <text x="200" y="182" font-size="8" fill="#86efac" text-anchor="middle">auto-resize storage · connection limits enforced</text>
+
+      <!-- Sync replication arrow -->
+      <line x1="340" y1="155" x2="408" y2="155" stroke="#16a34a" stroke-width="2"/>
+      <polygon points="408,155 396,149 396,161" fill="#16a34a"/>
+      <text x="374" y="147" font-size="8" fill="#16a34a" font-weight="700">binlog + disk sync</text>
+
+      <!-- Cloud SQL Standby (Zone B) -->
+      <rect x="410" y="115" width="250" height="80" rx="5" fill="#166534" stroke="#16a34a"/>
+      <text x="535" y="138" font-size="11" fill="white" text-anchor="middle" font-weight="700">Cloud SQL Standby</text>
+      <text x="535" y="154" font-size="9" fill="#bbf7d0" text-anchor="middle">MySQL 8.0 · Zone B (HA)</text>
+      <text x="535" y="169" font-size="8" fill="#bbf7d0" text-anchor="middle">not readable in normal ops</text>
+      <text x="535" y="182" font-size="8" fill="#86efac" text-anchor="middle">auto-promoted on primary failure</text>
+
+      <!-- Read Replicas (optional) -->
+      <line x1="200" y1="195" x2="200" y2="235" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <polygon points="200,235 194,223 206,223" fill="#16a34a"/>
+      <rect x="60" y="235" width="280" height="52" rx="4" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="200" y="255" font-size="9" fill="#14532d" text-anchor="middle" font-weight="700">Read Replicas (optional)</text>
+      <text x="200" y="269" font-size="8" fill="#57534e" text-anchor="middle">async · cross-region replicas supported</text>
+      <text x="200" y="281" font-size="8" fill="#57534e" text-anchor="middle">must be promoted manually for HA</text>
+
+      <!-- Failover annotation -->
+      <rect x="410" y="215" width="250" height="70" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="535" y="233" font-size="9" fill="#c2410c" text-anchor="middle" font-weight="700">Automatic Failover</text>
+      <text x="535" y="248" font-size="8" fill="#57534e" text-anchor="middle">Health check: every 60s</text>
+      <text x="535" y="261" font-size="8" fill="#57534e" text-anchor="middle">Failover time: 60–120s typical</text>
+      <text x="535" y="274" font-size="8" fill="#57534e" text-anchor="middle">IP address: unchanged (DNS re-points)</text>
+      <text x="535" y="287" font-size="8" fill="#57534e" text-anchor="middle">No data loss with synchronous writes</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 4: MySQL on Virtual Machines ──────────────────────── -->
+  <h2>MySQL on Virtual Machines</h2>
+  <p>When a managed service is insufficient — due to compliance requirements for OS-level audit, the need for custom InnoDB builds, or performance tuning below the MySQL layer — engineers deploy MySQL on cloud virtual machines. The chapter provides detailed guidance on choosing the right machine type and storage configuration for InnoDB workloads.</p>
+  <p>The InnoDB buffer pool is the primary sizing input. Your working set — the set of pages accessed regularly — should fit in RAM. A machine that can hold 120% of your working set in RAM will achieve near-zero disk reads in steady state. For write-heavy workloads, the InnoDB redo log flush rate is CPU-bound (AES encryption of log records, crc32 checksums), so CPU speed matters even when queries are simple. General-purpose instances balance vCPU and RAM at roughly 4 GB per vCPU and are appropriate for most OLTP workloads. Memory-optimized instances (e.g., AWS r7g, GCP m3) provide 8–16 GB per vCPU and are appropriate for large in-memory datasets. Compute-optimized instances (e.g., AWS c7g) prioritize raw CPU speed and are appropriate when the bottleneck is query compilation or redo log encryption rather than buffer pool capacity.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 350" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="350" rx="6" fill="#f0fdf4"/>
+
+      <!-- Decision tree root -->
+      <rect x="255" y="14" width="190" height="44" rx="5" fill="#14532d" stroke="#16a34a"/>
+      <text x="350" y="32" font-size="10" fill="white" text-anchor="middle" font-weight="700">MySQL on Cloud VM</text>
+      <text x="350" y="48" font-size="9" fill="#bbf7d0" text-anchor="middle">Which machine type?</text>
+
+      <!-- Q1: Does working set fit in RAM? -->
+      <line x1="350" y1="58" x2="350" y2="94" stroke="#57534e" stroke-width="1.5"/>
+      <polygon points="350,94 344,82 356,82" fill="#57534e"/>
+      <rect x="215" y="94" width="270" height="38" rx="4" fill="#f0fdf4" stroke="#57534e"/>
+      <text x="350" y="110" font-size="9" fill="#57534e" text-anchor="middle" font-weight="700">Is the bottleneck RAM (working set)?</text>
+      <text x="350" y="124" font-size="8" fill="#57534e" text-anchor="middle">Check: Innodb_buffer_pool_reads / Innodb_buffer_pool_read_requests</text>
+
+      <!-- YES branch left -->
+      <line x1="280" y1="132" x2="165" y2="175" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="200" y="158" font-size="9" fill="#16a34a" font-weight="700">YES</text>
+
+      <!-- NO branch right -->
+      <line x1="420" y1="132" x2="535" y2="175" stroke="#c2410c" stroke-width="1.5"/>
+      <text x="490" y="158" font-size="9" fill="#c2410c" font-weight="700">NO</text>
+
+      <!-- Memory-optimized box -->
+      <rect x="55" y="175" width="220" height="72" rx="5" fill="#14532d" stroke="#16a34a" stroke-width="2"/>
+      <text x="165" y="196" font-size="10" fill="white" text-anchor="middle" font-weight="700">Memory-Optimized</text>
+      <text x="165" y="211" font-size="8" fill="#bbf7d0" text-anchor="middle">AWS r7g / GCP m3 / Azure Edsv5</text>
+      <text x="165" y="225" font-size="8" fill="#bbf7d0" text-anchor="middle">8–16 GB RAM per vCPU</text>
+      <text x="165" y="239" font-size="8" fill="#86efac" text-anchor="middle">Use when: dataset &gt; gen-purpose RAM</text>
+
+      <!-- Q2: Is it write/CPU bound? -->
+      <rect x="410" y="175" width="250" height="38" rx="4" fill="#f0fdf4" stroke="#57534e"/>
+      <text x="535" y="191" font-size="9" fill="#57534e" text-anchor="middle" font-weight="700">Is the bottleneck CPU / write TPS?</text>
+      <text x="535" y="205" font-size="8" fill="#57534e" text-anchor="middle">Check: CPU% under load, redo log wait</text>
+
+      <!-- CPU bound YES -->
+      <line x1="480" y1="213" x2="400" y2="260" stroke="#c2410c" stroke-width="1.5"/>
+      <text x="416" y="243" font-size="9" fill="#c2410c" font-weight="700">CPU-bound</text>
+
+      <!-- Balanced NO -->
+      <line x1="590" y1="213" x2="640" y2="260" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="622" y="243" font-size="9" fill="#16a34a" font-weight="700">Balanced</text>
+
+      <!-- Compute-optimized box -->
+      <rect x="300" y="260" width="200" height="72" rx="5" fill="#c2410c" stroke="#fb923c"/>
+      <text x="400" y="281" font-size="10" fill="white" text-anchor="middle" font-weight="700">Compute-Optimized</text>
+      <text x="400" y="296" font-size="8" fill="#fff7ed" text-anchor="middle">AWS c7g / GCP c3 / Azure Fdsv2</text>
+      <text x="400" y="310" font-size="8" fill="#fff7ed" text-anchor="middle">High CPU clock, ~2 GB/vCPU RAM</text>
+      <text x="400" y="324" font-size="8" fill="#fef3c7" text-anchor="middle">Use when: redo log or query CPU bound</text>
+
+      <!-- General-purpose box -->
+      <rect x="526" y="260" width="160" height="72" rx="5" fill="#166534" stroke="#16a34a"/>
+      <text x="606" y="281" font-size="10" fill="white" text-anchor="middle" font-weight="700">General-Purpose</text>
+      <text x="606" y="296" font-size="8" fill="#bbf7d0" text-anchor="middle">AWS m7g / GCP n2</text>
+      <text x="606" y="310" font-size="8" fill="#bbf7d0" text-anchor="middle">~4 GB per vCPU</text>
+      <text x="606" y="324" font-size="8" fill="#86efac" text-anchor="middle">Use for most OLTP workloads</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 5: Disk Selection in Cloud ───────────────────────────── -->
+  <h2>Disk Selection in Cloud</h2>
+  <p>Disk selection is arguably more impactful than machine type selection for InnoDB-heavy workloads. The three principal storage options on AWS are representative of cloud storage tiers broadly: <code>gp3</code> (general-purpose SSD), <code>io1</code>/<code>io2</code> (provisioned IOPS SSD), and local NVMe (instance store on i3/i4i families).</p>
+  <p><code>gp3</code> volumes decouple IOPS and throughput from volume size — you can provision up to 16,000 IOPS and 1,000 MiB/s independently of the volume size. This makes gp3 cost-effective for most OLTP MySQL workloads. <code>io2</code> volumes extend to 256,000 IOPS and 4,000 MiB/s but cost significantly more per GB and per IOPS. They are appropriate when the working set exceeds RAM and random read IOPS are the bottleneck — a scenario more common on large reporting or analytics databases. Local NVMe (instance store) provides the lowest latency and highest IOPS of any option, but instance store volumes are ephemeral: data is lost on instance stop or termination. For MySQL, local NVMe is only safe with a synchronous replica for durability — the local disk becomes the performance hot path while the replica provides the durability guarantee.</p>
+
+  <div class="diagram-wrap">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace">
+      <rect x="0" y="0" width="700" height="300" rx="6" fill="#f0fdf4"/>
+
+      <!-- Axes -->
+      <line x1="70" y1="240" x2="660" y2="240" stroke="#57534e" stroke-width="1.5"/>
+      <line x1="70" y1="30"  x2="70"  y2="240" stroke="#57534e" stroke-width="1.5"/>
+      <text x="365" y="268" font-size="10" fill="#57534e" text-anchor="middle">I/O DEMAND (random IOPS req.)</text>
+      <text x="20" y="140" font-size="10" fill="#57534e" transform="rotate(-90,20,140)" text-anchor="middle">RELATIVE COST / GiB</text>
+
+      <!-- gp3 band -->
+      <path d="M 80 210 L 300 200 L 480 185 L 620 175" stroke="#16a34a" stroke-width="3" fill="none"/>
+      <text x="630" y="172" font-size="9" fill="#16a34a" font-weight="700">gp3</text>
+      <text x="630" y="183" font-size="8" fill="#57534e">≤16k IOPS</text>
+      <text x="630" y="194" font-size="8" fill="#57534e">decoupled price</text>
+
+      <!-- io1/io2 band -->
+      <path d="M 80 220 L 200 200 L 380 160 L 580 100 L 640 82" stroke="#c2410c" stroke-width="3" fill="none" stroke-dasharray="7,3"/>
+      <text x="630" y="79" font-size="9" fill="#c2410c" font-weight="700">io2</text>
+      <text x="630" y="90" font-size="8" fill="#57534e">≤256k IOPS</text>
+      <text x="630" y="101" font-size="8" fill="#57534e">highest cost</text>
+
+      <!-- Local NVMe horizontal line (low, constant) -->
+      <path d="M 80 80 L 640 78" stroke="#14532d" stroke-width="3" fill="none" stroke-dasharray="3,3"/>
+      <text x="105" y="72" font-size="9" fill="#14532d" font-weight="700">Local NVMe (instance store)</text>
+      <text x="105" y="83" font-size="8" fill="#57534e">lowest latency · ephemeral · included in instance price</text>
+
+      <!-- IOPS annotations on x-axis -->
+      <text x="80"  y="254" font-size="8" fill="#57534e" text-anchor="middle">3k</text>
+      <text x="200" y="254" font-size="8" fill="#57534e" text-anchor="middle">10k</text>
+      <text x="340" y="254" font-size="8" fill="#57534e" text-anchor="middle">50k</text>
+      <text x="480" y="254" font-size="8" fill="#57534e" text-anchor="middle">128k</text>
+      <text x="620" y="254" font-size="8" fill="#57534e" text-anchor="middle">256k</text>
+
+      <!-- Cost markers on y-axis -->
+      <text x="60" y="220" font-size="8" fill="#57534e" text-anchor="end">Low</text>
+      <text x="60" y="140" font-size="8" fill="#57534e" text-anchor="end">Med</text>
+      <text x="60" y="60"  font-size="8" fill="#57534e" text-anchor="end">High</text>
+
+      <!-- Decision zone annotation -->
+      <rect x="82" y="160" width="160" height="44" rx="3" fill="#fff7ed" stroke="#fb923c" opacity="0.9"/>
+      <text x="162" y="178" font-size="8" fill="#c2410c" text-anchor="middle" font-weight="700">Most OLTP workloads</text>
+      <text x="162" y="191" font-size="8" fill="#57534e" text-anchor="middle">gp3 with 3–6k IOPS</text>
+      <text x="162" y="202" font-size="8" fill="#57534e" text-anchor="middle">sufficient if WS fits in RAM</text>
+
+      <!-- Legend -->
+      <rect x="470" y="210" width="210" height="74" rx="4" fill="white" stroke="#bbf7d0"/>
+      <line x1="480" y1="226" x2="500" y2="226" stroke="#16a34a" stroke-width="2.5"/>
+      <text x="506" y="229" font-size="9" fill="#57534e">gp3 — general purpose, tunable</text>
+      <line x1="480" y1="244" x2="500" y2="244" stroke="#c2410c" stroke-width="2.5" stroke-dasharray="5,2"/>
+      <text x="506" y="247" font-size="9" fill="#57534e">io2 — provisioned IOPS, high cost</text>
+      <line x1="480" y1="262" x2="500" y2="262" stroke="#14532d" stroke-width="2.5" stroke-dasharray="3,3"/>
+      <text x="506" y="265" font-size="9" fill="#57534e">NVMe — lowest latency, ephemeral</text>
+      <text x="506" y="278" font-size="8" fill="#c2410c">requires durable replica for safety</text>
+    </svg>
+  </div>
+
+  <!-- ── Section 6: Cloud Provider Comparison ─────────────────────── -->
+  <h2>Cloud Provider Feature Comparison</h2>
+  <p>Aurora, Google Cloud SQL, and Amazon RDS MySQL represent three distinct approaches to managed MySQL. RDS MySQL is the closest to running MySQL yourself — standard MySQL engine, standard InnoDB storage, all the familiar parameters exposed via a parameter group. Cloud SQL is similarly standard-MySQL but adds deep GCP integration: Cloud SQL Proxy, IAM authentication, and Workload Identity for GKE. Aurora is the most divergent: its custom storage engine delivers superior read-replica lag and failover speed, but introduces migration complexity and potential cost surprises at high IOPS.</p>
+  <p>The chapter recommends evaluating managed MySQL offerings on five axes: storage model (proprietary vs standard), point-in-time recovery granularity, read replica lag and count limits, maximum storage per instance, and the multi-AZ failure model. The table below captures the key differentiators across the three major options.</p>
+
+  <table class="comparison-table">
+    <thead>
+      <tr>
+        <th>Feature</th>
+        <th>Amazon Aurora MySQL</th>
+        <th>Google Cloud SQL</th>
+        <th>Amazon RDS MySQL</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Storage Engine</strong></td>
+        <td>Proprietary distributed storage (Aurora Storage); InnoDB API compatible but not identical on-disk format</td>
+        <td>Standard InnoDB on Google persistent disk; no custom storage modifications</td>
+        <td>Standard InnoDB on AWS EBS (gp3 or io2); parameter-group-exposed InnoDB config</td>
+      </tr>
+      <tr>
+        <td><strong>PITR Granularity</strong></td>
+        <td>1-second granularity up to 35 days; restored to any second within the retention window via log-based recovery</td>
+        <td>1-minute granularity up to 7 days by default (extendable to 35 days via binlog retention config)</td>
+        <td>5-minute granularity up to 35 days; RDS automates daily snapshots + binlog replay</td>
+      </tr>
+      <tr>
+        <td><strong>Read Replicas</strong></td>
+        <td>Up to 15 replicas; all share storage — replica lag typically &lt;20 ms; cross-region replicas supported</td>
+        <td>Up to 10 replicas per primary; async standard replication; cross-region supported; replica not promoted in HA failover</td>
+        <td>Up to 5 read replicas; standard async replication; cross-region supported; Multi-AZ standby is not a read replica</td>
+      </tr>
+      <tr>
+        <td><strong>Max Storage</strong></td>
+        <td>128 TiB per cluster; auto-grows in 10 GiB increments; never needs manual resize</td>
+        <td>64 TiB; storage auto-resize can be enabled; manual resize for downgrade requires new instance</td>
+        <td>64 TiB on gp3/io2; storage auto-scaling available; cannot decrease allocated storage</td>
+      </tr>
+      <tr>
+        <td><strong>Multi-AZ / HA</strong></td>
+        <td>6 copies across 3 AZs in storage layer; writer failover in 15–30 s; no standby instance to manage</td>
+        <td>Regional HA instance: primary + standby in different zones; auto failover in 60–120 s; same IP/DNS</td>
+        <td>Multi-AZ Deployment: primary + synchronous standby in different AZ; failover in 60–120 s; DNS re-point</td>
+      </tr>
+      <tr>
+        <td><strong>Cost Model</strong></td>
+        <td>Instance-hour + IO request charge (pay-per-IO can be expensive at high IOPS; Aurora I/O Optimized pricing tier available)</td>
+        <td>vCPU + RAM per hour + storage per GiB + network egress; no per-IO charge; predictable at high IOPS</td>
+        <td>Instance-hour + EBS storage + IOPS provisioning; no per-IO charge on gp3; predictable capacity-based pricing</td>
+      </tr>
+    </tbody>
+  </table>
+
+</main>
+<script src="../js/app.js"></script>
+</body>
+</html>
