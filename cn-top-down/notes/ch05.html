@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch05 · Network Layer: Control Plane — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>05 · The Network Layer: Control Plane</h1>
+    <p class="lead">The control plane determines how packets are routed through the network — routing algorithms compute shortest paths, OSPF handles intra-domain routing, BGP handles the Internet's inter-domain policy routing, and SDN allows software-defined control of the entire forwarding infrastructure.</p>
+
+    <h2>Routing Algorithms</h2>
+    <p>A routing algorithm finds the least-cost path through the network graph G=(N,E). Two families:</p>
+    <ul>
+      <li><strong>Link-State (LS)</strong> — each router broadcasts link costs to all routers (using link-state packets). Every router has a complete network map and runs Dijkstra's algorithm locally. Used by OSPF.</li>
+      <li><strong>Distance-Vector (DV)</strong> — each router maintains a distance vector to all destinations and exchanges it with direct neighbors. Uses the Bellman-Ford equation: <em>d_x(y) = min_v{c(x,v) + d_v(y)}</em>. Distributed and decentralized. Used by RIP. Vulnerable to count-to-infinity problem.</li>
+    </ul>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Dijkstra's algorithm visualization on a network graph -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Link-State: Dijkstra's Algorithm on Network Graph</text>
+        <!-- Nodes -->
+        <circle cx="100" cy="140" r="22" fill="#1976d2" stroke="white" stroke-width="2"/>
+        <text x="100" y="145" text-anchor="middle" font-size="13" fill="white" font-weight="700">u</text>
+        <circle cx="220" cy="70" r="22" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="220" y="75" text-anchor="middle" font-size="13" fill="#0d1b2a" font-weight="700">v</text>
+        <circle cx="220" cy="210" r="22" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="220" y="215" text-anchor="middle" font-size="13" fill="#0d1b2a" font-weight="700">w</text>
+        <circle cx="370" cy="70" r="22" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="370" y="75" text-anchor="middle" font-size="13" fill="#0d1b2a" font-weight="700">x</text>
+        <circle cx="370" cy="210" r="22" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="370" y="215" text-anchor="middle" font-size="13" fill="#0d1b2a" font-weight="700">y</text>
+        <circle cx="500" cy="140" r="22" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2"/>
+        <text x="500" y="145" text-anchor="middle" font-size="13" fill="#0d1b2a" font-weight="700">z</text>
+        <!-- Edges with costs -->
+        <line x1="122" y1="128" x2="198" y2="82" stroke="#546e8a" stroke-width="2"/>
+        <text x="155" y="98" text-anchor="middle" font-size="10" fill="#1976d2" font-weight="700">2</text>
+        <line x1="122" y1="152" x2="198" y2="198" stroke="#546e8a" stroke-width="2"/>
+        <text x="155" y="185" text-anchor="middle" font-size="10" fill="#0d1b2a">5</text>
+        <line x1="220" y1="92" x2="220" y2="188" stroke="#546e8a" stroke-width="2"/>
+        <text x="205" y="145" text-anchor="middle" font-size="10" fill="#0d1b2a">3</text>
+        <line x1="242" y1="70" x2="348" y2="70" stroke="#546e8a" stroke-width="2"/>
+        <text x="295" y="60" text-anchor="middle" font-size="10" fill="#0d1b2a">3</text>
+        <line x1="242" y1="210" x2="348" y2="210" stroke="#546e8a" stroke-width="2"/>
+        <text x="295" y="228" text-anchor="middle" font-size="10" fill="#0d1b2a">1</text>
+        <line x1="370" y1="92" x2="370" y2="188" stroke="#546e8a" stroke-width="2"/>
+        <text x="383" y="145" text-anchor="middle" font-size="10" fill="#0d1b2a">1</text>
+        <line x1="392" y1="80" x2="478" y2="128" stroke="#1976d2" stroke-width="2.5"/>
+        <text x="440" y="95" text-anchor="middle" font-size="10" fill="#1976d2" font-weight="700">1</text>
+        <line x1="392" y1="200" x2="478" y2="152" stroke="#546e8a" stroke-width="2"/>
+        <text x="440" y="185" text-anchor="middle" font-size="10" fill="#0d1b2a">2</text>
+        <!-- Shortest path highlight -->
+        <polyline points="100,140 220,70 370,70 500,140" fill="none" stroke="#1976d2" stroke-width="3" stroke-dasharray="none" opacity="0.8"/>
+        <!-- D table -->
+        <rect x="550" y="50" width="130" height="200" rx="5" fill="white" stroke="#dde6ef" stroke-width="1.5"/>
+        <text x="615" y="70" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Dijkstra Table</text>
+        <text x="560" y="90" font-size="9" fill="#546e8a">D(v)=2, D(w)=5</text>
+        <text x="560" y="105" font-size="9" fill="#546e8a">D(x)=5, D(y)=∞</text>
+        <text x="560" y="120" font-size="9" fill="#546e8a">→ pick v (min=2)</text>
+        <text x="560" y="140" font-size="9" fill="#1976d2">D(x)=min(5,2+3)=5</text>
+        <text x="560" y="155" font-size="9" fill="#1976d2">→ pick x (5)</text>
+        <text x="560" y="175" font-size="9" fill="#2e7d32">D(z)=min(∞,5+1)=6</text>
+        <text x="560" y="190" font-size="9" fill="#2e7d32">D(y)=min(∞,5+1)=6</text>
+        <text x="560" y="210" font-size="9" fill="#546e8a">Shortest path u→z: cost=6</text>
+      </svg>
+    </div>
+
+    <h2>Intra-AS Routing: OSPF</h2>
+    <p>The Internet is organized into <em>Autonomous Systems (AS)</em> — groups of routers under a single administrative authority. Within an AS, intra-AS routing protocols run. <strong>OSPF</strong> (Open Shortest Path First) is the most common: it uses link-state flooding and Dijkstra's algorithm. OSPF advantages: security (authentication), multiple same-cost paths for load balancing, support for multiple metrics, hierarchical OSPF (with areas to reduce flooding).</p>
+    <p>OSPF messages are sent directly over IP (not TCP or UDP), with protocol number 89. Each router has a complete topology map of its area and computes shortest paths to all destinations.</p>
+
+    <h2>Inter-AS Routing: BGP</h2>
+    <p><strong>BGP</strong> (Border Gateway Protocol) is the Internet's inter-domain routing protocol — the glue that holds the Internet together. BGP allows ASes to advertise reachability to IP prefixes. Two types: <em>eBGP</em> (between border routers in different ASes) and <em>iBGP</em> (within an AS, to distribute eBGP-learned routes).</p>
+    <p>A BGP route includes the prefix, the <em>AS-PATH</em> (list of ASes the advertisement passed through), and the <em>NEXT-HOP</em>. Route selection follows a complex set of rules (local preference, AS-PATH length, MED, iBGP/eBGP, IGP cost, router ID) rather than just shortest path — enabling <em>policy-based routing</em>.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- BGP: eBGP + iBGP -->
+        <rect width="700" height="260" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">BGP: eBGP Between ASes, iBGP Within AS</text>
+        <!-- AS1 -->
+        <rect x="20" y="40" width="200" height="180" rx="10" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="120" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#1565c0">AS1 (ISP A)</text>
+        <rect x="40" y="75" width="70" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="75" y="100" text-anchor="middle" font-size="10" fill="#0d1b2a">Router 1a</text>
+        <rect x="140" y="75" width="70" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="175" y="100" text-anchor="middle" font-size="10" fill="#0d1b2a">Router 1b</text>
+        <!-- iBGP within AS1 -->
+        <line x1="110" y1="95" x2="140" y2="95" stroke="#1565c0" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <text x="125" y="87" text-anchor="middle" font-size="8" fill="#1565c0">iBGP</text>
+        <!-- AS2 -->
+        <rect x="250" y="40" width="200" height="180" rx="10" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="350" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#00695c">AS2 (ISP B)</text>
+        <rect x="270" y="75" width="70" height="40" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="305" y="100" text-anchor="middle" font-size="10" fill="#0d1b2a">Router 2a</text>
+        <rect x="370" y="75" width="70" height="40" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="405" y="100" text-anchor="middle" font-size="10" fill="#0d1b2a">Router 2b</text>
+        <line x1="340" y1="95" x2="370" y2="95" stroke="#00695c" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <text x="355" y="87" text-anchor="middle" font-size="8" fill="#00695c">iBGP</text>
+        <!-- AS3 -->
+        <rect x="480" y="40" width="200" height="180" rx="10" fill="#fce4ec" stroke="#880e4f" stroke-width="2"/>
+        <text x="580" y="62" text-anchor="middle" font-size="11" font-weight="700" fill="#880e4f">AS3 (Enterprise)</text>
+        <rect x="520" y="75" width="120" height="40" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="580" y="100" text-anchor="middle" font-size="10" fill="#0d1b2a">Router 3a</text>
+        <!-- eBGP -->
+        <line x1="210" y1="90" x2="270" y2="90" stroke="#ff7043" stroke-width="2.5"/>
+        <text x="240" y="83" text-anchor="middle" font-size="9" fill="#ff7043" font-weight="700">eBGP</text>
+        <line x1="440" y1="90" x2="520" y2="90" stroke="#ff7043" stroke-width="2.5"/>
+        <text x="480" y="83" text-anchor="middle" font-size="9" fill="#ff7043" font-weight="700">eBGP</text>
+        <!-- Route advertisement -->
+        <text x="350" y="165" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">BGP Route: 142.42.0.0/16  AS-PATH: AS3 AS2  NEXT-HOP: 201.10.22.1</text>
+        <text x="350" y="185" text-anchor="middle" font-size="9" fill="#546e8a">AS1 learns via eBGP: can reach AS3's prefix through AS2</text>
+        <text x="350" y="215" text-anchor="middle" font-size="10" fill="#546e8a">Route selection: local pref → AS-PATH length → MED → IGP cost</text>
+      </svg>
+    </div>
+
+    <h2>The SDN Control Plane</h2>
+    <p>In SDN, the control plane is physically separate from the data plane. A logically centralized SDN controller maintains a <em>network-wide state database</em> and installs flow table entries into distributed packet switches via the <em>OpenFlow</em> protocol. The controller itself consists of a communication layer (southbound API to switches), a network-wide state management layer, and a northbound API to applications.</p>
+    <p>SDN applications include load balancing, firewalls, traffic engineering, and network virtualization (creating overlay networks on top of physical infrastructure).</p>
+
+    <h2>ICMP and Network Management</h2>
+    <p><strong>ICMP</strong> (Internet Control Message Protocol) is used by routers and hosts to report errors and exchange information. Common ICMP types: echo request/reply (ping), destination unreachable, time exceeded (used by traceroute to discover path). ICMP messages are encapsulated in IP datagrams.</p>
+    <p><strong>SNMP</strong> (Simple Network Management Protocol) enables network administrators to query and configure managed devices. <strong>NETCONF/YANG</strong> is the modern successor: YANG is a data modeling language and NETCONF is an XML-based protocol for configuring network devices.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- ICMP Traceroute mechanism -->
+        <rect width="700" height="240" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">ICMP Traceroute: Discovering the Path</text>
+        <!-- Source -->
+        <rect x="30" y="80" width="80" height="44" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="70" y="107" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Source</text>
+        <!-- Routers -->
+        <rect x="185" y="80" width="70" height="44" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="220" y="107" text-anchor="middle" font-size="11" fill="#0d1b2a">R1</text>
+        <rect x="340" y="80" width="70" height="44" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="375" y="107" text-anchor="middle" font-size="11" fill="#0d1b2a">R2</text>
+        <rect x="495" y="80" width="70" height="44" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="530" y="107" text-anchor="middle" font-size="11" fill="#0d1b2a">R3</text>
+        <!-- Destination -->
+        <rect x="610" y="80" width="80" height="44" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="650" y="107" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Dest</text>
+        <!-- Link lines -->
+        <line x1="110" y1="102" x2="185" y2="102" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="255" y1="102" x2="340" y2="102" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="410" y1="102" x2="495" y2="102" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="565" y1="102" x2="610" y2="102" stroke="#546e8a" stroke-width="1.5"/>
+        <!-- Probe 1: TTL=1 -->
+        <line x1="110" y1="148" x2="185" y2="148" stroke="#1976d2" stroke-width="2" marker-end="url(#a5)"/>
+        <text x="147" y="143" text-anchor="middle" font-size="9" fill="#1976d2">TTL=1</text>
+        <line x1="185" y1="158" x2="110" y2="168" stroke="#e53935" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#a5r)"/>
+        <text x="147" y="175" text-anchor="middle" font-size="9" fill="#e53935">ICMP Time Exceeded</text>
+        <!-- Probe 2: TTL=2 -->
+        <line x1="255" y1="135" x2="340" y2="135" stroke="#1976d2" stroke-width="2" marker-end="url(#a5)"/>
+        <text x="295" y="130" text-anchor="middle" font-size="9" fill="#1976d2">TTL=2</text>
+        <line x1="340" y1="145" x2="255" y2="155" stroke="#e53935" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#a5r)"/>
+        <!-- Probe 3: TTL=3 -->
+        <line x1="410" y1="135" x2="495" y2="135" stroke="#1976d2" stroke-width="2" marker-end="url(#a5)"/>
+        <text x="450" y="130" text-anchor="middle" font-size="9" fill="#1976d2">TTL=3</text>
+        <line x1="495" y1="145" x2="410" y2="155" stroke="#e53935" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#a5r)"/>
+        <text x="350" y="205" text-anchor="middle" font-size="10" fill="#546e8a">Each probe's TTL is incremented by 1; each router sends "time exceeded" revealing its identity</text>
+        <defs>
+          <marker id="a5" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#1976d2"/>
+          </marker>
+          <marker id="a5r" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#e53935"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Property</th>
+          <th>Link-State (OSPF)</th>
+          <th>Distance-Vector (RIP)</th>
+          <th>Path-Vector (BGP)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Algorithm</td>
+          <td>Dijkstra (Edsger W.)</td>
+          <td>Bellman-Ford</td>
+          <td>Policy-based selection</td>
+        </tr>
+        <tr>
+          <td>Information exchanged</td>
+          <td>Full link state (flooded)</td>
+          <td>Distance vectors (neighbors)</td>
+          <td>AS-PATH + prefix</td>
+        </tr>
+        <tr>
+          <td>Convergence speed</td>
+          <td class="g">Fast</td>
+          <td class="b">Slow (count-to-infinity)</td>
+          <td class="n">Variable</td>
+        </tr>
+        <tr>
+          <td>Scalability</td>
+          <td>Limited (flooding)</td>
+          <td>Poor</td>
+          <td class="g">Excellent (Internet-scale)</td>
+        </tr>
+        <tr>
+          <td>Policy support</td>
+          <td class="b">Limited</td>
+          <td class="b">No</td>
+          <td class="g">Rich policy control</td>
+        </tr>
+        <tr>
+          <td>Scope</td>
+          <td>Intra-AS</td>
+          <td>Intra-AS</td>
+          <td>Inter-AS</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <a href="ch04.html">← Chapter 04: Network Layer: Data Plane</a>
+      <a href="ch06.html">Chapter 06: Link Layer &amp; LANs →</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

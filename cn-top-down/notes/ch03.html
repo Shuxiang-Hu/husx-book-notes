@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch03 · Transport Layer — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>03 · Transport Layer</h1>
+    <p class="lead">The transport layer provides logical communication between application processes on different hosts — multiplexing and demultiplexing data streams, with TCP adding reliable, ordered delivery and congestion control on top of an unreliable IP network.</p>
+
+    <h2>Multiplexing and Demultiplexing</h2>
+    <p>The transport layer extends the network-layer's host-to-host delivery to a <em>process-to-process</em> delivery. <strong>Multiplexing</strong> at the sender: gather data from multiple sockets, add transport headers. <strong>Demultiplexing</strong> at the receiver: deliver incoming segments to the right socket.</p>
+    <p>A socket is identified by a <em>four-tuple</em>: (source IP, source port, destination IP, destination port). UDP sockets are identified only by destination IP and port — all UDP segments with the same destination are delivered to the same socket. TCP sockets use all four fields, allowing multiple clients to connect to the same server port.</p>
+
+    <h2>UDP: Connectionless Transport</h2>
+    <p>UDP provides a bare-bones transport: multiplexing/demultiplexing, and optional error detection (via a 16-bit checksum). It is <em>connectionless</em> — no handshake, no state, no guaranteed delivery, no ordering. The UDP segment header has only 4 fields (source port, destination port, length, checksum) totaling 8 bytes.</p>
+    <p>Why use UDP? It is faster (no connection establishment delay), no congestion control (important for real-time streaming), and the application has full control over timing. DNS, streaming media, QUIC, and online gaming all use UDP.</p>
+
+    <h2>Reliable Data Transfer: Principles</h2>
+    <p>The challenge: IP delivers packets unreliably (lost, corrupted, reordered). TCP must impose reliability on top. The key mechanisms developed incrementally:</p>
+    <ul>
+      <li><strong>rdt 1.0</strong> — perfect channel (baseline)</li>
+      <li><strong>rdt 2.x</strong> — bit errors: ACK/NAK, retransmit on NAK. Problem: corrupted ACK/NAK.</li>
+      <li><strong>rdt 3.0</strong> — adds sequence numbers and timeout-based retransmission. Correct but slow (stop-and-wait).</li>
+      <li><strong>Pipelining (Go-Back-N, Selective Repeat)</strong> — allow multiple outstanding unacknowledged packets.</li>
+    </ul>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Go-Back-N vs Selective Repeat sliding windows -->
+        <rect width="700" height="300" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Pipelined Protocols: GBN vs Selective Repeat</text>
+        <!-- GBN -->
+        <text x="175" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#1565c0">Go-Back-N (GBN)</text>
+        <!-- Sender window -->
+        <text x="30" y="70" font-size="10" fill="#546e8a">Sender:</text>
+        <!-- Packets 0–11 -->
+        <g transform="translate(60,58)">
+          <!-- Sent and acked -->
+          <rect x="0" y="0" width="28" height="22" rx="3" fill="#b0bec5"/>
+          <text x="14" y="15" text-anchor="middle" font-size="9" fill="white">0</text>
+          <rect x="30" y="0" width="28" height="22" rx="3" fill="#b0bec5"/>
+          <text x="44" y="15" text-anchor="middle" font-size="9" fill="white">1</text>
+          <!-- Window: sent not acked -->
+          <rect x="60" y="0" width="28" height="22" rx="3" fill="#1976d2"/>
+          <text x="74" y="15" text-anchor="middle" font-size="9" fill="white">2</text>
+          <rect x="90" y="0" width="28" height="22" rx="3" fill="#1976d2"/>
+          <text x="104" y="15" text-anchor="middle" font-size="9" fill="white">3</text>
+          <rect x="120" y="0" width="28" height="22" rx="3" fill="#1976d2"/>
+          <text x="134" y="15" text-anchor="middle" font-size="9" fill="white">4</text>
+          <rect x="150" y="0" width="28" height="22" rx="3" fill="#1976d2"/>
+          <text x="164" y="15" text-anchor="middle" font-size="9" fill="white">5</text>
+          <!-- Usable not yet sent -->
+          <rect x="180" y="0" width="28" height="22" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+          <text x="194" y="15" text-anchor="middle" font-size="9" fill="#1565c0">6</text>
+          <rect x="210" y="0" width="28" height="22" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+          <text x="224" y="15" text-anchor="middle" font-size="9" fill="#1565c0">7</text>
+          <!-- Not usable -->
+          <rect x="240" y="0" width="28" height="22" rx="3" fill="#eceff1"/>
+          <text x="254" y="15" text-anchor="middle" font-size="9" fill="#90a4ae">8</text>
+          <rect x="270" y="0" width="28" height="22" rx="3" fill="#eceff1"/>
+          <text x="284" y="15" text-anchor="middle" font-size="9" fill="#90a4ae">9</text>
+          <!-- Window bracket -->
+          <rect x="58" y="-5" width="122" height="32" rx="3" fill="none" stroke="#ff7043" stroke-width="2"/>
+          <text x="119" y="40" text-anchor="middle" font-size="9" fill="#ff7043">window N=4</text>
+        </g>
+        <!-- Legend GBN -->
+        <text x="30" y="130" font-size="10" fill="#546e8a">On loss: retransmit ALL packets in window</text>
+        <text x="30" y="145" font-size="10" fill="#e53935">Packet loss → entire window retransmitted (wasteful)</text>
+
+        <!-- SR -->
+        <text x="530" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#00695c">Selective Repeat (SR)</text>
+        <text x="390" y="70" font-size="10" fill="#546e8a">Sender:</text>
+        <g transform="translate(420,58)">
+          <rect x="0" y="0" width="28" height="22" rx="3" fill="#b0bec5"/>
+          <text x="14" y="15" text-anchor="middle" font-size="9" fill="white">0</text>
+          <rect x="30" y="0" width="28" height="22" rx="3" fill="#b0bec5"/>
+          <text x="44" y="15" text-anchor="middle" font-size="9" fill="white">1</text>
+          <rect x="60" y="0" width="28" height="22" rx="3" fill="#1976d2"/>
+          <text x="74" y="15" text-anchor="middle" font-size="9" fill="white">2</text>
+          <!-- Packet 3: acked out of order -->
+          <rect x="90" y="0" width="28" height="22" rx="3" fill="#e53935"/>
+          <text x="104" y="15" text-anchor="middle" font-size="9" fill="white">3✗</text>
+          <rect x="120" y="0" width="28" height="22" rx="3" fill="#b0bec5"/>
+          <text x="134" y="15" text-anchor="middle" font-size="9" fill="white">4</text>
+          <rect x="150" y="0" width="28" height="22" rx="3" fill="#b0bec5"/>
+          <text x="164" y="15" text-anchor="middle" font-size="9" fill="white">5</text>
+          <rect x="180" y="0" width="28" height="22" rx="3" fill="#e3f2fd" stroke="#00695c" stroke-width="1"/>
+          <text x="194" y="15" text-anchor="middle" font-size="9" fill="#00695c">6</text>
+          <rect x="210" y="0" width="28" height="22" rx="3" fill="#eceff1"/>
+          <text x="224" y="15" text-anchor="middle" font-size="9" fill="#90a4ae">7</text>
+          <rect x="58" y="-5" width="122" height="32" rx="3" fill="none" stroke="#ff7043" stroke-width="2"/>
+        </g>
+        <text x="390" y="130" font-size="10" fill="#546e8a">On loss: retransmit ONLY lost packet</text>
+        <text x="390" y="145" font-size="10" fill="#2e7d32">Receiver buffers out-of-order packets</text>
+
+        <!-- TCP -->
+        <text x="350" y="185" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">TCP Segment Structure</text>
+        <rect x="30" y="200" width="640" height="80" rx="4" fill="white" stroke="#dde6ef" stroke-width="1.5"/>
+        <rect x="30" y="200" width="160" height="38" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+        <text x="110" y="223" text-anchor="middle" font-size="10" fill="#0d1b2a">Source Port (16)</text>
+        <rect x="190" y="200" width="160" height="38" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+        <text x="270" y="223" text-anchor="middle" font-size="10" fill="#0d1b2a">Dest Port (16)</text>
+        <rect x="350" y="200" width="160" height="38" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+        <text x="430" y="223" text-anchor="middle" font-size="10" fill="#0d1b2a">Sequence Number (32)</text>
+        <rect x="510" y="200" width="160" height="38" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+        <text x="590" y="223" text-anchor="middle" font-size="10" fill="#0d1b2a">Ack Number (32)</text>
+        <rect x="30" y="238" width="80" height="42" fill="#fff8e1" stroke="#f57f17" stroke-width="1"/>
+        <text x="70" y="263" text-anchor="middle" font-size="9" fill="#0d1b2a">Hdr Len</text>
+        <rect x="110" y="238" width="80" height="42" fill="#fff8e1" stroke="#f57f17" stroke-width="1"/>
+        <text x="150" y="263" text-anchor="middle" font-size="9" fill="#0d1b2a">Flags</text>
+        <rect x="190" y="238" width="160" height="42" fill="#fce4ec" stroke="#880e4f" stroke-width="1"/>
+        <text x="270" y="263" text-anchor="middle" font-size="9" fill="#0d1b2a">Receive Window (16)</text>
+        <rect x="350" y="238" width="160" height="42" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="430" y="263" text-anchor="middle" font-size="9" fill="#0d1b2a">Checksum (16)</text>
+        <rect x="510" y="238" width="160" height="42" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1"/>
+        <text x="590" y="263" text-anchor="middle" font-size="9" fill="#0d1b2a">Urgent pointer</text>
+      </svg>
+    </div>
+
+    <h2>TCP: Connection-Oriented Transport</h2>
+    <p>TCP is <em>connection-oriented</em>: a three-way handshake establishes state at both endpoints before data flows. TCP provides:</p>
+    <ul>
+      <li><strong>Reliable, ordered delivery</strong> — sequence numbers + cumulative ACKs + retransmission.</li>
+      <li><strong>Flow control</strong> — receiver advertises a <em>receive window</em> (rwnd) limiting how much the sender can have outstanding.</li>
+      <li><strong>Full-duplex</strong> — data flows in both directions over the same connection.</li>
+    </ul>
+    <p>TCP uses <em>adaptive retransmission</em>: the timeout is set to EstimatedRTT + 4·DevRTT, tracking the smoothed RTT with exponential weighted moving average.</p>
+    <p>Connection teardown uses a four-way handshake: FIN → ACK → FIN → ACK, allowing each direction to close independently.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- TCP 3-way handshake -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">TCP Three-Way Handshake</text>
+        <!-- Timelines -->
+        <text x="140" y="45" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Client</text>
+        <text x="560" y="45" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Server</text>
+        <line x1="140" y1="52" x2="140" y2="270" stroke="#1976d2" stroke-width="2"/>
+        <line x1="560" y1="52" x2="560" y2="270" stroke="#880e4f" stroke-width="2"/>
+        <!-- SYN -->
+        <line x1="140" y1="70" x2="560" y2="100" stroke="#1976d2" stroke-width="2" marker-end="url(#a3)"/>
+        <text x="350" y="82" text-anchor="middle" font-size="10" fill="#1976d2" font-weight="600">SYN (seq=x)</text>
+        <text x="350" y="95" text-anchor="middle" font-size="9" fill="#546e8a">Client chooses random ISN x</text>
+        <!-- SYN-ACK -->
+        <line x1="560" y1="108" x2="140" y2="138" stroke="#880e4f" stroke-width="2" marker-end="url(#a3r)"/>
+        <text x="350" y="120" text-anchor="middle" font-size="10" fill="#880e4f" font-weight="600">SYN-ACK (seq=y, ack=x+1)</text>
+        <text x="350" y="133" text-anchor="middle" font-size="9" fill="#546e8a">Server allocates buffers, chooses ISN y</text>
+        <!-- ACK -->
+        <line x1="140" y1="146" x2="560" y2="170" stroke="#1976d2" stroke-width="2" marker-end="url(#a3)"/>
+        <text x="350" y="158" text-anchor="middle" font-size="10" fill="#1976d2" font-weight="600">ACK (ack=y+1) + Data</text>
+        <!-- Connection established -->
+        <rect x="30" y="178" width="220" height="24" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+        <text x="140" y="194" text-anchor="middle" font-size="10" fill="#1565c0">Connection ESTABLISHED</text>
+        <rect x="450" y="178" width="220" height="24" rx="4" fill="#fce4ec" stroke="#880e4f" stroke-width="1"/>
+        <text x="560" y="194" text-anchor="middle" font-size="10" fill="#880e4f">Connection ESTABLISHED</text>
+        <!-- Bidirectional data -->
+        <line x1="140" y1="215" x2="560" y2="230" stroke="#00897b" stroke-width="1.5" stroke-dasharray="5,3"/>
+        <line x1="560" y1="235" x2="140" y2="250" stroke="#00897b" stroke-width="1.5" stroke-dasharray="5,3"/>
+        <text x="350" y="260" text-anchor="middle" font-size="10" fill="#546e8a">Bidirectional data transfer</text>
+        <defs>
+          <marker id="a3" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L0,7 L7,3.5 z" fill="#1976d2"/>
+          </marker>
+          <marker id="a3r" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <path d="M0,0 L0,7 L7,3.5 z" fill="#880e4f"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2>TCP Congestion Control</h2>
+    <p>TCP controls congestion by maintaining a <em>congestion window</em> (cwnd) that limits total outstanding data. The key algorithm phases:</p>
+    <ul>
+      <li><strong>Slow Start</strong> — cwnd starts at 1 MSS, doubles each RTT until threshold (ssthresh) or loss.</li>
+      <li><strong>Congestion Avoidance</strong> — cwnd grows linearly (1 MSS per RTT). When loss detected: ssthresh = cwnd/2.</li>
+      <li><strong>Fast Retransmit</strong> — 3 duplicate ACKs trigger immediate retransmit without waiting for timeout.</li>
+      <li><strong>Fast Recovery</strong> — TCP Reno: cwnd = ssthresh + 3 after triple dup-ACK; TCP Tahoe: drops to 1 MSS.</li>
+    </ul>
+    <p>TCP's throughput averages roughly 0.75 · MSS / (RTT · √p) where p is the packet loss rate — an insight called the <em>TCP throughput formula</em>.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- TCP Congestion Window evolution (sawtooth) -->
+        <rect width="700" height="260" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">TCP Congestion Window (CWND) Evolution</text>
+        <!-- Axes -->
+        <line x1="50" y1="220" x2="680" y2="220" stroke="#0d1b2a" stroke-width="1.5"/>
+        <line x1="50" y1="220" x2="50" y2="30" stroke="#0d1b2a" stroke-width="1.5"/>
+        <text x="365" y="245" text-anchor="middle" font-size="11" fill="#546e8a">Transmission Round</text>
+        <text x="18" y="130" text-anchor="middle" font-size="11" fill="#546e8a" transform="rotate(-90,18,130)">cwnd (MSS)</text>
+        <!-- ssthresh line -->
+        <line x1="50" y1="130" x2="680" y2="130" stroke="#ff7043" stroke-width="1" stroke-dasharray="6,4"/>
+        <text x="690" y="134" font-size="9" fill="#ff7043">ssthresh</text>
+        <!-- Slow start phase 1 -->
+        <polyline points="50,220 100,190 150,160 200,130" fill="none" stroke="#1976d2" stroke-width="2.5"/>
+        <text x="75" y="175" text-anchor="middle" font-size="9" fill="#1976d2">Slow Start</text>
+        <!-- Loss at 200 (triple dup ack) -->
+        <circle cx="200" cy="130" r="5" fill="#e53935"/>
+        <text x="200" y="118" text-anchor="middle" font-size="9" fill="#e53935">loss!</text>
+        <!-- CA phase -->
+        <polyline points="200,175 260,168 320,161 380,154 430,148" fill="none" stroke="#00897b" stroke-width="2.5"/>
+        <text x="315" y="148" text-anchor="middle" font-size="9" fill="#00897b">Cong. Avoid.</text>
+        <!-- Loss at 430 -->
+        <circle cx="430" cy="148" r="5" fill="#e53935"/>
+        <text x="430" y="136" text-anchor="middle" font-size="9" fill="#e53935">loss!</text>
+        <!-- New SS + CA -->
+        <polyline points="430,215 470,197 510,179 550,170 590,163 630,157" fill="none" stroke="#1976d2" stroke-width="2.5"/>
+        <!-- cwnd gridlines -->
+        <line x1="45" y1="175" x2="55" y2="175" stroke="#0d1b2a" stroke-width="1"/>
+        <text x="40" y="179" text-anchor="end" font-size="9" fill="#546e8a">8</text>
+        <line x1="45" y1="130" x2="55" y2="130" stroke="#0d1b2a" stroke-width="1"/>
+        <text x="40" y="134" text-anchor="end" font-size="9" fill="#546e8a">16</text>
+        <line x1="45" y1="85" x2="55" y2="85" stroke="#0d1b2a" stroke-width="1"/>
+        <text x="40" y="89" text-anchor="end" font-size="9" fill="#546e8a">24</text>
+        <!-- Sawtooth label -->
+        <text x="350" y="250" text-anchor="middle" font-size="10" fill="#546e8a">TCP "sawtooth" pattern: additive increase, multiplicative decrease (AIMD)</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>UDP</th>
+          <th>TCP</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Connection setup</td>
+          <td class="g">None (0 RTT)</td>
+          <td class="b">3-way handshake (1 RTT)</td>
+        </tr>
+        <tr>
+          <td>Reliability</td>
+          <td class="b">None — best effort</td>
+          <td class="g">Guaranteed delivery + ordering</td>
+        </tr>
+        <tr>
+          <td>Congestion control</td>
+          <td class="b">None</td>
+          <td class="g">AIMD (slow start, CA)</td>
+        </tr>
+        <tr>
+          <td>Flow control</td>
+          <td class="b">None</td>
+          <td class="g">Receive window (rwnd)</td>
+        </tr>
+        <tr>
+          <td>Header overhead</td>
+          <td class="g">8 bytes</td>
+          <td class="b">20 bytes minimum</td>
+        </tr>
+        <tr>
+          <td>Use cases</td>
+          <td>DNS, streaming, gaming, QUIC</td>
+          <td>HTTP, email, file transfer, SSH</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <a href="ch02.html">← Chapter 02: Application Layer</a>
+      <a href="ch04.html">Chapter 04: Network Layer: Data Plane →</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

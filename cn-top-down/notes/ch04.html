@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch04 · Network Layer: Data Plane — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>04 · The Network Layer: Data Plane</h1>
+    <p class="lead">The network layer moves packets from one router to the next along a path — the data plane performs per-packet forwarding based on routing table entries, while IP provides the universal addressing and datagram format that ties the Internet together.</p>
+
+    <h2>Forwarding vs Routing: Two Planes</h2>
+    <p>The network layer has two key functions that map to two planes:</p>
+    <ul>
+      <li><strong>Data plane (forwarding)</strong> — local, per-router function. When a packet arrives at a router's input port, the router moves it to the appropriate output port. This is fast-path hardware (nanoseconds).</li>
+      <li><strong>Control plane (routing)</strong> — network-wide logic. Determines the end-to-end path a packet takes from source to destination. This is slow-path software (milliseconds) — runs routing algorithms (Chapter 5).</li>
+    </ul>
+    <p>Forwarding uses a <em>forwarding table</em> (or flow table in SDN) that maps destination addresses (or header fields) to output links. The network service model is <em>best-effort</em>: no bandwidth or delay guarantees, no ordering guarantee, no reliability.</p>
+
+    <h2>Router Architecture</h2>
+    <p>A modern router has four key components: <em>input ports</em>, a <em>switching fabric</em>, <em>output ports</em>, and a <em>routing processor</em>. Input ports perform line termination, link-layer processing, and packet lookup (longest-prefix match). The switching fabric connects input to output ports — three architectures exist: memory, bus, and crossbar (interconnection network). Output ports perform queuing, packet scheduling, and line-termination.</p>
+    <p>Head-of-line (HOL) blocking occurs with input queuing: a packet at the head of an input queue blocks packets behind it even if their output ports are free. Modern high-speed routers use virtual output queuing (VOQ) to mitigate HOL blocking.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Router architecture -->
+        <rect width="700" height="300" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Router Internal Architecture</text>
+        <!-- Input ports -->
+        <rect x="20" y="80" width="100" height="55" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="70" y="104" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Input Port</text>
+        <text x="70" y="118" text-anchor="middle" font-size="9" fill="#546e8a">lookup, queue</text>
+        <rect x="20" y="155" width="100" height="55" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="70" y="179" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Input Port</text>
+        <text x="70" y="193" text-anchor="middle" font-size="9" fill="#546e8a">lookup, queue</text>
+        <rect x="20" y="230" width="100" height="55" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="70" y="254" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Input Port</text>
+        <text x="70" y="268" text-anchor="middle" font-size="9" fill="#546e8a">lookup, queue</text>
+        <!-- Switching fabric -->
+        <rect x="200" y="70" width="300" height="240" rx="8" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="350" y="110" text-anchor="middle" font-size="13" font-weight="700" fill="#00695c">Switching Fabric</text>
+        <text x="350" y="130" text-anchor="middle" font-size="10" fill="#546e8a">Memory / Bus / Crossbar</text>
+        <!-- Crossbar grid -->
+        <line x1="240" y1="155" x2="460" y2="155" stroke="#00695c" stroke-width="1" opacity="0.5"/>
+        <line x1="240" y1="185" x2="460" y2="185" stroke="#00695c" stroke-width="1" opacity="0.5"/>
+        <line x1="240" y1="215" x2="460" y2="215" stroke="#00695c" stroke-width="1" opacity="0.5"/>
+        <line x1="280" y1="145" x2="280" y2="230" stroke="#00695c" stroke-width="1" opacity="0.5"/>
+        <line x1="350" y1="145" x2="350" y2="230" stroke="#00695c" stroke-width="1" opacity="0.5"/>
+        <line x1="420" y1="145" x2="420" y2="230" stroke="#00695c" stroke-width="1" opacity="0.5"/>
+        <!-- Active crosspoint -->
+        <circle cx="280" cy="155" r="6" fill="#1976d2"/>
+        <circle cx="350" cy="185" r="6" fill="#1976d2"/>
+        <circle cx="420" cy="215" r="6" fill="#1976d2"/>
+        <!-- Output ports -->
+        <rect x="580" y="80" width="100" height="55" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="630" y="104" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Output Port</text>
+        <text x="630" y="118" text-anchor="middle" font-size="9" fill="#546e8a">schedule, queue</text>
+        <rect x="580" y="155" width="100" height="55" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="630" y="179" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Output Port</text>
+        <text x="630" y="193" text-anchor="middle" font-size="9" fill="#546e8a">schedule, queue</text>
+        <rect x="580" y="230" width="100" height="55" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="630" y="254" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Output Port</text>
+        <text x="630" y="268" text-anchor="middle" font-size="9" fill="#546e8a">schedule, queue</text>
+        <!-- Lines -->
+        <line x1="120" y1="107" x2="200" y2="155" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="120" y1="182" x2="200" y2="185" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="120" y1="257" x2="200" y2="215" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="500" y1="155" x2="580" y2="107" stroke="#880e4f" stroke-width="1.5"/>
+        <line x1="500" y1="185" x2="580" y2="182" stroke="#880e4f" stroke-width="1.5"/>
+        <line x1="500" y1="215" x2="580" y2="257" stroke="#880e4f" stroke-width="1.5"/>
+        <!-- Routing processor (top) -->
+        <rect x="250" y="30" width="200" height="32" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="350" y="51" text-anchor="middle" font-size="11" fill="#6a1b9a" font-weight="700">Routing Processor (Control Plane)</text>
+      </svg>
+    </div>
+
+    <h2>IP: The Internet Protocol (IPv4)</h2>
+    <p>IP datagrams have a 20-byte base header (plus options). Key fields: <em>version</em> (4 bits), <em>header length</em>, <em>type of service</em>, <em>total length</em> (max 65,535 bytes), <em>identification/flags/fragment offset</em> (for fragmentation), <em>TTL</em> (decremented by each router; datagram dropped at 0), <em>protocol</em> (6=TCP, 17=UDP), <em>header checksum</em>, <em>source/destination IP addresses</em>.</p>
+    <p><strong>Fragmentation</strong>: if a datagram is larger than the MTU of the next link, the router fragments it. Reassembly happens only at the destination host. IPv6 eliminates router-level fragmentation.</p>
+
+    <h2>IP Addressing and Subnets</h2>
+    <p>An <em>IP address</em> is a 32-bit number, written in dotted-decimal notation (e.g., 192.168.1.1). Addresses are assigned to interfaces, not to hosts. A <em>subnet</em> is a set of device interfaces that can physically reach each other without an intervening router — defined by an address/prefix-length (e.g., 192.168.1.0/24, mask = 24 bits). <strong>CIDR</strong> (Classless Inter-Domain Routing) replaced the old classful (A/B/C) scheme and allows arbitrary prefix lengths.</p>
+    <p><strong>DHCP</strong> (Dynamic Host Configuration Protocol) auto-assigns IP addresses to hosts when they join a network — a discover/offer/request/ACK four-step exchange using UDP broadcast.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- IP Addressing: subnets, CIDR, NAT -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">IP Addressing, Subnets, and NAT</text>
+        <!-- ISP block -->
+        <rect x="250" y="30" width="200" height="40" rx="6" fill="#fce4ec" stroke="#880e4f" stroke-width="2"/>
+        <text x="350" y="48" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">ISP Block: 200.23.16.0/20</text>
+        <text x="350" y="62" text-anchor="middle" font-size="9" fill="#546e8a">4096 addresses</text>
+        <!-- Subnets from ISP -->
+        <rect x="30" y="110" width="150" height="44" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="105" y="130" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Org A: /23</text>
+        <text x="105" y="145" text-anchor="middle" font-size="9" fill="#546e8a">200.23.16.0/23</text>
+        <rect x="275" y="110" width="150" height="44" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="350" y="130" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Org B: /23</text>
+        <text x="350" y="145" text-anchor="middle" font-size="9" fill="#546e8a">200.23.18.0/23</text>
+        <rect x="520" y="110" width="150" height="44" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="595" y="130" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Org C: /23</text>
+        <text x="595" y="145" text-anchor="middle" font-size="9" fill="#546e8a">200.23.20.0/23</text>
+        <!-- Lines -->
+        <line x1="350" y1="70" x2="105" y2="110" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="350" y1="70" x2="350" y2="110" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="350" y1="70" x2="595" y2="110" stroke="#546e8a" stroke-width="1.5"/>
+        <!-- NAT box -->
+        <rect x="160" y="200" width="380" height="65" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="350" y="222" text-anchor="middle" font-size="11" font-weight="700" fill="#00695c">NAT (Network Address Translation)</text>
+        <text x="350" y="238" text-anchor="middle" font-size="10" fill="#0d1b2a">Private: 10.0.0.0/8 → Public: 1 IP</text>
+        <text x="350" y="254" text-anchor="middle" font-size="9" fill="#546e8a">NAT translation table maps (private IP, port) ↔ (public IP, WAN port)</text>
+        <line x1="105" y1="154" x2="250" y2="200" stroke="#546e8a" stroke-width="1" stroke-dasharray="4,3"/>
+        <line x1="350" y1="154" x2="350" y2="200" stroke="#546e8a" stroke-width="1" stroke-dasharray="4,3"/>
+      </svg>
+    </div>
+
+    <h2>IPv6</h2>
+    <p>IPv6 uses 128-bit addresses (written as eight 16-bit hexadecimal groups), solving IPv4 address exhaustion. The IPv6 header is a fixed 40 bytes — simpler than IPv4 (no checksum, no fragmentation at routers). Key new features: flow labels for differentiated services, anycast addresses, mandatory IPsec support, auto-configuration (SLAAC). Transition from IPv4 uses <em>tunneling</em>: IPv6 datagrams are encapsulated inside IPv4 datagrams across IPv4-only segments.</p>
+
+    <h2>Generalized Forwarding and SDN</h2>
+    <p>Traditional IP forwarding uses only the destination IP address. <strong>Generalized forwarding</strong> (OpenFlow) allows matching on any combination of header fields (IP source/dest, TCP/UDP ports, MAC addresses, VLAN ID, etc.) and then taking actions: forward, drop, modify header, or flood.</p>
+    <p>In SDN, a remote <em>controller</em> computes and installs flow table entries in routers (now called <em>packet switches</em>). This decouples the control plane from the data plane, enabling programmable, software-defined network behavior.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- SDN: controller + flow tables -->
+        <rect width="700" height="260" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">SDN: Separation of Control and Data Plane</text>
+        <!-- Controller -->
+        <rect x="250" y="35" width="200" height="55" rx="8" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="2"/>
+        <text x="350" y="58" text-anchor="middle" font-size="12" font-weight="700" fill="#6a1b9a">SDN Controller</text>
+        <text x="350" y="75" text-anchor="middle" font-size="9" fill="#546e8a">OpenFlow / ONOS / OpenDaylight</text>
+        <!-- Switches -->
+        <rect x="50" y="160" width="120" height="55" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="110" y="183" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Packet Switch</text>
+        <text x="110" y="197" text-anchor="middle" font-size="9" fill="#546e8a">Flow Table</text>
+        <text x="110" y="209" text-anchor="middle" font-size="9" fill="#546e8a">Match → Action</text>
+        <rect x="290" y="160" width="120" height="55" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="350" y="183" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Packet Switch</text>
+        <text x="350" y="197" text-anchor="middle" font-size="9" fill="#546e8a">Flow Table</text>
+        <text x="350" y="209" text-anchor="middle" font-size="9" fill="#546e8a">Match → Action</text>
+        <rect x="530" y="160" width="120" height="55" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="590" y="183" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Packet Switch</text>
+        <text x="590" y="197" text-anchor="middle" font-size="9" fill="#546e8a">Flow Table</text>
+        <text x="590" y="209" text-anchor="middle" font-size="9" fill="#546e8a">Match → Action</text>
+        <!-- Control channel -->
+        <line x1="350" y1="90" x2="110" y2="160" stroke="#6a1b9a" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#a4)"/>
+        <line x1="350" y1="90" x2="350" y2="160" stroke="#6a1b9a" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#a4)"/>
+        <line x1="350" y1="90" x2="590" y2="160" stroke="#6a1b9a" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#a4)"/>
+        <text x="175" y="130" text-anchor="middle" font-size="9" fill="#6a1b9a">OpenFlow (control)</text>
+        <!-- Data plane links -->
+        <line x1="170" y1="187" x2="290" y2="187" stroke="#00695c" stroke-width="2"/>
+        <line x1="410" y1="187" x2="530" y2="187" stroke="#00695c" stroke-width="2"/>
+        <text x="230" y="205" text-anchor="middle" font-size="9" fill="#546e8a">data plane</text>
+        <text x="470" y="205" text-anchor="middle" font-size="9" fill="#546e8a">data plane</text>
+        <text x="350" y="248" text-anchor="middle" font-size="10" fill="#546e8a">Controller installs flow table entries; switches forward packets at line rate</text>
+        <defs>
+          <marker id="a4" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#6a1b9a"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>IPv4</th>
+          <th>IPv6</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Address size</td>
+          <td>32 bits (4.3B addresses)</td>
+          <td class="g">128 bits (3.4×10³⁸)</td>
+        </tr>
+        <tr>
+          <td>Header size</td>
+          <td>20 bytes (variable, with options)</td>
+          <td class="g">40 bytes fixed</td>
+        </tr>
+        <tr>
+          <td>Header checksum</td>
+          <td>Yes (recalculated per hop)</td>
+          <td class="g">Removed (rely on link/transport)</td>
+        </tr>
+        <tr>
+          <td>Fragmentation</td>
+          <td>At routers and source</td>
+          <td class="g">Source only (PMTUD)</td>
+        </tr>
+        <tr>
+          <td>Flow label</td>
+          <td class="b">Not supported</td>
+          <td class="g">20-bit flow label field</td>
+        </tr>
+        <tr>
+          <td>Address config</td>
+          <td>DHCP or static</td>
+          <td class="g">SLAAC + DHCPv6</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <a href="ch03.html">← Chapter 03: Transport Layer</a>
+      <a href="ch05.html">Chapter 05: Network Layer: Control Plane →</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

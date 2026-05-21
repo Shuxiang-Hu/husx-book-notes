@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch08 · Security in Computer Networks — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>08 · Security in Computer Networks</h1>
+    <p class="lead">Network security is built on cryptographic primitives — symmetric and public-key encryption, hash functions, and digital signatures — that enable confidentiality, integrity, and authentication across every layer of the protocol stack.</p>
+
+    <h2>Security Goals and Threat Model</h2>
+    <p>A secure communication channel must provide:</p>
+    <ul>
+      <li><strong>Confidentiality</strong> — only sender and intended receiver understand the message (encryption).</li>
+      <li><strong>Message integrity</strong> — message has not been altered in transit (cryptographic hash + MAC).</li>
+      <li><strong>End-point authentication</strong> — sender and receiver can confirm each other's identity.</li>
+      <li><strong>Operational security</strong> — protection against attacks on the network itself (firewalls, IDS).</li>
+    </ul>
+    <p>The canonical threat model assumes an active intruder (Trudy) who can intercept, modify, inject, and replay messages. Passive attacks (eavesdropping) are addressed by encryption; active attacks require integrity protection and authentication.</p>
+
+    <h2>Principles of Cryptography</h2>
+    <p><strong>Symmetric key cryptography</strong>: both parties share the same secret key K<sub>s</sub>. The same key encrypts and decrypts. Modern algorithms: AES (128/256-bit blocks), DES (now broken), 3DES. Key strength comes from block cipher design and key length, not algorithm secrecy (Kerckhoffs's principle).</p>
+    <p><strong>Public key cryptography</strong>: each entity has a public key K<sup>+</sup> (openly published) and a private key K<sup>−</sup> (secret). Encrypting with K<sup>+</sup> can only be decrypted with K<sup>−</sup>. RSA is the dominant algorithm. Security relies on the difficulty of factoring large integers. Computationally expensive — in practice, used to establish symmetric session keys, not for bulk data encryption.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Symmetric vs Public Key -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Symmetric vs Public Key Cryptography</text>
+        <!-- Symmetric -->
+        <text x="175" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#1565c0">Symmetric Key</text>
+        <!-- Alice -->
+        <rect x="20" y="55" width="70" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="55" y="80" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Alice</text>
+        <!-- Bob -->
+        <rect x="260" y="55" width="70" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="295" y="80" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Bob</text>
+        <!-- Shared key -->
+        <rect x="130" y="40" width="90" height="30" rx="5" fill="#fff8e1" stroke="#f57f17" stroke-width="1.5"/>
+        <text x="175" y="59" text-anchor="middle" font-size="10" fill="#f57f17" font-weight="700">Shared Key K_s</text>
+        <!-- Encrypt/Decrypt -->
+        <rect x="85" y="115" width="90" height="35" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="130" y="137" text-anchor="middle" font-size="10" fill="#00695c">K_s(plaintext)</text>
+        <line x1="90" y1="95" x2="110" y2="115" stroke="#546e8a" stroke-width="1.5" marker-end="url(#arr3)"/>
+        <line x1="175" y1="115" x2="215" y2="115" stroke="#1976d2" stroke-width="2" marker-end="url(#arr3)"/>
+        <text x="195" y="107" text-anchor="middle" font-size="9" fill="#1976d2">ciphertext</text>
+        <rect x="210" y="115" width="90" height="35" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="255" y="137" text-anchor="middle" font-size="10" fill="#00695c">K_s(ciphertext)</text>
+        <text x="175" y="180" text-anchor="middle" font-size="10" fill="#546e8a">Problem: how to share K_s securely?</text>
+
+        <!-- Public Key -->
+        <text x="530" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#880e4f">Public Key</text>
+        <rect x="400" y="55" width="70" height="40" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="435" y="80" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Alice</text>
+        <rect x="620" y="55" width="70" height="40" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="655" y="80" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Bob</text>
+        <!-- Bob's public key -->
+        <rect x="555" y="40" width="80" height="30" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+        <text x="595" y="59" text-anchor="middle" font-size="9" fill="#1565c0">Bob's K⁺ (public)</text>
+        <!-- Bob's private key -->
+        <rect x="620" y="110" width="70" height="30" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="655" y="130" text-anchor="middle" font-size="9" fill="#6a1b9a">Bob's K⁻ (private)</text>
+        <!-- Encrypt with K+ -->
+        <rect x="440" y="110" width="130" height="35" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="505" y="133" text-anchor="middle" font-size="9" fill="#00695c">K⁺_Bob(plaintext)</text>
+        <line x1="470" y1="95" x2="480" y2="110" stroke="#546e8a" stroke-width="1.5" marker-end="url(#arr3)"/>
+        <line x1="570" y1="127" x2="620" y2="125" stroke="#880e4f" stroke-width="2" stroke-dasharray="4,3"/>
+        <text x="595" y="118" text-anchor="middle" font-size="9" fill="#880e4f">decrypt K⁻</text>
+        <text x="530" y="175" text-anchor="middle" font-size="10" fill="#546e8a">Anyone can encrypt with K⁺; only Bob can decrypt with K⁻</text>
+        <text x="530" y="192" text-anchor="middle" font-size="9" fill="#546e8a">No shared secret needed in advance</text>
+        <defs>
+          <marker id="arr3" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#546e8a"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2>Message Integrity and Digital Signatures</h2>
+    <p>A <strong>cryptographic hash function</strong> (SHA-256, SHA-3) maps an arbitrary-length message to a fixed-length digest. Properties: deterministic, fast to compute, pre-image resistant, collision resistant (computationally infeasible to find two messages with the same digest).</p>
+    <p>A <strong>Message Authentication Code (MAC)</strong> authenticates both the message and sender: MAC = H(message + s) where s is a shared secret. Used in HMAC (HMAC-SHA256). Provides integrity without non-repudiation.</p>
+    <p><strong>Digital signatures</strong> provide non-repudiation. Sender signs with private key K<sup>−</sup>: sign = K<sup>−</sup>(H(message)). Receiver verifies with K<sup>+</sup>: check that K<sup>+</sup>(sign) == H(message). A valid signature proves the sender held the private key and signed this exact message. RSA and ECDSA are common algorithms.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Digital signature process -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Digital Signature: Sign and Verify</text>
+        <!-- Sender side -->
+        <text x="160" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#1565c0">Sender (Alice)</text>
+        <!-- Message -->
+        <rect x="30" y="60" width="100" height="35" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="80" y="82" text-anchor="middle" font-size="10" fill="#0d1b2a">Message m</text>
+        <!-- Hash -->
+        <rect x="150" y="60" width="90" height="35" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="195" y="82" text-anchor="middle" font-size="10" fill="#00695c">H(m)</text>
+        <line x1="130" y1="77" x2="150" y2="77" stroke="#546e8a" stroke-width="1.5" marker-end="url(#arr4)"/>
+        <!-- Sign with K- -->
+        <rect x="255" y="60" width="110" height="35" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="310" y="82" text-anchor="middle" font-size="10" fill="#6a1b9a">K⁻_Alice(H(m))</text>
+        <line x1="240" y1="77" x2="255" y2="77" stroke="#546e8a" stroke-width="1.5" marker-end="url(#arr4)"/>
+        <!-- Private key label -->
+        <text x="310" y="115" text-anchor="middle" font-size="9" fill="#6a1b9a">← Alice's private key</text>
+        <!-- Send m + sig -->
+        <rect x="30" y="140" width="335" height="35" rx="4" fill="#fff8e1" stroke="#f57f17" stroke-width="1.5"/>
+        <text x="197" y="162" text-anchor="middle" font-size="10" fill="#f57f17">Send: [m, K⁻_Alice(H(m))]</text>
+        <!-- Receiver side -->
+        <text x="560" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#880e4f">Receiver (Bob)</text>
+        <!-- Receive -->
+        <rect x="400" y="140" width="285" height="35" rx="4" fill="#fff8e1" stroke="#f57f17" stroke-width="1.5"/>
+        <text x="542" y="162" text-anchor="middle" font-size="10" fill="#f57f17">Receive: [m, K⁻_Alice(H(m))]</text>
+        <!-- Bob: compute H(m) -->
+        <rect x="400" y="195" width="120" height="35" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="460" y="217" text-anchor="middle" font-size="10" fill="#00695c">Compute H(m)</text>
+        <!-- Bob: decrypt sig -->
+        <rect x="550" y="195" width="130" height="35" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="615" y="208" text-anchor="middle" font-size="10" fill="#1565c0">K⁺_Alice(sig)</text>
+        <text x="615" y="222" text-anchor="middle" font-size="9" fill="#546e8a">= H(m) ?</text>
+        <!-- Compare -->
+        <line x1="520" y1="212" x2="550" y2="212" stroke="#1976d2" stroke-width="2"/>
+        <text x="535" y="245" text-anchor="middle" font-size="10" fill="#1976d2" font-weight="700">If equal → signature valid!</text>
+        <text x="535" y="265" text-anchor="middle" font-size="9" fill="#546e8a">Proves Alice sent it; message not altered</text>
+        <defs>
+          <marker id="arr4" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#546e8a"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2>TLS: Securing the Web</h2>
+    <p><strong>TLS</strong> (Transport Layer Security, formerly SSL) provides a secure channel over TCP, used by HTTPS. The TLS handshake establishes:</p>
+    <ol>
+      <li>Server sends certificate (public key + CA signature).</li>
+      <li>Client verifies certificate chain against trusted CAs.</li>
+      <li>Client generates a pre-master secret, encrypts with server's public key.</li>
+      <li>Both derive session keys (master secret → symmetric keys for encryption + MAC).</li>
+      <li>All subsequent data is encrypted with AES-GCM or ChaCha20-Poly1305.</li>
+    </ol>
+    <p>TLS 1.3 (2018) eliminates RSA key exchange in favor of Diffie-Hellman (for forward secrecy), reduces handshake to 1 RTT (or 0-RTT for resumption), and removes weak cipher suites.</p>
+
+    <h2>Network-Layer Security: IPsec and Firewalls</h2>
+    <p><strong>IPsec</strong> provides network-layer security: authentication (AH — Authentication Header) and confidentiality + authentication (ESP — Encapsulating Security Payload). Two modes: <em>transport mode</em> (between end systems, encrypts payload only) and <em>tunnel mode</em> (between gateways, encrypts entire original IP datagram — used for VPNs). IKE protocol establishes the Security Association (SA) defining keys and algorithms.</p>
+    <p><strong>Firewalls</strong> inspect and filter traffic at the network perimeter. <em>Stateless packet filters</em> check individual packet headers. <em>Stateful filters</em> track TCP connection state. <em>Application gateways</em> (proxy firewalls) inspect application-level content (e.g., HTTP, SMTP). <strong>IDS/IPS</strong> (Intrusion Detection/Prevention Systems) perform deep packet inspection, matching traffic against attack signatures.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Firewall / Network security zones -->
+        <rect width="700" height="260" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Network Security: Firewall and DMZ Architecture</text>
+        <!-- Internet -->
+        <rect x="20" y="95" width="90" height="70" rx="6" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+        <text x="65" y="128" text-anchor="middle" font-size="11" font-weight="700" fill="#2e7d32">Internet</text>
+        <text x="65" y="143" text-anchor="middle" font-size="9" fill="#546e8a">(untrusted)</text>
+        <!-- Outer firewall -->
+        <rect x="160" y="80" width="80" height="100" rx="6" fill="#fce4ec" stroke="#880e4f" stroke-width="2"/>
+        <text x="200" y="124" text-anchor="middle" font-size="10" font-weight="700" fill="#880e4f">Outer</text>
+        <text x="200" y="140" text-anchor="middle" font-size="10" fill="#880e4f">Firewall</text>
+        <text x="200" y="156" text-anchor="middle" font-size="8" fill="#546e8a">stateful filter</text>
+        <!-- DMZ -->
+        <rect x="280" y="80" width="140" height="100" rx="8" fill="#fff8e1" stroke="#f57f17" stroke-width="2"/>
+        <text x="350" y="103" text-anchor="middle" font-size="11" font-weight="700" fill="#f57f17">DMZ</text>
+        <rect x="295" y="110" width="110" height="30" rx="4" fill="#fce4ec" stroke="#880e4f" stroke-width="1"/>
+        <text x="350" y="130" text-anchor="middle" font-size="9" fill="#0d1b2a">Web Server</text>
+        <rect x="295" y="145" width="110" height="26" rx="4" fill="#fce4ec" stroke="#880e4f" stroke-width="1"/>
+        <text x="350" y="162" text-anchor="middle" font-size="9" fill="#0d1b2a">Mail Server</text>
+        <!-- Inner firewall -->
+        <rect x="470" y="80" width="80" height="100" rx="6" fill="#fce4ec" stroke="#880e4f" stroke-width="2"/>
+        <text x="510" y="124" text-anchor="middle" font-size="10" font-weight="700" fill="#880e4f">Inner</text>
+        <text x="510" y="140" text-anchor="middle" font-size="10" fill="#880e4f">Firewall</text>
+        <text x="510" y="156" text-anchor="middle" font-size="8" fill="#546e8a">app gateway</text>
+        <!-- Internal network -->
+        <rect x="590" y="85" width="100" height="90" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="640" y="118" text-anchor="middle" font-size="10" font-weight="700" fill="#1565c0">Internal</text>
+        <text x="640" y="133" text-anchor="middle" font-size="10" fill="#1565c0">LAN</text>
+        <text x="640" y="148" text-anchor="middle" font-size="8" fill="#546e8a">(trusted)</text>
+        <!-- Arrows -->
+        <line x1="110" y1="130" x2="160" y2="130" stroke="#546e8a" stroke-width="2"/>
+        <line x1="240" y1="130" x2="280" y2="130" stroke="#546e8a" stroke-width="2"/>
+        <line x1="420" y1="130" x2="470" y2="130" stroke="#546e8a" stroke-width="2"/>
+        <line x1="550" y1="130" x2="590" y2="130" stroke="#546e8a" stroke-width="2"/>
+        <!-- IDS label -->
+        <rect x="200" y="200" width="300" height="35" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="350" y="218" text-anchor="middle" font-size="10" font-weight="700" fill="#00695c">IDS / IPS</text>
+        <text x="350" y="230" text-anchor="middle" font-size="9" fill="#546e8a">Deep packet inspection + signature matching</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Mechanism</th>
+          <th>Provides</th>
+          <th>Layer</th>
+          <th>Key Algorithm</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>AES (CBC/GCM)</strong></td>
+          <td>Confidentiality</td>
+          <td>Any</td>
+          <td>Symmetric block cipher</td>
+        </tr>
+        <tr>
+          <td><strong>RSA / ECDH</strong></td>
+          <td>Key exchange / auth</td>
+          <td>Any</td>
+          <td>Asymmetric (public key)</td>
+        </tr>
+        <tr>
+          <td><strong>HMAC-SHA256</strong></td>
+          <td>Integrity + auth</td>
+          <td>Any</td>
+          <td>Hash + shared secret</td>
+        </tr>
+        <tr>
+          <td><strong>Digital Signature</strong></td>
+          <td>Integrity + non-repudiation</td>
+          <td>Any</td>
+          <td>RSA / ECDSA</td>
+        </tr>
+        <tr>
+          <td><strong>TLS 1.3</strong></td>
+          <td>Confidentiality + integrity + auth</td>
+          <td>Transport</td>
+          <td>ECDHE + AES-GCM + HMAC</td>
+        </tr>
+        <tr>
+          <td><strong>IPsec (ESP)</strong></td>
+          <td>Confidentiality + integrity + auth</td>
+          <td>Network</td>
+          <td>AES + HMAC, IKE for SA</td>
+        </tr>
+        <tr>
+          <td><strong>Firewall (stateful)</strong></td>
+          <td>Access control</td>
+          <td>Network/Transport</td>
+          <td>TCP state tracking + rules</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <a href="ch07.html">← Chapter 07: Wireless &amp; Mobile Networks</a>
+      <a href="index.html">↑ Back to Index</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

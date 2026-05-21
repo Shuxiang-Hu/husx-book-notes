@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch02 · Application Layer — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>02 · Application Layer</h1>
+    <p class="lead">The application layer is where network applications live — HTTP for the Web, SMTP for email, DNS for name resolution — each defined by a protocol governing message formats and the actions of communicating processes.</p>
+
+    <h2>Network Application Architectures</h2>
+    <p>Modern network applications are structured in one of two dominant ways. In the <strong>client-server architecture</strong> an always-on server with a stable, well-known address responds to requests from many clients. The server scales using data centers with thousands of virtual servers. In a <strong>P2P architecture</strong> peers directly communicate with each other without a dedicated server, allowing the system to self-scale as more peers join.</p>
+    <p>The interface between an application and the transport layer is the <em>socket</em> — analogous to a door between the application process and the network. A process is identified by its IP address plus a <em>port number</em>.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Client-Server vs P2P -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <!-- Client-Server -->
+        <text x="175" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Client-Server</text>
+        <!-- Server -->
+        <rect x="140" y="35" width="70" height="50" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="175" y="60" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Server</text>
+        <text x="175" y="75" text-anchor="middle" font-size="9" fill="#546e8a">always-on</text>
+        <!-- Clients -->
+        <rect x="30" y="130" width="60" height="40" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="60" y="155" text-anchor="middle" font-size="10" fill="#0d1b2a">Client</text>
+        <rect x="145" y="140" width="60" height="40" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="175" y="165" text-anchor="middle" font-size="10" fill="#0d1b2a">Client</text>
+        <rect x="260" y="130" width="60" height="40" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="290" y="155" text-anchor="middle" font-size="10" fill="#0d1b2a">Client</text>
+        <!-- Lines to server -->
+        <line x1="175" y1="85" x2="80" y2="130" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="175" y1="85" x2="175" y2="140" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="175" y1="85" x2="270" y2="130" stroke="#1976d2" stroke-width="1.5"/>
+        <text x="175" y="210" text-anchor="middle" font-size="10" fill="#546e8a">All requests go through server</text>
+
+        <!-- P2P -->
+        <text x="530" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Peer-to-Peer (P2P)</text>
+        <!-- Peers -->
+        <rect x="410" y="50" width="55" height="40" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="437" y="75" text-anchor="middle" font-size="10" fill="#0d1b2a">Peer</text>
+        <rect x="510" y="35" width="55" height="40" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="537" y="60" text-anchor="middle" font-size="10" fill="#0d1b2a">Peer</text>
+        <rect x="610" y="55" width="55" height="40" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="637" y="80" text-anchor="middle" font-size="10" fill="#0d1b2a">Peer</text>
+        <rect x="450" y="140" width="55" height="40" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="477" y="165" text-anchor="middle" font-size="10" fill="#0d1b2a">Peer</text>
+        <rect x="570" y="140" width="55" height="40" rx="5" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="597" y="165" text-anchor="middle" font-size="10" fill="#0d1b2a">Peer</text>
+        <!-- Mesh links -->
+        <line x1="437" y1="90" x2="477" y2="140" stroke="#6a1b9a" stroke-width="1.2"/>
+        <line x1="537" y1="75" x2="477" y2="140" stroke="#6a1b9a" stroke-width="1.2"/>
+        <line x1="537" y1="75" x2="597" y2="140" stroke="#6a1b9a" stroke-width="1.2"/>
+        <line x1="637" y1="95" x2="597" y2="140" stroke="#6a1b9a" stroke-width="1.2"/>
+        <line x1="477" y1="160" x2="597" y2="160" stroke="#6a1b9a" stroke-width="1.2"/>
+        <line x1="437" y1="90" x2="537" y2="75" stroke="#6a1b9a" stroke-width="1.2"/>
+        <line x1="537" y1="75" x2="637" y2="75" stroke="#6a1b9a" stroke-width="1.2"/>
+        <text x="530" y="210" text-anchor="middle" font-size="10" fill="#546e8a">Direct peer-to-peer communication</text>
+        <text x="530" y="225" text-anchor="middle" font-size="10" fill="#546e8a">Self-scaling as peers join</text>
+      </svg>
+    </div>
+
+    <h2>HTTP: The Web's Protocol</h2>
+    <p>HTTP (HyperText Transfer Protocol) is the application-layer protocol of the Web. It is stateless — the server maintains no information about past client requests. HTTP uses TCP as its transport; a client initiates a TCP connection to port 80, then sends HTTP request messages and receives HTTP response messages.</p>
+    <p><strong>Non-persistent HTTP</strong> opens a new TCP connection for each object — incurring a 2-RTT overhead per object. <strong>Persistent HTTP</strong> (default in HTTP/1.1) reuses the same TCP connection, and HTTP/1.1 also supports <em>pipelining</em> for multiple back-to-back requests.</p>
+    <p><strong>HTTP/2</strong> introduces binary framing, header compression (HPACK), stream multiplexing over a single TCP connection, and server push, dramatically reducing latency for modern web pages.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- HTTP non-persistent vs persistent timing diagram -->
+        <rect width="700" height="300" fill="#f5f8fc" rx="6"/>
+        <!-- Non-persistent -->
+        <text x="175" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Non-Persistent HTTP</text>
+        <text x="60" y="45" text-anchor="middle" font-size="10" fill="#546e8a">Client</text>
+        <text x="290" y="45" text-anchor="middle" font-size="10" fill="#546e8a">Server</text>
+        <line x1="60" y1="50" x2="60" y2="280" stroke="#1976d2" stroke-width="2"/>
+        <line x1="290" y1="50" x2="290" y2="280" stroke="#880e4f" stroke-width="2"/>
+        <!-- TCP SYN -->
+        <line x1="60" y1="65" x2="290" y2="80" stroke="#546e8a" stroke-width="1.5" marker-end="url(#a1)"/>
+        <text x="175" y="72" text-anchor="middle" font-size="9" fill="#546e8a">TCP SYN</text>
+        <!-- TCP SYNACK -->
+        <line x1="290" y1="85" x2="60" y2="100" stroke="#546e8a" stroke-width="1.5" marker-end="url(#a1)"/>
+        <text x="175" y="97" text-anchor="middle" font-size="9" fill="#546e8a">TCP SYNACK</text>
+        <!-- HTTP Request -->
+        <line x1="60" y1="105" x2="290" y2="120" stroke="#1976d2" stroke-width="1.5" marker-end="url(#a1)"/>
+        <text x="175" y="115" text-anchor="middle" font-size="9" fill="#1976d2">HTTP GET</text>
+        <!-- Response -->
+        <line x1="290" y1="140" x2="60" y2="165" stroke="#00897b" stroke-width="1.5" marker-end="url(#a1)"/>
+        <text x="175" y="155" text-anchor="middle" font-size="9" fill="#00897b">HTTP Response (HTML)</text>
+        <!-- RTT labels -->
+        <rect x="0" y="62" width="4" height="40" fill="#ff7043" opacity="0.7"/>
+        <text x="8" y="85" font-size="8" fill="#ff7043">1 RTT</text>
+        <rect x="0" y="103" width="4" height="64" fill="#1976d2" opacity="0.6"/>
+        <text x="8" y="138" font-size="8" fill="#1976d2">1 RTT</text>
+        <text x="175" y="205" text-anchor="middle" font-size="10" fill="#546e8a">2 RTT + transmission time per object</text>
+
+        <!-- Persistent -->
+        <text x="530" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Persistent HTTP</text>
+        <text x="420" y="45" text-anchor="middle" font-size="10" fill="#546e8a">Client</text>
+        <text x="640" y="45" text-anchor="middle" font-size="10" fill="#546e8a">Server</text>
+        <line x1="420" y1="50" x2="420" y2="280" stroke="#1976d2" stroke-width="2"/>
+        <line x1="640" y1="50" x2="640" y2="280" stroke="#880e4f" stroke-width="2"/>
+        <!-- TCP -->
+        <line x1="420" y1="65" x2="640" y2="80" stroke="#546e8a" stroke-width="1.5" marker-end="url(#a1)"/>
+        <line x1="640" y1="85" x2="420" y2="100" stroke="#546e8a" stroke-width="1.5" marker-end="url(#a1)"/>
+        <!-- GET 1 -->
+        <line x1="420" y1="105" x2="640" y2="115" stroke="#1976d2" stroke-width="1.5" marker-end="url(#a1)"/>
+        <text x="530" y="110" text-anchor="middle" font-size="9" fill="#1976d2">GET /index.html</text>
+        <line x1="640" y1="130" x2="420" y2="145" stroke="#00897b" stroke-width="1.5" marker-end="url(#a1)"/>
+        <!-- GET 2 pipelined -->
+        <line x1="420" y1="148" x2="640" y2="158" stroke="#1976d2" stroke-width="1.5" marker-end="url(#a1)"/>
+        <text x="530" y="153" text-anchor="middle" font-size="9" fill="#1976d2">GET /image.png (pipelined)</text>
+        <line x1="640" y1="172" x2="420" y2="185" stroke="#00897b" stroke-width="1.5" marker-end="url(#a1)"/>
+        <text x="530" y="215" text-anchor="middle" font-size="10" fill="#546e8a">Single TCP connection reused</text>
+        <defs>
+          <marker id="a1" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#546e8a"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2>DNS: The Internet's Directory Service</h2>
+    <p>The <strong>Domain Name System (DNS)</strong> is a distributed database implemented as a hierarchy of DNS servers. It translates human-readable hostnames (e.g., <code>www.example.com</code>) into IP addresses. DNS also provides other services: mail server aliasing (MX records), load distribution via multiple IP addresses per hostname, and canonical name aliasing (CNAME).</p>
+    <p>The hierarchy has three classes: <em>root DNS servers</em> (13 clusters worldwide), <em>top-level domain (TLD) servers</em> (for .com, .org, .edu, country codes), and <em>authoritative DNS servers</em> (maintained by organizations for their domains). A <em>local DNS server</em> (resolver) acts as a proxy cache, performing iterative or recursive queries on behalf of hosts.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- DNS Hierarchy and Query -->
+        <rect width="700" height="300" fill="#f5f8fc" rx="6"/>
+        <!-- Root -->
+        <rect x="295" y="20" width="110" height="40" rx="6" fill="#fce4ec" stroke="#880e4f" stroke-width="2"/>
+        <text x="350" y="38" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Root Server</text>
+        <text x="350" y="52" text-anchor="middle" font-size="9" fill="#546e8a">13 clusters</text>
+        <!-- TLD -->
+        <rect x="130" y="110" width="110" height="40" rx="6" fill="#fff8e1" stroke="#f57f17" stroke-width="2"/>
+        <text x="185" y="128" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">TLD Server</text>
+        <text x="185" y="142" text-anchor="middle" font-size="9" fill="#546e8a">.com, .org, .edu</text>
+        <rect x="460" y="110" width="110" height="40" rx="6" fill="#fff8e1" stroke="#f57f17" stroke-width="2"/>
+        <text x="515" y="128" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">TLD Server</text>
+        <text x="515" y="142" text-anchor="middle" font-size="9" fill="#546e8a">.uk, .cn, .de</text>
+        <!-- Authoritative -->
+        <rect x="50" y="210" width="130" height="40" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="115" y="228" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Authoritative</text>
+        <text x="115" y="242" text-anchor="middle" font-size="9" fill="#546e8a">amazon.com NS</text>
+        <rect x="240" y="210" width="130" height="40" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="305" y="228" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Authoritative</text>
+        <text x="305" y="242" text-anchor="middle" font-size="9" fill="#546e8a">google.com NS</text>
+        <!-- Local resolver -->
+        <rect x="530" y="210" width="130" height="40" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="595" y="228" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Local Resolver</text>
+        <text x="595" y="242" text-anchor="middle" font-size="9" fill="#546e8a">ISP / campus DNS</text>
+        <!-- Lines -->
+        <line x1="350" y1="60" x2="185" y2="110" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="350" y1="60" x2="515" y2="110" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="185" y1="150" x2="115" y2="210" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="185" y1="150" x2="305" y2="210" stroke="#546e8a" stroke-width="1.5"/>
+        <!-- Query arrows -->
+        <line x1="595" y1="209" x2="360" y2="62" stroke="#1976d2" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#a2)"/>
+        <text x="510" y="125" text-anchor="middle" font-size="9" fill="#1976d2">① query root</text>
+        <text x="510" y="138" text-anchor="middle" font-size="9" fill="#546e8a">② refers to TLD</text>
+        <text x="510" y="178" text-anchor="middle" font-size="9" fill="#1976d2">③ query TLD → authoritative</text>
+        <text x="595" y="280" text-anchor="middle" font-size="10" fill="#546e8a">Caching reduces load at higher levels</text>
+        <defs>
+          <marker id="a2" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#1976d2"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2>Peer-to-Peer File Distribution</h2>
+    <p>In P2P file distribution (e.g., BitTorrent), each peer receiving chunks of a file simultaneously uploads chunks to other peers. The distribution time scales well: as more peers join, the aggregate upload capacity grows. BitTorrent uses a <em>rarest-first</em> policy (prioritize the least-replicated chunks) and a <em>tit-for-tat</em> incentive mechanism (unchoke peers who provide data at the highest rate).</p>
+    <p>The time to distribute a file of size F to N peers in client-server mode is proportional to N (server bottleneck), whereas P2P distribution time grows as O(F/u_s + F/d_min + F·N/u_total), meaning it scales far better for large N.</p>
+
+    <h2>Video Streaming and CDNs</h2>
+    <p><strong>DASH (Dynamic Adaptive Streaming over HTTP)</strong> stores a video in multiple quality levels (bitrates). The client periodically measures available bandwidth and selects the chunk quality that avoids stalling. Netflix and YouTube both use forms of DASH.</p>
+    <p><strong>Content Distribution Networks (CDNs)</strong> replicate content across many geographically distributed servers (<em>clusters</em>). When a user requests content, DNS is used to redirect them to a nearby cluster. CDNs use two placement strategies: <em>Enter Deep</em> (deploy clusters close to users in ISPs) and <em>Bring Home</em> (fewer but larger clusters at IXPs).</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- CDN architecture -->
+        <rect width="700" height="260" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">CDN: Content Distribution Network</text>
+        <!-- Origin server -->
+        <rect x="295" y="35" width="110" height="44" rx="6" fill="#fce4ec" stroke="#880e4f" stroke-width="2"/>
+        <text x="350" y="55" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Origin Server</text>
+        <text x="350" y="69" text-anchor="middle" font-size="9" fill="#546e8a">(Netflix HQ)</text>
+        <!-- CDN clusters -->
+        <rect x="30" y="140" width="110" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="85" y="160" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">CDN Cluster</text>
+        <text x="85" y="174" text-anchor="middle" font-size="9" fill="#546e8a">Asia-Pacific</text>
+        <rect x="180" y="140" width="110" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="235" y="160" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">CDN Cluster</text>
+        <text x="235" y="174" text-anchor="middle" font-size="9" fill="#546e8a">Europe</text>
+        <rect x="330" y="140" width="110" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="385" y="160" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">CDN Cluster</text>
+        <text x="385" y="174" text-anchor="middle" font-size="9" fill="#546e8a">US East</text>
+        <rect x="480" y="140" width="110" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="535" y="160" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">CDN Cluster</text>
+        <text x="535" y="174" text-anchor="middle" font-size="9" fill="#546e8a">US West</text>
+        <!-- Lines origin to clusters -->
+        <line x1="350" y1="79" x2="85" y2="140" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="350" y1="79" x2="235" y2="140" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="350" y1="79" x2="385" y2="140" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="350" y1="79" x2="535" y2="140" stroke="#1976d2" stroke-width="1.5"/>
+        <!-- User arrows to clusters -->
+        <text x="85" y="210" text-anchor="middle" font-size="10" fill="#00695c">↑ User JP</text>
+        <text x="235" y="210" text-anchor="middle" font-size="10" fill="#00695c">↑ User DE</text>
+        <text x="385" y="210" text-anchor="middle" font-size="10" fill="#00695c">↑ User NY</text>
+        <text x="535" y="210" text-anchor="middle" font-size="10" fill="#00695c">↑ User CA</text>
+        <text x="350" y="250" text-anchor="middle" font-size="10" fill="#546e8a">DNS redirects users to geographically closest CDN cluster</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Protocol</th>
+          <th>Purpose</th>
+          <th>Transport</th>
+          <th>Port</th>
+          <th>Stateful?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>HTTP/1.1</strong></td>
+          <td>Web page transfer</td>
+          <td>TCP</td>
+          <td>80</td>
+          <td class="b">No</td>
+        </tr>
+        <tr>
+          <td><strong>HTTPS / TLS</strong></td>
+          <td>Secure web transfer</td>
+          <td>TCP</td>
+          <td>443</td>
+          <td class="b">No</td>
+        </tr>
+        <tr>
+          <td><strong>SMTP</strong></td>
+          <td>Email push (send)</td>
+          <td>TCP</td>
+          <td>25</td>
+          <td class="g">Yes (session)</td>
+        </tr>
+        <tr>
+          <td><strong>DNS</strong></td>
+          <td>Name resolution</td>
+          <td>UDP (mostly)</td>
+          <td>53</td>
+          <td class="b">No</td>
+        </tr>
+        <tr>
+          <td><strong>BitTorrent</strong></td>
+          <td>P2P file sharing</td>
+          <td>TCP</td>
+          <td>6881–6889</td>
+          <td class="b">No</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <a href="ch01.html">← Chapter 01: Computer Networks</a>
+      <a href="ch03.html">Chapter 03: Transport Layer →</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch06 · The Link Layer and LANs — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>06 · The Link Layer and LANs</h1>
+    <p class="lead">The link layer moves frames between adjacent nodes on a single communication link — handling error detection, medium access coordination, and addressing at the level of hardware (MAC addresses) rather than software (IP addresses).</p>
+
+    <h2>Link Layer Services</h2>
+    <p>The link layer provides framing (encapsulating datagrams in link-layer frames), link access (coordinating medium access with MAC protocols), and reliable delivery. Not all link-layer implementations provide all services. The link layer is implemented in the <em>network interface card (NIC)</em> — a combination of hardware and software. Key error detection techniques:</p>
+    <ul>
+      <li><strong>Parity bits</strong> — single bit detects single-bit errors; 2D parity can also correct single-bit errors.</li>
+      <li><strong>Checksum</strong> — as used in IP/TCP/UDP (relatively weak).</li>
+      <li><strong>CRC (Cyclic Redundancy Check)</strong> — treats bits as polynomial coefficients; far more powerful than checksum, can detect burst errors up to r bits.</li>
+    </ul>
+
+    <h2>Multiple Access Protocols</h2>
+    <p>When multiple nodes share a single broadcast channel, a <em>multiple access protocol</em> coordinates who transmits when. Three categories:</p>
+    <ul>
+      <li><strong>Channel Partitioning</strong> — divide channel into smaller pieces (TDM, FDM, CDMA). Efficient at high load, wasteful at low load.</li>
+      <li><strong>Random Access</strong> — nodes transmit at full rate; handle collisions. Examples: ALOHA, CSMA/CD (Ethernet), CSMA/CA (WiFi).</li>
+      <li><strong>Taking-Turns</strong> — nodes take turns; polling (master polls each node) or token ring (token passed around). Better efficiency than random access at moderate loads.</li>
+    </ul>
+    <p><strong>CSMA/CD</strong> (used by Ethernet): detect carrier first; if collision detected (during transmission), abort, send jam signal, back off exponentially. Minimum frame size constraint ensures collision detection works: transmission delay must exceed 2×propagation delay.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- CSMA/CD timeline -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">CSMA/CD: Collision Detection on Ethernet</text>
+        <!-- Node A -->
+        <text x="80" y="48" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Node A</text>
+        <line x1="80" y1="55" x2="80" y2="260" stroke="#1976d2" stroke-width="2"/>
+        <!-- Node B -->
+        <text x="620" y="48" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Node B</text>
+        <line x1="620" y1="55" x2="620" y2="260" stroke="#880e4f" stroke-width="2"/>
+        <!-- Shared bus -->
+        <line x1="80" y1="158" x2="620" y2="158" stroke="#546e8a" stroke-width="3"/>
+        <text x="350" y="148" text-anchor="middle" font-size="10" fill="#546e8a">Shared Broadcast Channel</text>
+        <!-- A transmits -->
+        <rect x="60" y="60" width="40" height="80" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="80" y="105" text-anchor="middle" font-size="9" fill="#1976d2">Tx</text>
+        <!-- B transmits (collision) -->
+        <rect x="600" y="95" width="40" height="45" rx="3" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="620" y="123" text-anchor="middle" font-size="9" fill="#880e4f">Tx</text>
+        <!-- Collision region -->
+        <rect x="300" y="125" width="100" height="40" rx="4" fill="#fff3e0" stroke="#ff7043" stroke-width="2"/>
+        <text x="350" y="150" text-anchor="middle" font-size="10" fill="#ff7043" font-weight="700">COLLISION!</text>
+        <!-- Jam signal -->
+        <line x1="80" y1="145" x2="620" y2="145" stroke="#ff7043" stroke-width="2.5" stroke-dasharray="5,3"/>
+        <text x="350" y="182" text-anchor="middle" font-size="9" fill="#ff7043">Jam signal broadcast</text>
+        <!-- Backoff -->
+        <rect x="60" y="195" width="40" height="35" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+        <text x="80" y="217" text-anchor="middle" font-size="9" fill="#2e7d32">Retry</text>
+        <rect x="600" y="220" width="40" height="35" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+        <text x="620" y="242" text-anchor="middle" font-size="9" fill="#2e7d32">Retry</text>
+        <text x="350" y="257" text-anchor="middle" font-size="9" fill="#546e8a">Binary exponential backoff: wait K·512 bit times, K ∈ {0,1,...,2^n-1}</text>
+      </svg>
+    </div>
+
+    <h2>Switched Local Area Networks (LANs)</h2>
+    <p>Every network adapter has a unique <strong>MAC address</strong> — a 48-bit address (written as six hex octets, e.g., 1A:23:F9:CD:06:9B) burned into the NIC ROM. MAC addresses are flat (unlike hierarchical IP addresses) and are used for link-local delivery.</p>
+    <p><strong>ARP</strong> (Address Resolution Protocol) maps IP addresses to MAC addresses within a subnet. ARP is stateless and uses broadcast: a node broadcasts "who has IP 192.168.1.5?" and the owner replies with its MAC address. ARP entries are cached with a TTL.</p>
+    <p><strong>Ethernet</strong> (IEEE 802.3) is the dominant wired LAN technology. Modern Ethernet is switched (not shared), running at 100 Mbps, 1 Gbps, or 10 Gbps over twisted pair or fiber. An Ethernet frame has: preamble (8B), destination MAC (6B), source MAC (6B), type (2B), payload (46–1500B), CRC (4B).</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Ethernet frame + ARP resolution -->
+        <rect width="700" height="270" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Ethernet Frame and ARP Resolution</text>
+        <!-- Ethernet frame -->
+        <text x="350" y="48" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">Ethernet Frame Format</text>
+        <rect x="20" y="56" width="60" height="36" rx="3" fill="#b0bec5"/>
+        <text x="50" y="79" text-anchor="middle" font-size="8" fill="white">Preamble 8B</text>
+        <rect x="82" y="56" width="90" height="36" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+        <text x="127" y="79" text-anchor="middle" font-size="8" fill="#0d1b2a">Dest MAC 6B</text>
+        <rect x="174" y="56" width="90" height="36" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1"/>
+        <text x="219" y="79" text-anchor="middle" font-size="8" fill="#0d1b2a">Src MAC 6B</text>
+        <rect x="266" y="56" width="60" height="36" rx="3" fill="#fff8e1" stroke="#f57f17" stroke-width="1"/>
+        <text x="296" y="79" text-anchor="middle" font-size="8" fill="#0d1b2a">Type 2B</text>
+        <rect x="328" y="56" width="240" height="36" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+        <text x="448" y="79" text-anchor="middle" font-size="9" fill="#0d1b2a">Data / Payload (46–1500 bytes)</text>
+        <rect x="570" y="56" width="60" height="36" rx="3" fill="#fce4ec" stroke="#880e4f" stroke-width="1"/>
+        <text x="600" y="79" text-anchor="middle" font-size="8" fill="#0d1b2a">CRC 4B</text>
+        <!-- ARP -->
+        <text x="350" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">ARP: IP-to-MAC Resolution</text>
+        <!-- Hosts -->
+        <rect x="40" y="130" width="100" height="50" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="90" y="152" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Host A</text>
+        <text x="90" y="168" text-anchor="middle" font-size="8" fill="#546e8a">IP: 10.0.0.1</text>
+        <!-- Switch -->
+        <rect x="290" y="140" width="120" height="35" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="350" y="162" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Switch</text>
+        <!-- Host B -->
+        <rect x="560" y="130" width="100" height="50" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="610" y="152" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">Host B</text>
+        <text x="610" y="168" text-anchor="middle" font-size="8" fill="#546e8a">IP: 10.0.0.2</text>
+        <line x1="140" y1="155" x2="290" y2="157" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="410" y1="157" x2="560" y2="155" stroke="#546e8a" stroke-width="1.5"/>
+        <!-- ARP broadcast arrow -->
+        <line x1="140" y1="200" x2="560" y2="200" stroke="#ff7043" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#a6)"/>
+        <text x="350" y="193" text-anchor="middle" font-size="9" fill="#ff7043">ARP Broadcast: "Who has 10.0.0.2?"</text>
+        <!-- ARP reply -->
+        <line x1="560" y1="215" x2="140" y2="215" stroke="#2e7d32" stroke-width="2" marker-end="url(#a6g)"/>
+        <text x="350" y="228" text-anchor="middle" font-size="9" fill="#2e7d32">ARP Reply (unicast): "I'm 10.0.0.2, MAC: AA:BB:CC:DD:EE:FF"</text>
+        <text x="350" y="255" text-anchor="middle" font-size="9" fill="#546e8a">Host A caches mapping; uses MAC for future frames to Host B</text>
+        <defs>
+          <marker id="a6" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#ff7043"/>
+          </marker>
+          <marker id="a6g" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#2e7d32"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2>Link-Layer Switches</h2>
+    <p>Switches are link-layer devices that transparently forward frames. They learn MAC addresses by examining source MAC addresses of incoming frames (self-learning), storing them in a <em>switch table</em> with the incoming port and a TTL. To forward: if destination MAC is in table, forward to that port; if not, flood to all ports except incoming.</p>
+    <p><strong>VLANs</strong> (Virtual LANs) allow a single physical switch to act as multiple logical switches. Ports are assigned to VLANs; frames are tagged with an 802.1Q VLAN tag. VLANs provide traffic isolation, security, and flexible topology without physical rewiring.</p>
+
+    <h2>Data Center Networking</h2>
+    <p>Modern data centers contain tens to hundreds of thousands of servers. The <em>fat-tree topology</em> (or similar folded-Clos topology) connects servers through layers of access, aggregation, and core switches, providing massive bandwidth and multiple paths for load balancing. Specialized protocols handle intra-data-center traffic: ECMP (Equal-Cost Multi-Path) for load balancing, RDMA (Remote Direct Memory Access) for low-latency storage.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Data center fat-tree topology -->
+        <rect width="700" height="260" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Data Center: Fat-Tree (Folded Clos) Topology</text>
+        <!-- Core switches (top) -->
+        <rect x="180" y="35" width="70" height="32" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="215" y="56" text-anchor="middle" font-size="9" font-weight="700" fill="#6a1b9a">Core SW</text>
+        <rect x="310" y="35" width="70" height="32" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="345" y="56" text-anchor="middle" font-size="9" font-weight="700" fill="#6a1b9a">Core SW</text>
+        <rect x="440" y="35" width="70" height="32" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="475" y="56" text-anchor="middle" font-size="9" font-weight="700" fill="#6a1b9a">Core SW</text>
+        <!-- Agg switches -->
+        <rect x="80" y="110" width="80" height="32" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="120" y="130" text-anchor="middle" font-size="9" font-weight="700" fill="#00695c">Agg SW</text>
+        <rect x="220" y="110" width="80" height="32" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="260" y="130" text-anchor="middle" font-size="9" font-weight="700" fill="#00695c">Agg SW</text>
+        <rect x="360" y="110" width="80" height="32" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="400" y="130" text-anchor="middle" font-size="9" font-weight="700" fill="#00695c">Agg SW</text>
+        <rect x="500" y="110" width="80" height="32" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="540" y="130" text-anchor="middle" font-size="9" font-weight="700" fill="#00695c">Agg SW</text>
+        <!-- Access (ToR) switches -->
+        <rect x="30" y="185" width="80" height="30" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="70" y="204" text-anchor="middle" font-size="9" fill="#0d1b2a">ToR SW</text>
+        <rect x="140" y="185" width="80" height="30" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="180" y="204" text-anchor="middle" font-size="9" fill="#0d1b2a">ToR SW</text>
+        <rect x="280" y="185" width="80" height="30" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="320" y="204" text-anchor="middle" font-size="9" fill="#0d1b2a">ToR SW</text>
+        <rect x="390" y="185" width="80" height="30" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="430" y="204" text-anchor="middle" font-size="9" fill="#0d1b2a">ToR SW</text>
+        <rect x="530" y="185" width="80" height="30" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="570" y="204" text-anchor="middle" font-size="9" fill="#0d1b2a">ToR SW</text>
+        <!-- Core to Agg links -->
+        <line x1="215" y1="67" x2="120" y2="110" stroke="#6a1b9a" stroke-width="1.5"/>
+        <line x1="215" y1="67" x2="260" y2="110" stroke="#6a1b9a" stroke-width="1.5"/>
+        <line x1="345" y1="67" x2="260" y2="110" stroke="#6a1b9a" stroke-width="1.5"/>
+        <line x1="345" y1="67" x2="400" y2="110" stroke="#6a1b9a" stroke-width="1.5"/>
+        <line x1="475" y1="67" x2="400" y2="110" stroke="#6a1b9a" stroke-width="1.5"/>
+        <line x1="475" y1="67" x2="540" y2="110" stroke="#6a1b9a" stroke-width="1.5"/>
+        <!-- Agg to ToR -->
+        <line x1="120" y1="142" x2="70" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <line x1="120" y1="142" x2="180" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <line x1="260" y1="142" x2="180" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <line x1="260" y1="142" x2="320" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <line x1="400" y1="142" x2="320" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <line x1="400" y1="142" x2="430" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <line x1="540" y1="142" x2="430" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <line x1="540" y1="142" x2="570" y2="185" stroke="#00695c" stroke-width="1.5"/>
+        <!-- Servers -->
+        <text x="350" y="240" text-anchor="middle" font-size="10" fill="#546e8a">Servers (racks of 20–40) connected to ToR switches</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Protocol</th>
+          <th>Type</th>
+          <th>Collision Handling</th>
+          <th>Efficiency</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>TDMA</strong></td>
+          <td>Channel partition</td>
+          <td>None (slots allocated)</td>
+          <td class="b">Low at low load</td>
+        </tr>
+        <tr>
+          <td><strong>ALOHA</strong></td>
+          <td>Random access</td>
+          <td>Retransmit after random delay</td>
+          <td>Max 37% (slotted)</td>
+        </tr>
+        <tr>
+          <td><strong>CSMA/CD</strong></td>
+          <td>Random access</td>
+          <td>Abort + jam + backoff</td>
+          <td class="g">High (wired Ethernet)</td>
+        </tr>
+        <tr>
+          <td><strong>CSMA/CA</strong></td>
+          <td>Random access</td>
+          <td>Avoid via backoff + RTS/CTS</td>
+          <td class="n">Medium (WiFi)</td>
+        </tr>
+        <tr>
+          <td><strong>Token Ring</strong></td>
+          <td>Taking-turns</td>
+          <td>None — token prevents collision</td>
+          <td class="g">High at high load</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <a href="ch05.html">← Chapter 05: Control Plane</a>
+      <a href="ch07.html">Chapter 07: Wireless &amp; Mobile Networks →</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

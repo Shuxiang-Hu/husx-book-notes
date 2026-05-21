@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch07 · Wireless and Mobile Networks — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>07 · Wireless and Mobile Networks</h1>
+    <p class="lead">Wireless networks introduce unique challenges — signal attenuation, hidden terminals, and mobility — solved by IEEE 802.11 (WiFi) for local access and 4G/5G cellular for wide-area coverage, with mobility management protocols allowing seamless handoff across cells.</p>
+
+    <h2>Wireless Links and Signal Characteristics</h2>
+    <p>Wireless communication differs from wired links in fundamental ways. <em>Path loss</em>: signal power decreases with the square of distance (free-space) or faster in built environments. <em>Multipath propagation</em>: signals reflect off surfaces, arriving at different times and phases (causing fading). <em>Interference</em>: multiple transmitters sharing the same spectrum cause mutual interference.</p>
+    <p>The <em>hidden terminal problem</em>: node A and C cannot hear each other but both can hear B — they may transmit simultaneously, causing collision at B. The <em>exposed terminal problem</em>: node B can hear C and avoids transmitting even though its transmission to A would succeed. CSMA/CA with RTS/CTS partially solves the hidden terminal problem.</p>
+    <p><strong>CDMA</strong> (Code Division Multiple Access) allows multiple senders to share the same frequency band simultaneously. Each sender multiplies data bits by a unique chip sequence; receivers use the same code to extract the signal.</p>
+
+    <h2>WiFi: IEEE 802.11 Wireless LANs</h2>
+    <p>The 802.11 standard (WiFi) defines physical and MAC layers for wireless LANs. The basic service set (BSS) contains one access point (AP) and associated stations. WiFi operates in the 2.4 GHz, 5 GHz, and 6 GHz bands. Common standards: 802.11b (11 Mbps), 802.11a/g (54 Mbps), 802.11n (600 Mbps, MIMO), 802.11ac (multi-Gbps), 802.11ax (WiFi 6, OFDMA).</p>
+    <p>The 802.11 MAC uses <strong>CSMA/CA</strong> (Collision Avoidance): before transmitting, wait for DIFS after channel idle; then use random backoff. On receipt, ACK sent after SIFS. RTS/CTS optional: sender sends RTS, AP replies with CTS, clearing all other stations.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- 802.11 Architecture + CSMA/CA -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">IEEE 802.11 Architecture and CSMA/CA</text>
+        <!-- BSS diagram -->
+        <!-- AP -->
+        <rect x="290" y="35" width="120" height="45" rx="8" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="2"/>
+        <text x="350" y="56" text-anchor="middle" font-size="11" font-weight="700" fill="#6a1b9a">Access Point (AP)</text>
+        <text x="350" y="70" text-anchor="middle" font-size="9" fill="#546e8a">SSID + authentication</text>
+        <!-- Coverage circle -->
+        <ellipse cx="350" cy="130" rx="200" ry="80" fill="none" stroke="#ba68c8" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.6"/>
+        <text x="540" y="130" font-size="9" fill="#ba68c8">BSS coverage</text>
+        <!-- Stations -->
+        <rect x="90" y="100" width="75" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="127" y="125" text-anchor="middle" font-size="10" fill="#0d1b2a">STA 1</text>
+        <rect x="200" y="145" width="75" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="237" y="170" text-anchor="middle" font-size="10" fill="#0d1b2a">STA 2</text>
+        <rect x="450" y="110" width="75" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="487" y="135" text-anchor="middle" font-size="10" fill="#0d1b2a">STA 3</text>
+        <!-- Lines to AP -->
+        <line x1="165" y1="115" x2="290" y2="65" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="275" y1="155" x2="310" y2="80" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="450" y1="125" x2="410" y2="73" stroke="#1976d2" stroke-width="1.5"/>
+        <!-- CSMA/CA timing below -->
+        <text x="350" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">CSMA/CA Timing (Successful Transmission)</text>
+        <!-- Timeline -->
+        <rect x="30" y="215" width="640" height="50" rx="3" fill="white" stroke="#dde6ef" stroke-width="1"/>
+        <!-- DIFS -->
+        <rect x="30" y="215" width="90" height="50" rx="3" fill="#fff8e1" stroke="#f57f17" stroke-width="1"/>
+        <text x="75" y="244" text-anchor="middle" font-size="9" fill="#f57f17">Channel Idle (DIFS)</text>
+        <!-- Backoff -->
+        <rect x="120" y="215" width="70" height="50" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1"/>
+        <text x="155" y="244" text-anchor="middle" font-size="9" fill="#2e7d32">Backoff</text>
+        <!-- Data -->
+        <rect x="190" y="215" width="250" height="50" rx="3" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="315" y="244" text-anchor="middle" font-size="9" fill="#1976d2" font-weight="600">DATA Frame (Sender)</text>
+        <!-- SIFS -->
+        <rect x="440" y="215" width="50" height="50" rx="3" fill="#fff8e1" stroke="#f57f17" stroke-width="1"/>
+        <text x="465" y="244" text-anchor="middle" font-size="9" fill="#f57f17">SIFS</text>
+        <!-- ACK -->
+        <rect x="490" y="215" width="80" height="50" rx="3" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+        <text x="530" y="244" text-anchor="middle" font-size="9" fill="#2e7d32" font-weight="600">ACK (AP)</text>
+        <!-- Wait after ACK -->
+        <rect x="570" y="215" width="100" height="50" rx="3" fill="#f5f8fc" stroke="#dde6ef" stroke-width="1"/>
+        <text x="620" y="244" text-anchor="middle" font-size="9" fill="#546e8a">DIFS + backoff</text>
+      </svg>
+    </div>
+
+    <h2>Cellular Networks: 4G LTE and 5G</h2>
+    <p>Cellular networks divide geographic areas into <em>cells</em>, each served by a <em>base station</em> (eNodeB in 4G, gNB in 5G). The <strong>4G LTE</strong> architecture has: user equipment (UE), radio access network (eNodeB), Evolved Packet Core (EPC — comprising MME for mobility management, Serving Gateway, PDN Gateway), and the public Internet.</p>
+    <p>LTE uses <strong>OFDMA</strong> (Orthogonal Frequency Division Multiple Access) on the downlink — dividing the channel into many narrow subcarriers. Multiple users are served simultaneously using different subcarrier/time slot assignments. LTE uplink uses SC-FDMA.</p>
+    <p><strong>5G NR</strong> (New Radio) extends LTE with higher frequencies (mmWave bands at 24–100 GHz), massive MIMO (hundreds of antennas), network slicing (multiple virtual networks over same infrastructure), and latency below 1 ms for URLLC (ultra-reliable low-latency communications).</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- 4G LTE Architecture -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">4G LTE Network Architecture</text>
+        <!-- UE -->
+        <rect x="20" y="120" width="70" height="50" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="55" y="143" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">UE</text>
+        <text x="55" y="158" text-anchor="middle" font-size="8" fill="#546e8a">(phone)</text>
+        <!-- eNodeB / base station -->
+        <rect x="150" y="100" width="90" height="70" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="195" y="128" text-anchor="middle" font-size="11" font-weight="700" fill="#00695c">eNodeB</text>
+        <text x="195" y="143" text-anchor="middle" font-size="9" fill="#546e8a">Base Station</text>
+        <text x="195" y="158" text-anchor="middle" font-size="9" fill="#546e8a">(LTE radio)</text>
+        <!-- LTE-Uu air interface -->
+        <line x1="90" y1="145" x2="150" y2="145" stroke="#1976d2" stroke-width="2"/>
+        <text x="120" y="135" text-anchor="middle" font-size="9" fill="#1976d2">LTE-Uu</text>
+        <!-- EPC -->
+        <rect x="310" y="60" width="260" height="180" rx="8" fill="#fff8e1" stroke="#f57f17" stroke-width="2"/>
+        <text x="440" y="82" text-anchor="middle" font-size="11" font-weight="700" fill="#f57f17">Evolved Packet Core (EPC)</text>
+        <!-- MME -->
+        <rect x="325" y="95" width="100" height="45" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="375" y="118" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">MME</text>
+        <text x="375" y="132" text-anchor="middle" font-size="8" fill="#546e8a">Mobility Mgmt</text>
+        <!-- S-GW -->
+        <rect x="445" y="95" width="100" height="45" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="495" y="118" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">S-GW</text>
+        <text x="495" y="132" text-anchor="middle" font-size="8" fill="#546e8a">Serving Gateway</text>
+        <!-- P-GW -->
+        <rect x="325" y="165" width="220" height="45" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="435" y="188" text-anchor="middle" font-size="10" font-weight="700" fill="#0d1b2a">PDN Gateway (P-GW)</text>
+        <text x="435" y="202" text-anchor="middle" font-size="8" fill="#546e8a">IP address allocation, NAT, Internet gateway</text>
+        <!-- S1 link -->
+        <line x1="240" y1="145" x2="310" y2="145" stroke="#546e8a" stroke-width="1.5"/>
+        <text x="275" y="137" text-anchor="middle" font-size="9" fill="#546e8a">S1 interface</text>
+        <!-- Internet -->
+        <rect x="610" y="120" width="80" height="50" rx="5" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+        <text x="650" y="150" text-anchor="middle" font-size="10" font-weight="700" fill="#2e7d32">Internet</text>
+        <line x1="570" y1="180" x2="610" y2="145" stroke="#2e7d32" stroke-width="1.5"/>
+        <!-- Labels -->
+        <text x="350" y="265" text-anchor="middle" font-size="9" fill="#546e8a">Control plane: UE ↔ MME (authentication, mobility). Data plane: UE ↔ S-GW ↔ P-GW ↔ Internet</text>
+      </svg>
+    </div>
+
+    <h2>Mobility Management</h2>
+    <p>When a mobile device moves from one cell to another, <em>handover</em> (or handoff) must occur without dropping active connections. In 4G, the source eNodeB coordinates with the target eNodeB to transfer state (X2 interface), then the MME updates the data path through the EPC.</p>
+    <p><strong>Mobile IP</strong> provides network-layer mobility: a home agent (HA) at the home network and a foreign agent (FA) at the visited network cooperate. The HA intercepts packets destined for the mobile node's home address and tunnels them (via encapsulation) to the care-of address at the FA. The mobile node can use either indirect routing (through HA) or direct routing (after correspondent learns care-of address).</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Handover: source to target eNodeB -->
+        <rect width="700" height="240" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">4G Handover: Source eNodeB → Target eNodeB</text>
+        <!-- UE moving -->
+        <rect x="20" y="100" width="65" height="40" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="2"/>
+        <text x="52" y="125" text-anchor="middle" font-size="10" font-weight="700" fill="#1976d2">UE →</text>
+        <!-- Source eNodeB -->
+        <rect x="150" y="80" width="100" height="60" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="2"/>
+        <text x="200" y="107" text-anchor="middle" font-size="10" font-weight="700" fill="#00695c">Source</text>
+        <text x="200" y="122" text-anchor="middle" font-size="10" fill="#00695c">eNodeB</text>
+        <!-- Target eNodeB -->
+        <rect x="430" y="80" width="100" height="60" rx="6" fill="#e0f2f1" stroke="#f57f17" stroke-width="2"/>
+        <text x="480" y="107" text-anchor="middle" font-size="10" font-weight="700" fill="#f57f17">Target</text>
+        <text x="480" y="122" text-anchor="middle" font-size="10" fill="#f57f17">eNodeB</text>
+        <!-- MME -->
+        <rect x="280" y="155" width="120" height="50" rx="5" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="340" y="178" text-anchor="middle" font-size="10" font-weight="700" fill="#880e4f">MME</text>
+        <text x="340" y="195" text-anchor="middle" font-size="8" fill="#546e8a">Updates data path</text>
+        <!-- X2 interface -->
+        <line x1="250" y1="110" x2="430" y2="110" stroke="#f57f17" stroke-width="2" stroke-dasharray="5,3"/>
+        <text x="340" y="100" text-anchor="middle" font-size="9" fill="#f57f17" font-weight="700">X2: Handover Prepare/Execute</text>
+        <!-- UE → target link -->
+        <line x1="85" y1="120" x2="150" y2="110" stroke="#1976d2" stroke-width="1.5"/>
+        <line x1="85" y1="120" x2="430" y2="115" stroke="#1976d2" stroke-width="2" stroke-dasharray="6,4"/>
+        <text x="280" y="130" text-anchor="middle" font-size="9" fill="#1976d2">UE switches to target after HO command</text>
+        <!-- S1 to MME -->
+        <line x1="200" y1="140" x2="280" y2="165" stroke="#546e8a" stroke-width="1.5"/>
+        <line x1="480" y1="140" x2="400" y2="165" stroke="#546e8a" stroke-width="1.5"/>
+        <text x="350" y="225" text-anchor="middle" font-size="10" fill="#546e8a">MME detaches S1 from source, establishes new S1 to target eNodeB</text>
+      </svg>
+    </div>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>WiFi (802.11ax)</th>
+          <th>4G LTE</th>
+          <th>5G NR</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Coverage</td>
+          <td>~100 m indoor</td>
+          <td>~1–10 km (cell radius)</td>
+          <td>30 m (mmWave) – km (sub-6)</td>
+        </tr>
+        <tr>
+          <td>Peak downlink</td>
+          <td>~10 Gbps (WiFi 6E)</td>
+          <td>~300 Mbps–1 Gbps</td>
+          <td class="g">Up to 20 Gbps</td>
+        </tr>
+        <tr>
+          <td>Latency</td>
+          <td>~10–50 ms</td>
+          <td>~20–50 ms</td>
+          <td class="g">&lt;1 ms (URLLC)</td>
+        </tr>
+        <tr>
+          <td>Access control</td>
+          <td>CSMA/CA</td>
+          <td>OFDMA (eNodeB scheduled)</td>
+          <td>OFDMA + massive MIMO</td>
+        </tr>
+        <tr>
+          <td>Mobility support</td>
+          <td class="b">Limited (same SSID)</td>
+          <td class="g">Full handover support</td>
+          <td class="g">Network slicing + handover</td>
+        </tr>
+        <tr>
+          <td>Deployment</td>
+          <td>Private (homes, offices)</td>
+          <td>Carrier (nationwide)</td>
+          <td>Carrier + private networks</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <a href="ch06.html">← Chapter 06: Link Layer &amp; LANs</a>
+      <a href="ch08.html">Chapter 08: Security →</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

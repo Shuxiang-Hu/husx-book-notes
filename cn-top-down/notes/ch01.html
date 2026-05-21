@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ch01 · Computer Networks and the Internet — CN Top-Down Notes</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <a href="index.html">CN Top-Down Notes</a>
+      <div class="byline">Kurose &amp; Ross — Reading Notes</div>
+    </div>
+    <div class="sb-part p1">Foundations</div>
+    <a href="ch01.html" class="sb-ch"><span class="n">01</span>Computer Networks &amp; Internet</a>
+    <a href="ch02.html" class="sb-ch"><span class="n">02</span>Application Layer</a>
+    <a href="ch03.html" class="sb-ch"><span class="n">03</span>Transport Layer</a>
+    <div class="sb-part p2">Core Infrastructure</div>
+    <a href="ch04.html" class="sb-ch"><span class="n">04</span>Network Layer: Data Plane</a>
+    <a href="ch05.html" class="sb-ch"><span class="n">05</span>Network Layer: Control Plane</a>
+    <a href="ch06.html" class="sb-ch"><span class="n">06</span>Link Layer &amp; LANs</a>
+    <div class="sb-part p3">Advanced Topics</div>
+    <a href="ch07.html" class="sb-ch"><span class="n">07</span>Wireless &amp; Mobile Networks</a>
+    <a href="ch08.html" class="sb-ch"><span class="n">08</span>Security in Computer Networks</a>
+  </nav>
+
+  <main id="main">
+    <h1>01 · Computer Networks and the Internet</h1>
+    <p class="lead">The Internet is a network of networks — a collection of billions of connected devices communicating through protocols that define the rules of engagement from physical bits to application messages.</p>
+
+    <h2>What Is the Internet?</h2>
+    <p>The Internet can be described from two angles. The <strong>nuts-and-bolts view</strong> sees it as hundreds of millions of connected computing devices — <em>hosts</em> or <em>end systems</em> — linked by <em>communication links</em> (fiber, copper, radio, satellite) and <em>packet switches</em> (routers and link-layer switches). The <strong>services view</strong> sees it as an infrastructure that provides services to applications, ranging from the Web and email to streaming video and instant messaging.</p>
+    <p>A <em>protocol</em> defines the format and order of messages exchanged between entities, and the actions taken on transmission or receipt. All Internet communication is governed by protocols; TCP, IP, HTTP, DNS, and Ethernet are all examples.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Internet nuts-and-bolts overview -->
+        <rect width="700" height="300" fill="#f5f8fc" rx="6"/>
+        <!-- End systems -->
+        <rect x="30" y="30" width="90" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="75" y="57" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Host (PC)</text>
+        <rect x="30" y="110" width="90" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="75" y="137" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Host (Phone)</text>
+        <rect x="30" y="190" width="90" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="75" y="217" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Server</text>
+        <!-- Access routers -->
+        <rect x="200" y="80" width="90" height="44" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="245" y="107" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Access Router</text>
+        <rect x="200" y="180" width="90" height="44" rx="6" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="245" y="207" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Access Router</text>
+        <!-- Core routers -->
+        <rect x="360" y="120" width="90" height="44" rx="6" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="405" y="147" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Core Router</text>
+        <rect x="360" y="190" width="90" height="44" rx="6" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="405" y="217" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Core Router</text>
+        <!-- Destination -->
+        <rect x="550" y="100" width="100" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="600" y="127" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">Destination Host</text>
+        <rect x="550" y="190" width="100" height="44" rx="6" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="600" y="217" text-anchor="middle" font-size="11" fill="#0d1b2a" font-weight="600">DNS Server</text>
+        <!-- Links -->
+        <line x1="120" y1="52" x2="200" y2="100" stroke="#546e8a" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <line x1="120" y1="132" x2="200" y2="105" stroke="#546e8a" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <line x1="120" y1="212" x2="200" y2="200" stroke="#546e8a" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <line x1="290" y1="100" x2="360" y2="138" stroke="#1976d2" stroke-width="2"/>
+        <line x1="290" y1="200" x2="360" y2="145" stroke="#1976d2" stroke-width="2"/>
+        <line x1="290" y1="200" x2="360" y2="205" stroke="#1976d2" stroke-width="2"/>
+        <line x1="450" y1="138" x2="550" y2="120" stroke="#1976d2" stroke-width="2"/>
+        <line x1="450" y1="205" x2="550" y2="205" stroke="#1976d2" stroke-width="2"/>
+        <!-- Labels -->
+        <text x="155" y="72" text-anchor="middle" font-size="9" fill="#546e8a">access link</text>
+        <text x="325" y="120" text-anchor="middle" font-size="9" fill="#546e8a">backbone</text>
+        <!-- Legend -->
+        <rect x="30" y="265" width="12" height="12" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="48" y="276" font-size="10" fill="#546e8a">End Systems</text>
+        <rect x="130" y="265" width="12" height="12" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="148" y="276" font-size="10" fill="#546e8a">Routers</text>
+        <rect x="220" y="265" width="12" height="12" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="238" y="276" font-size="10" fill="#546e8a">Core Routers</text>
+      </svg>
+    </div>
+
+    <h2>Network Edge and Access Networks</h2>
+    <p>The <em>network edge</em> comprises end systems — laptops, smartphones, web servers, IoT sensors. Access networks connect end systems to the first router (the <em>edge router</em>). Common access technologies include DSL (using existing telephone lines), cable (HFC — hybrid fiber-coaxial), fiber-to-the-home (FTTH), WiFi (802.11), and Ethernet (institutional LANs).</p>
+    <p>The physical media over which bits travel are either <em>guided media</em> (twisted-pair copper, coaxial cable, fiber-optic) or <em>unguided media</em> (radio, microwave, satellite).</p>
+
+    <h2>The Network Core: Packet vs Circuit Switching</h2>
+    <p>The network core is the mesh of packet switches and links that connects end systems. Two fundamental switching paradigms compete:</p>
+    <p><strong>Packet switching</strong> breaks application messages into <em>packets</em> and sends each packet independently through the network. Routers use <em>store-and-forward</em> transmission — the entire packet must arrive before it can be forwarded. This causes <em>queuing delay</em> when traffic bursts exceed link capacity.</p>
+    <p><strong>Circuit switching</strong> pre-allocates end-to-end resources for the duration of a call. Traditional telephone networks use circuit switching. Resources are guaranteed but may be wasted when a connection is idle. Multiplexing can be FDM (frequency-division) or TDM (time-division).</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Packet vs Circuit Switching -->
+        <rect width="700" height="300" fill="#f5f8fc" rx="6"/>
+        <!-- Left: Circuit -->
+        <text x="175" y="25" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Circuit Switching</text>
+        <!-- reserved path -->
+        <rect x="30" y="45" width="60" height="30" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="60" y="65" text-anchor="middle" font-size="10" fill="#0d1b2a">Host A</text>
+        <rect x="130" y="45" width="60" height="30" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="160" y="65" text-anchor="middle" font-size="10" fill="#0d1b2a">Switch</text>
+        <rect x="230" y="45" width="60" height="30" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="260" y="65" text-anchor="middle" font-size="10" fill="#0d1b2a">Switch</text>
+        <rect x="300" y="45" width="60" height="30" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="330" y="65" text-anchor="middle" font-size="10" fill="#0d1b2a">Host B</text>
+        <!-- reserved path highlight -->
+        <line x1="90" y1="60" x2="130" y2="60" stroke="#ff7043" stroke-width="4"/>
+        <line x1="190" y1="60" x2="230" y2="60" stroke="#ff7043" stroke-width="4"/>
+        <line x1="290" y1="60" x2="300" y2="60" stroke="#ff7043" stroke-width="4"/>
+        <text x="175" y="105" text-anchor="middle" font-size="10" fill="#546e8a">Reserved bandwidth slot (FDM or TDM)</text>
+        <!-- FDM diagram -->
+        <text x="80" y="130" font-size="10" fill="#0d1b2a" font-weight="600">FDM</text>
+        <rect x="60" y="138" width="230" height="15" fill="#bbdefb" rx="2"/>
+        <rect x="60" y="155" width="230" height="15" fill="#ff8a80" rx="2"/>
+        <rect x="60" y="172" width="230" height="15" fill="#a5d6a7" rx="2"/>
+        <rect x="60" y="189" width="230" height="15" fill="#fff59d" rx="2"/>
+        <text x="300" y="150" font-size="9" fill="#546e8a">ch1</text>
+        <text x="300" y="167" font-size="9" fill="#546e8a">ch2</text>
+        <text x="300" y="184" font-size="9" fill="#546e8a">ch3</text>
+        <text x="300" y="201" font-size="9" fill="#546e8a">ch4</text>
+        <text x="80" y="220" font-size="10" fill="#546e8a">Freq →</text>
+
+        <!-- Right: Packet switching -->
+        <text x="530" y="25" text-anchor="middle" font-size="13" font-weight="700" fill="#0d1b2a">Packet Switching</text>
+        <rect x="380" y="45" width="60" height="30" rx="5" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="410" y="65" text-anchor="middle" font-size="10" fill="#0d1b2a">Host A</text>
+        <rect x="470" y="45" width="60" height="30" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="500" y="65" text-anchor="middle" font-size="10" fill="#0d1b2a">Router</text>
+        <rect x="570" y="45" width="60" height="30" rx="5" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="600" y="65" text-anchor="middle" font-size="10" fill="#0d1b2a">Router</text>
+        <!-- packets -->
+        <rect x="440" y="90" width="25" height="14" rx="3" fill="#1976d2"/>
+        <text x="452" y="101" text-anchor="middle" font-size="8" fill="white">P1</text>
+        <rect x="467" y="90" width="25" height="14" rx="3" fill="#00897b"/>
+        <text x="479" y="101" text-anchor="middle" font-size="8" fill="white">P2</text>
+        <rect x="494" y="90" width="25" height="14" rx="3" fill="#e53935"/>
+        <text x="506" y="101" text-anchor="middle" font-size="8" fill="white">P3</text>
+        <text x="530" y="120" text-anchor="middle" font-size="10" fill="#546e8a">Each packet routed independently</text>
+        <text x="530" y="137" text-anchor="middle" font-size="10" fill="#546e8a">No reserved resources</text>
+        <!-- store and forward -->
+        <text x="530" y="165" text-anchor="middle" font-size="11" font-weight="700" fill="#1976d2">Store-and-Forward</text>
+        <rect x="420" y="175" width="220" height="60" rx="5" fill="white" stroke="#dde6ef" stroke-width="1.5"/>
+        <text x="530" y="198" text-anchor="middle" font-size="10" fill="#0d1b2a">1. Entire packet received</text>
+        <text x="530" y="214" text-anchor="middle" font-size="10" fill="#0d1b2a">2. Header examined</text>
+        <text x="530" y="230" text-anchor="middle" font-size="10" fill="#0d1b2a">3. Forwarded on outbound link</text>
+      </svg>
+    </div>
+
+    <h2>Delay, Loss, and Throughput</h2>
+    <p>Packets suffer four types of delay at each router: <em>nodal processing delay</em> (checking bit errors, finding output link), <em>queuing delay</em> (waiting in queue for transmission), <em>transmission delay</em> (L/R, packet length over link rate), and <em>propagation delay</em> (d/s, distance over propagation speed).</p>
+    <p><strong>Throughput</strong> is the rate at which bits are transferred end-to-end. In a multi-link path, throughput equals the minimum link rate — the <em>bottleneck link</em>.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Four delays diagram -->
+        <rect width="700" height="280" fill="#f5f8fc" rx="6"/>
+        <text x="350" y="25" text-anchor="middle" font-size="14" font-weight="700" fill="#0d1b2a">Four Sources of Nodal Delay</text>
+        <!-- Router box -->
+        <rect x="260" y="50" width="180" height="140" rx="8" fill="white" stroke="#1976d2" stroke-width="2"/>
+        <text x="350" y="70" text-anchor="middle" font-size="12" font-weight="700" fill="#1976d2">Router</text>
+        <!-- Queue -->
+        <rect x="275" y="80" width="150" height="40" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="350" y="105" text-anchor="middle" font-size="10" fill="#0d1b2a">Packet Queue (buffer)</text>
+        <!-- Processing -->
+        <rect x="275" y="130" width="70" height="40" rx="4" fill="#e0f2f1" stroke="#00695c" stroke-width="1.5"/>
+        <text x="310" y="155" text-anchor="middle" font-size="10" fill="#0d1b2a">Process</text>
+        <!-- Outgoing link -->
+        <rect x="355" y="130" width="70" height="40" rx="4" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="390" y="155" text-anchor="middle" font-size="10" fill="#0d1b2a">Transmit</text>
+        <!-- Arrows and labels -->
+        <!-- Input -->
+        <line x1="30" y1="100" x2="260" y2="100" stroke="#546e8a" stroke-width="2" marker-end="url(#arr)"/>
+        <text x="145" y="90" text-anchor="middle" font-size="10" fill="#546e8a">incoming packets</text>
+        <!-- Output link -->
+        <line x1="440" y1="150" x2="670" y2="150" stroke="#1976d2" stroke-width="2.5" marker-end="url(#arr2)"/>
+        <text x="555" y="140" text-anchor="middle" font-size="10" fill="#546e8a">outgoing link</text>
+        <!-- Delay labels -->
+        <text x="120" y="180" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">① Processing</text>
+        <text x="120" y="196" text-anchor="middle" font-size="10" fill="#546e8a">Check errors, find output</text>
+        <text x="120" y="212" text-anchor="middle" font-size="10" fill="#546e8a">typically &lt;1 ms</text>
+        <text x="350" y="220" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">② Queuing</text>
+        <text x="350" y="236" text-anchor="middle" font-size="10" fill="#546e8a">Wait in buffer — depends on traffic</text>
+        <text x="555" y="180" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">③ Transmission</text>
+        <text x="555" y="196" text-anchor="middle" font-size="10" fill="#546e8a">L/R — packet size / link rate</text>
+        <text x="555" y="216" text-anchor="middle" font-size="11" font-weight="700" fill="#0d1b2a">④ Propagation</text>
+        <text x="555" y="232" text-anchor="middle" font-size="10" fill="#546e8a">d/s — distance / speed of light</text>
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#546e8a"/>
+          </marker>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#1976d2"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <h2>Protocol Layers and the Internet Model</h2>
+    <p>Networks organize functionality into layers. Each layer provides a service to the layer above and relies on the layer below. The <strong>Internet protocol stack</strong> has five layers:</p>
+    <ul>
+      <li><strong>Application</strong> — HTTP, SMTP, DNS, FTP. Messages.</li>
+      <li><strong>Transport</strong> — TCP, UDP. Segments / datagrams.</li>
+      <li><strong>Network</strong> — IP, routing. Datagrams.</li>
+      <li><strong>Link</strong> — Ethernet, 802.11. Frames.</li>
+      <li><strong>Physical</strong> — Bits on the wire.</li>
+    </ul>
+    <p><em>Encapsulation</em>: each layer adds its own header (and sometimes trailer) wrapping the payload from the layer above. A router processes only up through the network layer; a link-layer switch only up through the link layer.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,system-ui,sans-serif">
+        <!-- Protocol stack + encapsulation -->
+        <rect width="700" height="300" fill="#f5f8fc" rx="6"/>
+        <!-- Host A stack -->
+        <text x="100" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0d1b2a">Host A</text>
+        <rect x="30" y="30" width="140" height="36" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="100" y="53" text-anchor="middle" font-size="11" fill="#0d1b2a">Application (HTTP)</text>
+        <rect x="30" y="70" width="140" height="36" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+        <text x="100" y="93" text-anchor="middle" font-size="11" fill="#0d1b2a">Transport (TCP)</text>
+        <rect x="30" y="110" width="140" height="36" rx="4" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="100" y="133" text-anchor="middle" font-size="11" fill="#0d1b2a">Network (IP)</text>
+        <rect x="30" y="150" width="140" height="36" rx="4" fill="#fff8e1" stroke="#f57f17" stroke-width="1.5"/>
+        <text x="100" y="173" text-anchor="middle" font-size="11" fill="#0d1b2a">Link (Ethernet)</text>
+        <rect x="30" y="190" width="140" height="36" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="100" y="213" text-anchor="middle" font-size="11" fill="#0d1b2a">Physical</text>
+        <!-- Router stack -->
+        <text x="350" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0d1b2a">Router</text>
+        <rect x="280" y="110" width="140" height="36" rx="4" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="350" y="133" text-anchor="middle" font-size="11" fill="#0d1b2a">Network (IP)</text>
+        <rect x="280" y="150" width="140" height="36" rx="4" fill="#fff8e1" stroke="#f57f17" stroke-width="1.5"/>
+        <text x="350" y="173" text-anchor="middle" font-size="11" fill="#0d1b2a">Link</text>
+        <rect x="280" y="190" width="140" height="36" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="350" y="213" text-anchor="middle" font-size="11" fill="#0d1b2a">Physical</text>
+        <!-- Host B stack -->
+        <text x="600" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0d1b2a">Host B</text>
+        <rect x="530" y="30" width="140" height="36" rx="4" fill="#e3f2fd" stroke="#1565c0" stroke-width="1.5"/>
+        <text x="600" y="53" text-anchor="middle" font-size="11" fill="#0d1b2a">Application (HTTP)</text>
+        <rect x="530" y="70" width="140" height="36" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+        <text x="600" y="93" text-anchor="middle" font-size="11" fill="#0d1b2a">Transport (TCP)</text>
+        <rect x="530" y="110" width="140" height="36" rx="4" fill="#fce4ec" stroke="#880e4f" stroke-width="1.5"/>
+        <text x="600" y="133" text-anchor="middle" font-size="11" fill="#0d1b2a">Network (IP)</text>
+        <rect x="530" y="150" width="140" height="36" rx="4" fill="#fff8e1" stroke="#f57f17" stroke-width="1.5"/>
+        <text x="600" y="173" text-anchor="middle" font-size="11" fill="#0d1b2a">Link (Ethernet)</text>
+        <rect x="530" y="190" width="140" height="36" rx="4" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="1.5"/>
+        <text x="600" y="213" text-anchor="middle" font-size="11" fill="#0d1b2a">Physical</text>
+        <!-- Encapsulation label -->
+        <text x="350" y="255" text-anchor="middle" font-size="10" fill="#546e8a">Each layer wraps data from the layer above with its own header → encapsulation</text>
+        <!-- Logical communication arrows -->
+        <line x1="170" y1="48" x2="530" y2="48" stroke="#1565c0" stroke-width="1" stroke-dasharray="6,4"/>
+        <line x1="170" y1="88" x2="530" y2="88" stroke="#2e7d32" stroke-width="1" stroke-dasharray="6,4"/>
+        <line x1="170" y1="128" x2="280" y2="128" stroke="#880e4f" stroke-width="1" stroke-dasharray="6,4"/>
+        <line x1="420" y1="128" x2="530" y2="128" stroke="#880e4f" stroke-width="1" stroke-dasharray="6,4"/>
+      </svg>
+    </div>
+
+    <h2>Networks Under Attack: Security</h2>
+    <p>The Internet was originally designed with openness, not security, in mind. Today's threat landscape includes:</p>
+    <ul>
+      <li><strong>Malware</strong> — viruses and worms that infect end systems via network connections.</li>
+      <li><strong>DDoS (Distributed Denial-of-Service)</strong> — flooding a target with traffic from thousands of compromised hosts (a <em>botnet</em>).</li>
+      <li><strong>Sniffing</strong> — passively recording packets on a shared link (<em>packet sniffer</em>).</li>
+      <li><strong>IP Spoofing</strong> — injecting packets with a false source address.</li>
+    </ul>
+
+    <h2>History of Computer Networking</h2>
+    <p>The Internet grew from ARPANET (1969), the first packet-switched network. Key milestones: TCP/IP standardized in 1974 (Cerf &amp; Kahn); the DNS introduced in 1983; the World Wide Web proposed by Tim Berners-Lee in 1989; the commercialization of the Internet in the early 1990s; the explosion of broadband and wireless in the 2000s; and the mobile Internet era from 2007 onward.</p>
+
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Property</th>
+          <th>Circuit Switching</th>
+          <th>Packet Switching</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Resource allocation</td>
+          <td>Pre-allocated, dedicated</td>
+          <td>On-demand, statistical mux</td>
+        </tr>
+        <tr>
+          <td>Bandwidth guarantee</td>
+          <td class="g">Yes — constant bit rate</td>
+          <td class="b">No — best effort</td>
+        </tr>
+        <tr>
+          <td>Congestion / loss</td>
+          <td class="g">None (reserved)</td>
+          <td class="b">Possible under load</td>
+        </tr>
+        <tr>
+          <td>Efficiency with bursty traffic</td>
+          <td class="b">Low — idle slots wasted</td>
+          <td class="g">High — shared capacity</td>
+        </tr>
+        <tr>
+          <td>Connection setup</td>
+          <td class="b">Required before data</td>
+          <td class="g">None needed</td>
+        </tr>
+        <tr>
+          <td>Example networks</td>
+          <td>PSTN (telephone)</td>
+          <td>Internet, IP networks</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="ch-nav">
+      <span></span>
+      <a href="ch02.html">Chapter 02: Application Layer →</a>
+    </div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
